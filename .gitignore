@@ -1,3 +1,41 @@
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# Editores
 /.idea/
-/.env/
+.vscode/*
+!.vscode/extensions.json
+
+# Variables de entorno (nunca se suben, ni siquiera archivos de ejemplo)
+.env
+.env.*
+
+# Documentacion interna de uso local del equipo (no se publica)
+BACKEND_STANDARDS.md
+FRONTEND_STANDARDS.md
+FRONTEND_SECURITY.md
+
+# Backend (Python / Django / FastAPI)
+backend/venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+db.sqlite3
+
+# Frontend (Node / Vite)
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+*.log
+logs
+
+# Proyecto de referencia local (no se publica)
 /.elisa/
