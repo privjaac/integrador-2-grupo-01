@@ -7,9 +7,10 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 
-# Variables de entorno (nunca se suben, ni siquiera archivos de ejemplo)
+# Variables de entorno reales; los ejemplos sin secretos sí se versionan
 .env
 .env.*
+!.env.example
 
 # Documentacion interna de uso local del equipo (no se publica)
 BACKEND_STANDARDS.md
