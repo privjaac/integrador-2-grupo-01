@@ -1,0 +1,138 @@
+{
+  "_comentario": "==============================================================",
+  "_descripcion": "MOCK DE CATÁLOGO — Datos simulados para desarrollo frontend",
+  "_uso": "Se usa cuando VITE_USE_MOCK=true en el archivo .env",
+  "_endpoints_reales": [
+    "GET /api/web-types/",
+    "GET /api/web-features/",
+    "GET /api/web-features/by-type/{web_type_id}"
+  ],
+  "_nota": "El catálogo define los tipos de páginas web y sus características extra que ofrece ELOMUX a sus clientes.",
+
+  "web_types": [
+    {
+      "id": 1,
+      "name": "Landing Page",
+      "base_price_rent": 49.0,
+      "base_price_sale": 299.0,
+      "is_active": true,
+      "created_at": "2026-03-01T08:00:00Z"
+    },
+    {
+      "id": 2,
+      "name": "Página Empresarial",
+      "base_price_rent": 89.0,
+      "base_price_sale": 549.0,
+      "is_active": true,
+      "created_at": "2026-03-01T08:00:00Z"
+    },
+    {
+      "id": 3,
+      "name": "Tienda Online (E-commerce)",
+      "base_price_rent": 149.0,
+      "base_price_sale": 899.0,
+      "is_active": true,
+      "created_at": "2026-03-01T08:00:00Z"
+    },
+    {
+      "id": 4,
+      "name": "Sistema con Panel Admin",
+      "base_price_rent": 249.0,
+      "base_price_sale": 1499.0,
+      "is_active": true,
+      "created_at": "2026-03-01T08:00:00Z"
+    },
+    {
+      "id": 5,
+      "name": "Blog / Portal de Noticias",
+      "base_price_rent": 69.0,
+      "base_price_sale": 399.0,
+      "is_active": false,
+      "created_at": "2026-03-01T08:00:00Z"
+    }
+  ],
+
+  "web_features": [
+    {
+      "id": 1,
+      "name": "Chat en vivo (WhatsApp flotante)",
+      "extra_price": 20.0,
+      "web_type_id": null,
+      "is_active": true,
+      "created_at": "2026-03-01T08:00:00Z"
+    },
+    {
+      "id": 2,
+      "name": "Formulario de contacto",
+      "extra_price": 15.0,
+      "web_type_id": null,
+      "is_active": true,
+      "created_at": "2026-03-01T08:00:00Z"
+    },
+    {
+      "id": 3,
+      "name": "Galería de imágenes",
+      "extra_price": 25.0,
+      "web_type_id": null,
+      "is_active": true,
+      "created_at": "2026-03-01T08:00:00Z"
+    },
+    {
+      "id": 4,
+      "name": "Integración con redes sociales",
+      "extra_price": 30.0,
+      "web_type_id": null,
+      "is_active": true,
+      "created_at": "2026-03-01T08:00:00Z"
+    },
+    {
+      "id": 5,
+      "name": "Sistema de reservas online",
+      "extra_price": 80.0,
+      "web_type_id": 3,
+      "is_active": true,
+      "created_at": "2026-03-01T08:00:00Z"
+    },
+    {
+      "id": 6,
+      "name": "Pasarela de pagos (Culqi/Mercado Pago)",
+      "extra_price": 120.0,
+      "web_type_id": 3,
+      "is_active": true,
+      "created_at": "2026-03-01T08:00:00Z"
+    },
+    {
+      "id": 7,
+      "name": "SEO avanzado",
+      "extra_price": 50.0,
+      "web_type_id": null,
+      "is_active": true,
+      "created_at": "2026-03-01T08:00:00Z"
+    },
+    {
+      "id": 8,
+      "name": "Soporte prioritario 24/7",
+      "extra_price": 40.0,
+      "web_type_id": null,
+      "is_active": true,
+      "created_at": "2026-03-01T08:00:00Z"
+    }
+  ],
+
+  "web_type_create_success": {
+    "id": 6,
+    "name": "Nuevo Tipo de Web",
+    "base_price_rent": 99.0,
+    "base_price_sale": 599.0,
+    "is_active": true,
+    "created_at": "2026-03-17T08:00:00Z"
+  },
+
+  "web_type_error_duplicate": {
+    "detail": "Ya existe un tipo de web con ese nombre."
+  },
+
+  "web_feature_error_duplicate": {
+    "detail": "Ya existe una característica con ese nombre."
+  }
+}
