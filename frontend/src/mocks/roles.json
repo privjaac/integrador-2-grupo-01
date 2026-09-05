@@ -1,0 +1,65 @@
+{
+  "roles": [
+    {
+      "id": 1,
+      "name": "Superadmin",
+      "hierarchy": 1,
+      "can_create_users": true,
+      "min_role_create": 1,
+      "description": "Acceso total al sistema. Puede crear, editar y eliminar cualquier registro. Único que puede gestionar roles y configuración del sistema.",
+      "created_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": 2,
+      "name": "Scrum Master",
+      "hierarchy": 2,
+      "can_create_users": true,
+      "min_role_create": 3,
+      "description": "Gestiona el equipo de desarrollo. Puede crear colaboradores desde Tech Lead hacia abajo. Aprueba lanzamientos a producción.",
+      "created_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": 3,
+      "name": "Tech Lead",
+      "hierarchy": 3,
+      "can_create_users": true,
+      "min_role_create": 4,
+      "description": "Líder técnico del proyecto. Responsable de unir frontend y backend en staging. Puede crear Líderes y Developers.",
+      "created_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": 4,
+      "name": "Líder",
+      "hierarchy": 4,
+      "can_create_users": true,
+      "min_role_create": 5,
+      "description": "Líder de módulo o área. Supervisa el trabajo de los Developers. Puede crear Developers.",
+      "created_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": 5,
+      "name": "Developer",
+      "hierarchy": 5,
+      "can_create_users": false,
+      "min_role_create": null,
+      "description": "Desarrollador del equipo. Trabaja en módulos específicos del sistema. No puede crear otros usuarios.",
+      "created_at": "2026-01-01T00:00:00Z"
+    }
+  ],
+  "pagination": {
+    "total": 5,
+    "page": 1,
+    "per_page": 10,
+    "total_pages": 1
+  },
+  "role_error_duplicate": {
+    "detail": "Ya existe un rol con ese nombre."
+  },
+  "role_create_success": {
+    "id": 6,
+    "hierarchy": 6,
+    "can_create_users": false,
+    "min_role_create": null,
+    "created_at": "2026-03-20T00:00:00Z"
+  }
+}

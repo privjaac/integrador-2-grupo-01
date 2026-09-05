@@ -1,0 +1,386 @@
+/* ==============================================================================
+   INDEX.CSS — Estilos globales y sistema de diseño de ELISA
+  
+   Responsabilidad: define la base visual completa del sistema.
+     - Importa Tailwind v4 (sin tailwind.config.js, todo va aquí)
+     - Define las variables CSS del sistema de diseño (colores, sombras, fuentes)
+     - Aplica estilos base al body y elementos HTML
+     - Declara clases utilitarias personalizadas que Tailwind no cubre
+  
+   Patrón: Design Tokens — todos los valores visuales centralizados en
+     variables CSS para que cualquier componente pueda usarlos
+     y cambiar el tema en un solo lugar.
+  
+   IMPORTANTE PARA EL EQUIPO:
+     - Nunca escribir colores hardcodeados en los componentes.
+       Siempre usar las variables CSS definidas aquí (ej: var(--cyan))
+       o las clases de Tailwind que las usan.
+     - Si necesitás agregar un nuevo color o variable, agregarlo aquí
+       con su comentario explicando para qué sirve.
+   ============================================================================== */
+/* ==============================================================================
+   SECCIÓN 1 — IMPORTACIÓN DE TAILWIND v4
+  
+   En Tailwind v4 ya no existe tailwind.config.js.
+   Todo se configura desde el CSS usando @import y directivas @theme.
+   Esta línea importa el motor completo de Tailwind.
+   ============================================================================== */
+@import url("https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Rajdhani:wght@300;400;500;600;700&family=Share+Tech+Mono&display=swap");
+@import "tailwindcss";
+@source "../src";
+
+/* ==============================================================================
+   SECCIÓN 2 — IMPORTACIÓN DE TIPOGRAFÍAS
+  
+   Las fuentes vienen de Google Fonts. Se cargan aquí para que estén
+   disponibles en todo el proyecto.
+  
+   Fuentes del sistema ELISA:
+     - Orbitron     → títulos, logo, nombres del sistema. Estilo futurista.
+     - Rajdhani     → texto de body, párrafos, labels. Legible y moderno.
+     - Share Tech Mono → códigos CUPE, datos técnicos, monospace.
+   ============================================================================== */
+/* ==============================================================================
+   SECCIÓN 3 — VARIABLES CSS (DESIGN TOKENS)
+  
+   :root es el selector de la raíz del documento HTML.
+   Las variables definidas aquí son accesibles desde cualquier elemento
+   del DOM usando var(--nombre-variable).
+  
+   Están organizadas por categoría:
+     3.1 Colores principales
+     3.2 Colores de fondo (escala de oscuridad)
+     3.3 Colores de texto
+     3.4 Colores de estado (éxito, advertencia, peligro, info)
+     3.5 Efectos de brillo (glow)
+     3.6 Bordes
+     3.7 Tipografía
+   ============================================================================== */
+
+root {
+  /* --------------------------------------------------------------------------
+     3.1 — COLORES PRINCIPALES
+     La paleta de identidad de ELISA. Cyan es el color primario,
+     azul y púrpura son los acentos.
+     -------------------------------------------------------------------------- */
+
+  --cyan: #3fe5e5; /* Color primario — botones, bordes activos, íconos */
+  --blue: #4540d9; /* Acento azul — gradientes, elementos secundarios  */
+  --purple: #8235f2; /* Acento púrpura — highlights, efectos especiales  */
+
+  /* --------------------------------------------------------------------------
+     3.2 — COLORES DE FONDO
+     Escala de oscuridad del tema dark. dark es el más oscuro (fondo base),
+     dark5 es el más claro (cards, modales).
+     -------------------------------------------------------------------------- */
+
+  --dark: #05060f; /* Fondo base — el negro más profundo del sistema    */
+  --dark2: #0b0d1a; /* Fondo secundario — sidebar, panels               */
+  --dark3: #111427; /* Cards y contenedores principales                  */
+  --dark4: #1a1d30; /* Cards elevadas, hover states                     */
+  --dark5: #222540; /* Elementos interactivos, inputs, dropdowns         */
+
+  /* --------------------------------------------------------------------------
+     3.3 — COLORES DE TEXTO
+     white es para títulos y texto principal.
+     gray y gray2 para texto secundario y placeholders.
+     -------------------------------------------------------------------------- */
+
+  --white: #ffffff; /* Texto principal — títulos y contenido importante  */
+  --gray: #8892a4; /* Texto secundario — labels, subtítulos, hints      */
+  --gray2: #c5cdd8; /* Texto terciario — placeholders, texto desactivado */
+
+  /* --------------------------------------------------------------------------
+     3.4 — COLORES DE ESTADO
+     Usados en badges, alertas, mensajes de validación y toasts.
+     Cada color tiene un significado semántico claro.
+     -------------------------------------------------------------------------- */
+
+  --success: #00ff88; /* Verde — operación exitosa, estado activo         */
+  --warning: #ffb800; /* Amarillo — advertencia, pendiente, en proceso    */
+  --danger: #ff3366; /* Rojo — error, estado inactivo, campo requerido   */
+  --info: #00c8ff; /* Azul claro — información, estado en desarrollo   */
+
+  /* --------------------------------------------------------------------------
+     3.5 — EFECTOS DE BRILLO (GLOW)
+     box-shadow con transparencia para crear el efecto de resplandor
+     característico del tema cyberpunk de ELISA.
+     Se usan en elementos activos, hover, y elementos destacados.
+     -------------------------------------------------------------------------- */
+
+  --glow-cyan: 0 0 20px rgba(63, 229, 229, 0.4); /* Brillo cyan suave  */
+  --glow-purple: 0 0 20px rgba(130, 53, 242, 0.4); /* Brillo púrpura     */
+  --glow-blue: 0 0 20px rgba(69, 64, 217, 0.4); /* Brillo azul        */
+  --glow-danger: 0 0 20px rgba(255, 51, 102, 0.4); /* Brillo rojo/error  */
+  --glow-success: 0 0 20px rgba(0, 255, 136, 0.4); /* Brillo verde/ok    */
+
+  /* --------------------------------------------------------------------------
+     3.6 — BORDES
+     Bordes sutiles con transparencia para separar secciones sin
+     romper la continuidad visual del tema oscuro.
+     -------------------------------------------------------------------------- */
+
+  --border: rgba(63, 229, 229, 0.15); /* Borde sutil cyan (default) */
+  --border-active: rgba(63, 229, 229, 0.5); /* Borde cyan activo/focus   */
+  --border-danger: rgba(255, 51, 102, 0.6); /* Borde rojo para errores   */
+
+  /* --------------------------------------------------------------------------
+     3.7 — TIPOGRAFÍA
+     Variables para las familias de fuentes. Usar siempre estas variables
+     en lugar de escribir el nombre de la fuente directamente.
+     -------------------------------------------------------------------------- */
+
+  --font-display: "Orbitron", monospace; /* Títulos y logo          */
+  --font-body: "Rajdhani", sans-serif; /* Texto general           */
+  --font-mono: "Share Tech Mono", monospace; /* Códigos CUPE y técnicos */
+}
+
+/* ==============================================================================
+   SECCIÓN 4 — ESTILOS BASE DEL DOCUMENTO
+  
+   Reset y estilos base aplicados a todos los elementos.
+   Establece la apariencia por defecto del sistema.
+   ============================================================================== */
+
+/* --------------------------------------------------------------------------
+   4.1 — Reset universal
+   Elimina márgenes y paddings por defecto del navegador.
+   box-sizing: border-box hace que padding y border no aumenten
+   el tamaño declarado del elemento (comportamiento más predecible).
+   -------------------------------------------------------------------------- */
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* --------------------------------------------------------------------------
+   4.2 — Estilos del body
+   El fondo oscuro base, la fuente por defecto, el color de texto
+   y overflow-x hidden para evitar scroll horizontal accidental.
+   -------------------------------------------------------------------------- */
+body {
+  font-family: var(--font-body);
+  background-color: var(--dark);
+  color: var(--white);
+  overflow-x: hidden;
+  /* Suaviza el renderizado de fuentes en pantallas de alta densidad */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* --------------------------------------------------------------------------
+   4.3 — Scrollbar personalizada
+   Reemplaza la scrollbar del navegador por una más acorde al tema dark.
+   Solo funciona en Chrome/Edge/Safari (Webkit).
+   -------------------------------------------------------------------------- */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--dark2);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--cyan);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--blue);
+}
+
+/* --------------------------------------------------------------------------
+   4.4 — Selección de texto
+   Color de fondo cuando el usuario selecciona texto con el mouse.
+   -------------------------------------------------------------------------- */
+::selection {
+  background-color: rgba(63, 229, 229, 0.3);
+  color: var(--white);
+}
+
+/* ==============================================================================
+   SECCIÓN 5 — CLASES UTILITARIAS PERSONALIZADAS
+  
+   Clases CSS que Tailwind no provee pero que usamos frecuentemente
+   en los componentes de ELISA. Siguen la misma filosofía de Tailwind:
+   una clase = una responsabilidad visual.
+   ============================================================================== */
+
+/* --------------------------------------------------------------------------
+   5.1 — Tipografías semánticas
+   Clases para aplicar las fuentes del sistema de forma consistente.
+   -------------------------------------------------------------------------- */
+
+/* Fuente de display — para títulos principales y el logo ELISA */
+.font-display {
+  font-family: var(--font-display);
+}
+
+/* Fuente monospace — para códigos CUPE, fechas técnicas, valores numéricos */
+.font-mono-elisa {
+  font-family: var(--font-mono);
+}
+
+/* --------------------------------------------------------------------------
+   5.2 — Efectos de brillo (glow)
+   Clases para aplicar el efecto resplandor característico del sistema.
+   -------------------------------------------------------------------------- */
+
+.glow-cyan {
+  box-shadow: var(--glow-cyan);
+}
+.glow-purple {
+  box-shadow: var(--glow-purple);
+}
+.glow-blue {
+  box-shadow: var(--glow-blue);
+}
+.glow-danger {
+  box-shadow: var(--glow-danger);
+}
+.glow-success {
+  box-shadow: var(--glow-success);
+}
+
+/* --------------------------------------------------------------------------
+   5.3 — Gradiente de texto (clip gradient)
+   Técnica CSS para aplicar gradiente de color al texto.
+   Usado en el logo ELISA y títulos principales.
+   -------------------------------------------------------------------------- */
+
+.text-gradient-cyan {
+  background: linear-gradient(135deg, var(--cyan), var(--blue));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.text-gradient-full {
+  background: linear-gradient(
+    135deg,
+    var(--cyan) 0%,
+    var(--blue) 50%,
+    var(--purple) 100%
+  );
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* --------------------------------------------------------------------------
+   5.4 — Patrón de grilla de fondo
+   El fondo con líneas que da el efecto de cuadrícula cyberpunk.
+   Usado en el login y secciones destacadas.
+   -------------------------------------------------------------------------- */
+
+.bg-grid {
+  background-image:
+    linear-gradient(rgba(63, 229, 229, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(63, 229, 229, 0.04) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+/* --------------------------------------------------------------------------
+   5.5 — Bordes con brillo
+   Bordes que combinan el color semitransparente con transición suave.
+   Para inputs, cards y botones interactivos.
+   -------------------------------------------------------------------------- */
+
+.border-elisa {
+  border: 1px solid var(--border);
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.border-elisa:focus,
+.border-elisa:focus-within {
+  border-color: var(--border-active);
+  box-shadow: var(--glow-cyan);
+  outline: none;
+}
+
+.border-elisa-danger {
+  border: 1px solid var(--border-danger);
+  box-shadow: var(--glow-danger);
+}
+
+/* --------------------------------------------------------------------------
+   5.6 — Cards del sistema
+   Contenedores con fondo oscuro y borde sutil.
+   Son la unidad visual básica de ELISA.
+   -------------------------------------------------------------------------- */
+
+.card-elisa {
+  background-color: var(--dark3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.card-elisa:hover {
+  border-color: rgba(63, 229, 229, 0.3);
+}
+
+/* --------------------------------------------------------------------------
+   5.7 — Animaciones
+   Keyframes y clases de animación usadas en el sistema.
+   -------------------------------------------------------------------------- */
+
+/* Pulso suave para indicadores de estado activo */
+@keyframes pulse-cyan {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.animate-pulse-cyan {
+  animation: pulse-cyan 2s ease-in-out infinite;
+}
+
+/* Fade in para modales y overlays */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.25s ease-out forwards;
+}
+
+/* Entrada del sidebar */
+@keyframes slide-in-left {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.animate-slide-in {
+  animation: slide-in-left 0.3s ease-out forwards;
+}
+
+@media (max-width: 1023px) {
+  [data-main-content] {
+    margin-left: 0 !important;
+  }
+}

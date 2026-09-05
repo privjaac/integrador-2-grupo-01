@@ -1,0 +1,873 @@
+{
+  "clients": [
+    {
+      "id": 1,
+      "cupe": "CLI-01007918",
+      "name": "Pollería El Gordo SAC",
+      "document_type": "RUC",
+      "document_number": "20601234567",
+      "email": "contacto@polleriaelgordo.com",
+      "phone": "01-4567890",
+      "web_type_id": 1,
+      "web_type_name": "Página Empresarial",
+      "plan": "alquiler",
+      "status": "activo",
+      "base_price": 89,
+      "extra_price": 50,
+      "total_price": 139,
+      "domain_price_type": "200",
+      "domain_price": 200,
+      "payment_frequency": "mensual",
+      "registration_date": "2024-01-09",
+      "delivery_date": "2024-01-24",
+      "next_payment_date": "2026-03-25",
+      "features": [
+        {
+          "id": 1,
+          "name": "Chat en vivo"
+        },
+        {
+          "id": 2,
+          "name": "Google Maps"
+        }
+      ],
+      "notes": "Cliente puntual en pagos"
+    },
+    {
+      "id": 2,
+      "cupe": "CLI-01015837",
+      "name": "Restaurante La Tradición",
+      "document_type": "RUC",
+      "document_number": "20709876543",
+      "email": "info@latradicion.pe",
+      "phone": "999-111-222",
+      "web_type_id": 2,
+      "web_type_name": "Tienda Virtual",
+      "plan": "venta",
+      "status": "activo",
+      "base_price": 1200,
+      "extra_price": 150,
+      "total_price": 1350,
+      "domain_price_type": "200",
+      "domain_price": 200,
+      "payment_frequency": "anual",
+      "registration_date": "2024-02-15",
+      "delivery_date": "2024-03-01",
+      "next_payment_date": "2026-04-02",
+      "features": [
+        {
+          "id": 3,
+          "name": "Carrito de compras"
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": 3,
+      "cupe": "CLI-01023756",
+      "name": "Moda Urbana Store",
+      "document_type": "RUC",
+      "document_number": "20512345678",
+      "email": "ventas@modaurbana.pe",
+      "phone": "987-654-321",
+      "web_type_id": 2,
+      "web_type_name": "Tienda Virtual",
+      "plan": "alquiler",
+      "status": "activo",
+      "base_price": 120,
+      "extra_price": 80,
+      "total_price": 200,
+      "domain_price_type": "200",
+      "domain_price": 200,
+      "payment_frequency": "mensual",
+      "registration_date": "2024-03-10",
+      "delivery_date": "2024-03-25",
+      "next_payment_date": "2026-03-22",
+      "features": [
+        {
+          "id": 3,
+          "name": "Carrito de compras"
+        },
+        {
+          "id": 4,
+          "name": "Pasarela de pagos"
+        }
+      ],
+      "notes": "Quiere agregar más productos"
+    },
+    {
+      "id": 4,
+      "cupe": "CLI-01031675",
+      "name": "Consultora Mendez & Asociados",
+      "document_type": "RUC",
+      "document_number": "20456789012",
+      "email": "contacto@mendezasociados.com",
+      "phone": "01-3456789",
+      "web_type_id": 3,
+      "web_type_name": "Landing Page",
+      "plan": "venta",
+      "status": "inactivo",
+      "base_price": 600,
+      "extra_price": 0,
+      "total_price": 600,
+      "domain_price_type": "ninguno",
+      "domain_price": 0,
+      "payment_frequency": "anual",
+      "registration_date": "2024-04-05",
+      "delivery_date": "2024-04-20",
+      "next_payment_date": null,
+      "features": [],
+      "notes": "Se dio de baja por cierre de empresa"
+    },
+    {
+      "id": 5,
+      "cupe": "CLI-01039594",
+      "name": "Clínica San Rafael",
+      "document_type": "RUC",
+      "document_number": "20398765432",
+      "email": "admin@clinicasanrafael.pe",
+      "phone": "01-5678901",
+      "web_type_id": 4,
+      "web_type_name": "Portal de Citas",
+      "plan": "alquiler",
+      "status": "activo",
+      "base_price": 200,
+      "extra_price": 100,
+      "total_price": 300,
+      "domain_price_type": "200",
+      "domain_price": 200,
+      "payment_frequency": "mensual",
+      "registration_date": "2024-05-20",
+      "delivery_date": "2024-06-05",
+      "next_payment_date": "2026-03-24",
+      "features": [
+        {
+          "id": 5,
+          "name": "Sistema de citas"
+        },
+        {
+          "id": 6,
+          "name": "Notificaciones SMS"
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": 6,
+      "cupe": "CLI-01047513",
+      "name": "Ferretería Don Pepe",
+      "document_type": "RUC",
+      "document_number": "20312345678",
+      "email": "donpepe@ferreteria.pe",
+      "phone": "976-543-210",
+      "web_type_id": 1,
+      "web_type_name": "Página Empresarial",
+      "plan": "alquiler",
+      "status": "desarrollo",
+      "base_price": 89,
+      "extra_price": 0,
+      "total_price": 89,
+      "domain_price_type": "200",
+      "domain_price": 200,
+      "payment_frequency": "mensual",
+      "registration_date": "2024-06-12",
+      "delivery_date": null,
+      "next_payment_date": null,
+      "features": [],
+      "notes": "En proceso de diseño"
+    },
+    {
+      "id": 7,
+      "cupe": "CLI-01055432",
+      "name": "Gym PowerFit",
+      "document_type": "RUC",
+      "document_number": "20287654321",
+      "email": "info@powerfitgym.pe",
+      "phone": "965-432-109",
+      "web_type_id": 5,
+      "web_type_name": "Página Corporativa",
+      "plan": "venta",
+      "status": "activo",
+      "base_price": 850,
+      "extra_price": 200,
+      "total_price": 1050,
+      "domain_price_type": "200",
+      "domain_price": 200,
+      "payment_frequency": "anual",
+      "registration_date": "2024-07-08",
+      "delivery_date": "2024-07-25",
+      "next_payment_date": "2026-04-15",
+      "features": [
+        {
+          "id": 7,
+          "name": "Galería de fotos"
+        },
+        {
+          "id": 8,
+          "name": "Blog"
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": 8,
+      "cupe": "CLI-01063351",
+      "name": "Academia de Idiomas Berlitz PE",
+      "document_type": "RUC",
+      "document_number": "20265432198",
+      "email": "info@berlitzpe.com",
+      "phone": "01-6789012",
+      "web_type_id": 6,
+      "web_type_name": "Portal Educativo",
+      "plan": "alquiler",
+      "status": "activo",
+      "base_price": 180,
+      "extra_price": 120,
+      "total_price": 300,
+      "domain_price_type": "200",
+      "domain_price": 200,
+      "payment_frequency": "mensual",
+      "registration_date": "2024-08-15",
+      "delivery_date": "2024-09-01",
+      "next_payment_date": "2026-03-23",
+      "features": [
+        {
+          "id": 9,
+          "name": "Aula virtual"
+        },
+        {
+          "id": 10,
+          "name": "Exámenes online"
+        }
+      ],
+      "notes": "Excelente cliente"
+    },
+    {
+      "id": 9,
+      "cupe": "CLI-01071270",
+      "name": "Inmobiliaria Vista Mar",
+      "document_type": "RUC",
+      "document_number": "20243210987",
+      "email": "ventas@vistamar.pe",
+      "phone": "01-7890123",
+      "web_type_id": 7,
+      "web_type_name": "Portal Inmobiliario",
+      "plan": "venta",
+      "status": "activo",
+      "base_price": 1500,
+      "extra_price": 300,
+      "total_price": 1800,
+      "domain_price_type": "otro",
+      "domain_price": 350,
+      "payment_frequency": "anual",
+      "registration_date": "2024-09-03",
+      "delivery_date": "2024-09-20",
+      "next_payment_date": "2026-05-01",
+      "features": [
+        {
+          "id": 11,
+          "name": "Mapa interactivo"
+        },
+        {
+          "id": 12,
+          "name": "Calculadora hipotecaria"
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": 10,
+      "cupe": "CLI-01079189",
+      "name": "Pizzería Napolitana",
+      "document_type": "RUC",
+      "document_number": "20221098765",
+      "email": "pedidos@napolitana.pe",
+      "phone": "954-321-098",
+      "web_type_id": 8,
+      "web_type_name": "Menú Digital",
+      "plan": "alquiler",
+      "status": "inactivo",
+      "base_price": 75,
+      "extra_price": 0,
+      "total_price": 75,
+      "domain_price_type": "ninguno",
+      "domain_price": 0,
+      "payment_frequency": "mensual",
+      "registration_date": "2024-10-10",
+      "delivery_date": "2024-10-20",
+      "next_payment_date": null,
+      "features": [],
+      "notes": "Pausó el servicio temporalmente"
+    },
+    {
+      "id": 11,
+      "cupe": "CLI-01087108",
+      "name": "Estudio Jurídico Pérez",
+      "document_type": "RUC",
+      "document_number": "20198765432",
+      "email": "contacto@estudioperez.pe",
+      "phone": "01-8901234",
+      "web_type_id": 1,
+      "web_type_name": "Página Empresarial",
+      "plan": "venta",
+      "status": "activo",
+      "base_price": 600,
+      "extra_price": 50,
+      "total_price": 650,
+      "domain_price_type": "200",
+      "domain_price": 200,
+      "payment_frequency": "anual",
+      "registration_date": "2024-11-05",
+      "delivery_date": "2024-11-20",
+      "next_payment_date": "2026-05-10",
+      "features": [
+        {
+          "id": 1,
+          "name": "Chat en vivo"
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": 12,
+      "cupe": "CLI-01095027",
+      "name": "Centro Médico Los Andes",
+      "document_type": "RUC",
+      "document_number": "20176543210",
+      "email": "info@cmlosandes.pe",
+      "phone": "01-9012345",
+      "web_type_id": 4,
+      "web_type_name": "Portal de Citas",
+      "plan": "alquiler",
+      "status": "activo",
+      "base_price": 200,
+      "extra_price": 150,
+      "total_price": 350,
+      "domain_price_type": "200",
+      "domain_price": 200,
+      "payment_frequency": "mensual",
+      "registration_date": "2024-12-01",
+      "delivery_date": "2024-12-15",
+      "next_payment_date": "2026-03-26",
+      "features": [
+        {
+          "id": 5,
+          "name": "Sistema de citas"
+        },
+        {
+          "id": 13,
+          "name": "Historial médico"
+        }
+      ],
+      "notes": "Requiere HIPAA compliance"
+    },
+    {
+      "id": 13,
+      "cupe": "CLI-01102946",
+      "name": "Tienda Gamer Zone",
+      "document_type": "RUC",
+      "document_number": "20154321098",
+      "email": "ventas@gamerzone.pe",
+      "phone": "943-210-987",
+      "web_type_id": 2,
+      "web_type_name": "Tienda Virtual",
+      "plan": "alquiler",
+      "status": "activo",
+      "base_price": 120,
+      "extra_price": 200,
+      "total_price": 320,
+      "domain_price_type": "200",
+      "domain_price": 200,
+      "payment_frequency": "mensual",
+      "registration_date": "2025-01-14",
+      "delivery_date": "2025-01-30",
+      "next_payment_date": "2026-04-05",
+      "features": [
+        {
+          "id": 3,
+          "name": "Carrito de compras"
+        },
+        {
+          "id": 4,
+          "name": "Pasarela de pagos"
+        },
+        {
+          "id": 14,
+          "name": "Stock en tiempo real"
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": 14,
+      "cupe": "CLI-01110865",
+      "name": "Hotel Miraflores Suite",
+      "document_type": "RUC",
+      "document_number": "20132109876",
+      "email": "reservas@miraforessuite.pe",
+      "phone": "01-0123456",
+      "web_type_id": 9,
+      "web_type_name": "Portal de Reservas",
+      "plan": "venta",
+      "status": "activo",
+      "base_price": 2000,
+      "extra_price": 500,
+      "total_price": 2500,
+      "domain_price_type": "otro",
+      "domain_price": 400,
+      "payment_frequency": "anual",
+      "registration_date": "2025-02-20",
+      "delivery_date": "2025-03-10",
+      "next_payment_date": "2026-06-01",
+      "features": [
+        {
+          "id": 15,
+          "name": "Motor de reservas"
+        },
+        {
+          "id": 16,
+          "name": "Pasarela multimoneda"
+        }
+      ],
+      "notes": "Cliente premium"
+    },
+    {
+      "id": 15,
+      "cupe": "CLI-01118784",
+      "name": "Consultora TechPros",
+      "document_type": "RUC",
+      "document_number": "20109876543",
+      "email": "hola@techpros.pe",
+      "phone": "932-109-876",
+      "web_type_id": 5,
+      "web_type_name": "Página Corporativa",
+      "plan": "alquiler",
+      "status": "desarrollo",
+      "base_price": 150,
+      "extra_price": 50,
+      "total_price": 200,
+      "domain_price_type": "200",
+      "domain_price": 200,
+      "payment_frequency": "mensual",
+      "registration_date": "2025-03-05",
+      "delivery_date": null,
+      "next_payment_date": null,
+      "features": [
+        {
+          "id": 1,
+          "name": "Chat en vivo"
+        }
+      ],
+      "notes": "En desarrollo, entrega estimada abril"
+    },
+    {
+      "id": 16,
+      "cupe": "CLI-01126703",
+      "name": "Librería El Saber",
+      "document_type": "RUC",
+      "document_number": "20087654321",
+      "email": "ventas@elsaber.pe",
+      "phone": "921-098-765",
+      "web_type_id": 2,
+      "web_type_name": "Tienda Virtual",
+      "plan": "venta",
+      "status": "activo",
+      "base_price": 1200,
+      "extra_price": 100,
+      "total_price": 1300,
+      "domain_price_type": "200",
+      "domain_price": 200,
+      "payment_frequency": "anual",
+      "registration_date": "2025-04-18",
+      "delivery_date": "2025-05-05",
+      "next_payment_date": "2026-06-15",
+      "features": [
+        {
+          "id": 3,
+          "name": "Carrito de compras"
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": 17,
+      "cupe": "CLI-01134622",
+      "name": "Spa & Wellness Serenidad",
+      "document_type": "RUC",
+      "document_number": "20065432109",
+      "email": "info@sereidad.pe",
+      "phone": "910-987-654",
+      "web_type_id": 3,
+      "web_type_name": "Landing Page",
+      "plan": "alquiler",
+      "status": "activo",
+      "base_price": 70,
+      "extra_price": 30,
+      "total_price": 100,
+      "domain_price_type": "200",
+      "domain_price": 200,
+      "payment_frequency": "mensual",
+      "registration_date": "2025-05-22",
+      "delivery_date": "2025-06-01",
+      "next_payment_date": "2026-03-28",
+      "features": [
+        {
+          "id": 17,
+          "name": "Formulario de contacto"
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": 18,
+      "cupe": "CLI-01142541",
+      "name": "Constructora Edificar SA",
+      "document_type": "RUC",
+      "document_number": "20043210987",
+      "email": "proyectos@edificar.pe",
+      "phone": "01-2345678",
+      "web_type_id": 5,
+      "web_type_name": "Página Corporativa",
+      "plan": "venta",
+      "status": "activo",
+      "base_price": 850,
+      "extra_price": 250,
+      "total_price": 1100,
+      "domain_price_type": "200",
+      "domain_price": 200,
+      "payment_frequency": "anual",
+      "registration_date": "2025-06-30",
+      "delivery_date": "2025-07-20",
+      "next_payment_date": "2026-07-01",
+      "features": [
+        {
+          "id": 11,
+          "name": "Mapa interactivo"
+        },
+        {
+          "id": 18,
+          "name": "Portafolio de proyectos"
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": 19,
+      "cupe": "CLI-01150460",
+      "name": "Panadería San Martín",
+      "document_type": "RUC",
+      "document_number": "20021098765",
+      "email": "pedidos@panaderasm.pe",
+      "phone": "899-876-543",
+      "web_type_id": 8,
+      "web_type_name": "Menú Digital",
+      "plan": "alquiler",
+      "status": "activo",
+      "base_price": 75,
+      "extra_price": 25,
+      "total_price": 100,
+      "domain_price_type": "ninguno",
+      "domain_price": 0,
+      "payment_frequency": "mensual",
+      "registration_date": "2025-07-14",
+      "delivery_date": "2025-07-25",
+      "next_payment_date": "2026-04-10",
+      "features": [
+        {
+          "id": 19,
+          "name": "Pedidos online"
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": 20,
+      "cupe": "CLI-01158379",
+      "name": "Agencia de Viajes Horizonte",
+      "document_type": "RUC",
+      "document_number": "20009876543",
+      "email": "tours@horizonteviajes.pe",
+      "phone": "888-765-432",
+      "web_type_id": 9,
+      "web_type_name": "Portal de Reservas",
+      "plan": "alquiler",
+      "status": "inactivo",
+      "base_price": 180,
+      "extra_price": 80,
+      "total_price": 260,
+      "domain_price_type": "200",
+      "domain_price": 200,
+      "payment_frequency": "mensual",
+      "registration_date": "2025-08-05",
+      "delivery_date": "2025-08-20",
+      "next_payment_date": null,
+      "features": [
+        {
+          "id": 15,
+          "name": "Motor de reservas"
+        }
+      ],
+      "notes": "Cerró operaciones"
+    },
+    {
+      "id": 21,
+      "cupe": "CLI-01166298",
+      "name": "Academia Fitness ProGym",
+      "document_type": "RUC",
+      "document_number": "19987654321",
+      "email": "info@progympe.pe",
+      "phone": "877-654-321",
+      "web_type_id": 5,
+      "web_type_name": "Página Corporativa",
+      "plan": "alquiler",
+      "status": "activo",
+      "base_price": 150,
+      "extra_price": 60,
+      "total_price": 210,
+      "domain_price_type": "200",
+      "domain_price": 200,
+      "payment_frequency": "mensual",
+      "registration_date": "2025-09-12",
+      "delivery_date": "2025-09-28",
+      "next_payment_date": "2026-04-20",
+      "features": [
+        {
+          "id": 7,
+          "name": "Galería de fotos"
+        },
+        {
+          "id": 20,
+          "name": "Horarios de clases"
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": 22,
+      "cupe": "CLI-01174217",
+      "name": "Distribuidora Norte SAC",
+      "document_type": "RUC",
+      "document_number": "19965432198",
+      "email": "ventas@distribnorte.pe",
+      "phone": "866-543-210",
+      "web_type_id": 1,
+      "web_type_name": "Página Empresarial",
+      "plan": "venta",
+      "status": "activo",
+      "base_price": 600,
+      "extra_price": 0,
+      "total_price": 600,
+      "domain_price_type": "200",
+      "domain_price": 200,
+      "payment_frequency": "anual",
+      "registration_date": "2025-10-08",
+      "delivery_date": "2025-10-25",
+      "next_payment_date": "2026-07-15",
+      "features": [],
+      "notes": null
+    },
+    {
+      "id": 23,
+      "cupe": "CLI-01182136",
+      "name": "Colegio San Ignacio",
+      "document_type": "RUC",
+      "document_number": "19943210987",
+      "email": "administracion@colegiosanignacio.pe",
+      "phone": "01-3456781",
+      "web_type_id": 6,
+      "web_type_name": "Portal Educativo",
+      "plan": "alquiler",
+      "status": "activo",
+      "base_price": 180,
+      "extra_price": 100,
+      "total_price": 280,
+      "domain_price_type": "200",
+      "domain_price": 200,
+      "payment_frequency": "mensual",
+      "registration_date": "2025-11-03",
+      "delivery_date": "2025-11-20",
+      "next_payment_date": "2026-05-05",
+      "features": [
+        {
+          "id": 9,
+          "name": "Aula virtual"
+        },
+        {
+          "id": 21,
+          "name": "Notas en línea"
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": 24,
+      "cupe": "CLI-01190055",
+      "name": "Veterinaria Mascotas Felices",
+      "document_type": "RUC",
+      "document_number": "19921098765",
+      "email": "citas@mascotasfelices.pe",
+      "phone": "855-432-109",
+      "web_type_id": 4,
+      "web_type_name": "Portal de Citas",
+      "plan": "alquiler",
+      "status": "desarrollo",
+      "base_price": 200,
+      "extra_price": 50,
+      "total_price": 250,
+      "domain_price_type": "200",
+      "domain_price": 200,
+      "payment_frequency": "mensual",
+      "registration_date": "2025-12-10",
+      "delivery_date": null,
+      "next_payment_date": null,
+      "features": [
+        {
+          "id": 5,
+          "name": "Sistema de citas"
+        }
+      ],
+      "notes": "En desarrollo"
+    },
+    {
+      "id": 25,
+      "cupe": "CLI-01197974",
+      "name": "Barbería El Estilo",
+      "document_type": "DNI",
+      "document_number": "45678901",
+      "email": "reservas@elestilo.pe",
+      "phone": "844-321-098",
+      "web_type_id": 3,
+      "web_type_name": "Landing Page",
+      "plan": "alquiler",
+      "status": "activo",
+      "base_price": 70,
+      "extra_price": 0,
+      "total_price": 70,
+      "domain_price_type": "ninguno",
+      "domain_price": 0,
+      "payment_frequency": "mensual",
+      "registration_date": "2026-01-15",
+      "delivery_date": "2026-01-25",
+      "next_payment_date": "2026-03-21",
+      "features": [],
+      "notes": null
+    },
+    {
+      "id": 26,
+      "cupe": "CLI-01205893",
+      "name": "Startup FinTech Pagalo",
+      "document_type": "RUC",
+      "document_number": "19898765432",
+      "email": "hola@pagalo.pe",
+      "phone": "833-210-987",
+      "web_type_id": 10,
+      "web_type_name": "App Web",
+      "plan": "venta",
+      "status": "activo",
+      "base_price": 3000,
+      "extra_price": 800,
+      "total_price": 3800,
+      "domain_price_type": "otro",
+      "domain_price": 500,
+      "payment_frequency": "anual",
+      "registration_date": "2026-02-01",
+      "delivery_date": "2026-02-28",
+      "next_payment_date": "2026-08-01",
+      "features": [
+        {
+          "id": 16,
+          "name": "Pasarela multimoneda"
+        },
+        {
+          "id": 22,
+          "name": "Dashboard analytics"
+        },
+        {
+          "id": 23,
+          "name": "API REST"
+        }
+      ],
+      "notes": "Cliente más grande hasta la fecha"
+    },
+    {
+      "id": 27,
+      "cupe": "CLI-01213812",
+      "name": "Cevichería El Punto",
+      "document_type": "RUC",
+      "document_number": "19876543210",
+      "email": "reservas@elpunto.pe",
+      "phone": "822-109-876",
+      "web_type_id": 8,
+      "web_type_name": "Menú Digital",
+      "plan": "alquiler",
+      "status": "activo",
+      "base_price": 75,
+      "extra_price": 25,
+      "total_price": 100,
+      "domain_price_type": "ninguno",
+      "domain_price": 0,
+      "payment_frequency": "mensual",
+      "registration_date": "2026-03-01",
+      "delivery_date": "2026-03-10",
+      "next_payment_date": "2026-03-27",
+      "features": [
+        {
+          "id": 19,
+          "name": "Pedidos online"
+        }
+      ],
+      "notes": null
+    },
+    {
+      "id": 28,
+      "cupe": "CLI-01221731",
+      "name": "Odontología Sonrisa Perfecta",
+      "document_type": "RUC",
+      "document_number": "19854321098",
+      "email": "citas@sonrisaperfecta.pe",
+      "phone": "811-098-765",
+      "web_type_id": 4,
+      "web_type_name": "Portal de Citas",
+      "plan": "alquiler",
+      "status": "desarrollo",
+      "base_price": 200,
+      "extra_price": 100,
+      "total_price": 300,
+      "domain_price_type": "200",
+      "domain_price": 200,
+      "payment_frequency": "mensual",
+      "registration_date": "2026-03-15",
+      "delivery_date": null,
+      "next_payment_date": null,
+      "features": [
+        {
+          "id": 5,
+          "name": "Sistema de citas"
+        },
+        {
+          "id": 6,
+          "name": "Notificaciones SMS"
+        }
+      ],
+      "notes": "En desarrollo activo"
+    }
+  ],
+  "pagination": {
+    "total": 28,
+    "page": 1,
+    "per_page": 50,
+    "total_pages": 1
+  },
+  "client_create_success": {
+    "id": 99,
+    "cupe": "CLI-99999999",
+    "name": "Cliente de prueba",
+    "message": "Cliente registrado exitosamente"
+  },
+  "client_error_duplicate_email": {
+    "detail": "Ya existe un cliente con ese correo electrónico."
+  },
+  "client_error_duplicate_document": {
+    "detail": "Ya existe un cliente con ese número de documento."
+  }
+}
