@@ -39,3 +39,7 @@ logs
 
 # Proyecto de referencia local (no se publica)
 /.elisa/
+/.claude/
+/.kiro/
+/.copilot/
+/.bedrock/
