@@ -23,7 +23,7 @@ from jose import jwt, JWTError
 from passlib.context import CryptContext
 from django.conf import settings
 
-from api.schemas.auth import LoginRequest, TokenResponse, RefreshRequest
+from api.schemas.auth import LoginRequest, TokenResponse, RefreshRequest, AuthUser
 from clients.models import Collaborator
 
 
@@ -170,7 +170,18 @@ def login(data: LoginRequest):
 
     return TokenResponse(
         access_token=access_token,
-        refresh_token=refresh_token
+        refresh_token=refresh_token,
+        user=AuthUser(
+            id=collaborator.id,
+            cupe=collaborator.cupe,
+            username=collaborator.username,
+            first_name=collaborator.first_name,
+            last_name=collaborator.last_name,
+            email=collaborator.email,
+            role=collaborator.role.level if collaborator.role else None,
+            role_name=collaborator.role.name if collaborator.role else None,
+            is_active=collaborator.is_active,
+        )
     )
 
 

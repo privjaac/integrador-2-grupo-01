@@ -9,6 +9,7 @@
 #   - RefreshRequest → lo que React manda para renovar el token
 # ==============================================================================
 
+from typing import Optional
 from pydantic import BaseModel
 
 
@@ -22,8 +23,23 @@ from pydantic import BaseModel
 # }
 # ------------------------------------------------------------------------------
 class LoginRequest(BaseModel):
-    username: str   # Nombre de usuario
-    password: str   # Contraseña en texto plano (FastAPI la compara con el hash)
+    username: str
+    password: str
+
+
+class AuthUser(BaseModel):
+    id: int
+    cupe: Optional[str]
+    username: str
+    first_name: str
+    last_name: str
+    email: str
+    role: Optional[str]
+    role_name: Optional[str]
+    is_active: bool
+
+    class Config:
+        from_attributes = True
 
 
 # ------------------------------------------------------------------------------
@@ -39,9 +55,10 @@ class LoginRequest(BaseModel):
 # React guarda estos tokens y los manda en cada petición siguiente.
 # ------------------------------------------------------------------------------
 class TokenResponse(BaseModel):
-    access_token: str    # Token de corta duración (30 min) — para hacer peticiones
-    refresh_token: str   # Token de larga duración (24h) — para renovar el access_token
-    token_type: str = 'bearer'  # Tipo estándar de token HTTP — siempre 'bearer'
+    access_token: str
+    refresh_token: str
+    token_type: str = 'bearer'
+    user: Optional[AuthUser] = None
 
 
 # ------------------------------------------------------------------------------

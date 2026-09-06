@@ -113,49 +113,49 @@ app.add_middleware(
 # ------------------------------------------------------------------------------
 app.include_router(
     auth.router,
-    prefix='/auth',
+    prefix='/api/auth',
     tags=['Autenticación']
 )
 
 app.include_router(
     clients.router,
-    prefix='/clients',
+    prefix='/api/clients',
     tags=['Clientes']
 )
 
 app.include_router(
     users.router,
-    prefix='/users',
+    prefix='/api/users',
     tags=['Colaboradores']
 )
 
 app.include_router(
     roles.router,
-    prefix='/roles',
+    prefix='/api/roles',
     tags=['Roles']
 )
 
 app.include_router(
     web_types.router,
-    prefix='/web-types',
+    prefix='/api/web-types',
     tags=['Tipos de Web']
 )
 
 app.include_router(
     web_features.router,
-    prefix='/web-features',
+    prefix='/api/web-features',
     tags=['Funcionalidades']
 )
 
 app.include_router(
     client_features.router,
-    prefix='/client-features',
+    prefix='/api/client-features',
     tags=['Funcionalidades de Clientes']
 )
 
 app.include_router(
     cupe_log.router,
-    prefix='/cupe-log',
+    prefix='/api/cupe-log',
     tags=['Historial CUPE']
 )
 

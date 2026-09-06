@@ -25,7 +25,6 @@
    Todo se configura desde el CSS usando @import y directivas @theme.
    Esta línea importa el motor completo de Tailwind.
    ============================================================================== */
-@import url("https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Rajdhani:wght@300;400;500;600;700&family=Share+Tech+Mono&display=swap");
 @import "tailwindcss";
 @source "../src";
 
