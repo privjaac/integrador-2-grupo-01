@@ -124,29 +124,26 @@ TEMPLATES = [
 WSGI_APPLICATION = 'core.wsgi.application'
 
 
-# ------------------------------------------------------------------------------
-# BASE DE DATOS — PostgreSQL
-#
-# Le decimos a Django que use PostgreSQL en lugar de SQLite (que es el default).
-# Todos los valores vienen del .env para no hardcodear credenciales en el código.
-#
-# ENGINE: el conector de Django para PostgreSQL (usa psycopg2 internamente).
-# NAME:   nombre de la base de datos → elisa_local_db
-# USER:   usuario de PostgreSQL → elisa_user
-# PASSWORD: contraseña → elisa_pass_local
-# HOST:   dónde está el servidor de BD → localhost (en nuestra misma PC)
-# PORT:   puerto de PostgreSQL → 5432 (el default)
-# ------------------------------------------------------------------------------
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.getenv('DB_NAME'),
-        'USER': os.getenv('DB_USER'),
-        'PASSWORD': os.getenv('DB_PASSWORD'),
-        'HOST': os.getenv('DB_HOST', 'localhost'),
-        'PORT': os.getenv('DB_PORT', '5432'),
+DB_ENGINE = os.getenv('DB_ENGINE', 'sqlite3')
+
+if DB_ENGINE == 'postgresql':
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.getenv('DB_NAME'),
+            'USER': os.getenv('DB_USER'),
+            'PASSWORD': os.getenv('DB_PASSWORD'),
+            'HOST': os.getenv('DB_HOST', 'localhost'),
+            'PORT': os.getenv('DB_PORT', '5432'),
+        }
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
 
 
 # ------------------------------------------------------------------------------
