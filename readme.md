@@ -23,6 +23,32 @@ Las dos partes viven en este mismo repositorio, en carpetas separadas (`frontend
 
 **Base de datos** — PostgreSQL, con el ORM propio de Django (no se usa SQLAlchemy ni Alembic en ningún punto del backend; las migraciones se manejan con `manage.py`).
 
+### Replicación PostgreSQL
+
+El directorio `infra/replication/` prepara dos instancias locales: un nodo primario para escrituras y una réplica física en modo hot standby para lecturas. Las credenciales se reciben por variables de entorno y no se guardan en el repositorio.
+
+```bash
+export DB_PASSWORD='una-clave-local'
+export REPLICATION_PASSWORD='otra-clave-local'
+./infra/replication/setup_local.sh
+./infra/replication/verify_replication.sh
+```
+
+Para conectar el Back-End a ambos nodos:
+
+```text
+DB_ENGINE=postgresql
+DB_HOST=127.0.0.1
+DB_PORT=55432
+DB_REPLICA_HOST=127.0.0.1
+DB_REPLICA_PORT=55433
+DB_NAME=elisa
+DB_USER=elisa_app
+DB_PASSWORD=<tu clave>
+```
+
+Con `DB_REPLICA_HOST` definido, el router de Django envía las escrituras y migraciones a `default` y las lecturas a `replica`. Sin esa variable, el sistema conserva la configuración de una sola base de datos. Para detener y eliminar el laboratorio local: `./infra/replication/stop_local.sh --clean`.
+
 Estructura de carpetas:
 
 ```
