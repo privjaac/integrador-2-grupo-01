@@ -127,16 +127,29 @@ WSGI_APPLICATION = 'core.wsgi.application'
 DB_ENGINE = os.getenv('DB_ENGINE', 'sqlite3')
 
 if DB_ENGINE == 'postgresql':
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.postgresql',
-            'NAME': os.getenv('DB_NAME'),
-            'USER': os.getenv('DB_USER'),
-            'PASSWORD': os.getenv('DB_PASSWORD'),
-            'HOST': os.getenv('DB_HOST', 'localhost'),
-            'PORT': os.getenv('DB_PORT', '5432'),
-        }
+    primary = {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': os.getenv('DB_NAME'),
+        'USER': os.getenv('DB_USER'),
+        'PASSWORD': os.getenv('DB_PASSWORD'),
+        'HOST': os.getenv('DB_HOST', 'localhost'),
+        'PORT': os.getenv('DB_PORT', '5432'),
+        'CONN_MAX_AGE': int(os.getenv('DB_CONN_MAX_AGE', '60')),
     }
+    DATABASES = {'default': primary}
+
+    # La réplica es opcional. Si no se define DB_REPLICA_HOST, el proyecto
+    # conserva el comportamiento anterior y todas las operaciones usan default.
+    replica_host = os.getenv('DB_REPLICA_HOST')
+    if replica_host:
+        DATABASES['replica'] = {
+            **primary,
+            'HOST': replica_host,
+            'PORT': os.getenv('DB_REPLICA_PORT', '5432'),
+            'CONN_MAX_AGE': int(os.getenv('DB_REPLICA_CONN_MAX_AGE', '60')),
+            'TEST': {'MIRROR': 'default'},
+        }
+        DATABASE_ROUTERS = ['core.db_router.PrimaryReplicaRouter']
 else:
     DATABASES = {
         'default': {

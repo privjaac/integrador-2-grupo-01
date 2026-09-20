@@ -10,6 +10,7 @@ Thumbs.db
 # Variables de entorno (nunca se suben, ni siquiera archivos de ejemplo)
 .env
 .env.*
+infra/replication/.runtime/
 
 # Documentacion interna de uso local del equipo (no se publica)
 BACKEND_STANDARDS.md
