@@ -13,7 +13,7 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "../../hooks/useAuth";
 import { can } from "../../utils/permissions";
-import { getRoles, createRole, updateRole } from "../../api/roles";
+import { getRoles, updateRole } from "../../api/roles";
 import Table from "../../components/ui/Table";
 import Badge from "../../components/ui/Badge";
 import Button from "../../components/ui/Button";
@@ -125,12 +125,6 @@ export default function RolesPage() {
       label: `L${r.hierarchy} — ${r.name}`,
     }));
 
-  const handleNewRole = () => {
-    setEditingRole(null);
-    setFormData(INITIAL_ROLE_FORM);
-    setErrors({});
-    setShowForm(true);
-  };
   const handleEditRole = (role) => {
     setEditingRole(role);
     setFormData({
@@ -185,19 +179,11 @@ export default function RolesPage() {
             : null,
         description: formData.description,
       };
-      if (editingRole) {
-        await updateRole(editingRole.id, payload);
-        setSuccessModal({
-          isOpen: true,
-          message: `Rol "${payload.name}" actualizado.`,
-        });
-      } else {
-        await createRole(payload);
-        setSuccessModal({
-          isOpen: true,
-          message: `Rol "${payload.name}" creado con nivel L${nextHierarchy}.`,
-        });
-      }
+      await updateRole(editingRole.id, payload);
+      setSuccessModal({
+        isOpen: true,
+        message: `Rol "${payload.name}" actualizado.`,
+      });
       handleCloseForm();
       loadRoles();
     } catch (err) {
@@ -246,25 +232,6 @@ export default function RolesPage() {
             Define los niveles de acceso del equipo ELOMUX
           </p>
         </div>
-        {can(user, "roles", "create") && (
-          <Button variant="primary" size="lg" onClick={handleNewRole}>
-            <svg
-              width="16"
-              height="16"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M12 4v16m8-8H4"
-              />
-            </svg>
-            Nuevo rol
-          </Button>
-        )}
       </div>
 
       {/* Tabla + Panel */}
@@ -588,7 +555,7 @@ export default function RolesPage() {
                     color: "#c5cdd8",
                   }}
                 >
-                  Permisos de creación
+                  Permisos de creación (fijos para cada nivel)
                 </label>
                 <label
                   style={{
@@ -609,7 +576,7 @@ export default function RolesPage() {
                     type="checkbox"
                     name="can_create_users"
                     checked={formData.can_create_users}
-                    onChange={handleChange}
+                    disabled
                     style={{
                       accentColor: "#3fe5e5",
                       width: "16px",
@@ -637,6 +604,7 @@ export default function RolesPage() {
                   name="min_role_create"
                   value={formData.min_role_create}
                   onChange={handleChange}
+                  disabled
                   error={errors.min_role_create}
                   placeholder="Seleccioná el nivel inicial..."
                   options={roleOptions}

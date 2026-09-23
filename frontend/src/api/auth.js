@@ -27,11 +27,13 @@ export async function loginApi(username, password) {
 
   return {
     ...response.data,
-    user: await getCurrentUser(),
+    user: await getCurrentUser(response.data.access_token),
   };
 }
 
-export async function getCurrentUser() {
-  const response = await axiosInstance.get("/api/users/me");
+export async function getCurrentUser(accessToken) {
+  const response = await axiosInstance.get("/api/users/me", {
+    headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+  });
   return response.data;
 }

@@ -151,8 +151,8 @@ export default function UserForm() {
       newErrors.last_name = "El apellido es requerido.";
     if (!formData.username.trim() || formData.username.trim().length < 3)
       newErrors.username = "El usuario debe tener al menos 3 caracteres.";
-    if (!isEditMode && (!formData.password || formData.password.length < 6))
-      newErrors.password = "La contraseña debe tener al menos 6 caracteres.";
+    if ((!isEditMode && !formData.password) || (formData.password && formData.password.length < 8))
+      newErrors.password = "La contraseña debe tener al menos 8 caracteres.";
     if (!formData.email.trim()) newErrors.email = "El correo es requerido.";
     else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email))
       newErrors.email = "El formato del correo no es válido.";

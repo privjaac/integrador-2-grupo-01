@@ -1,6 +1,6 @@
 import axiosInstance from "./axios";
 import rolesMock from "../mocks/roles.json";
-import { createApiError, nextId, normalizeList, shouldUseMock } from "./helpers";
+import { createApiError, normalizeList, shouldUseMock } from "./helpers";
 
 let mockRoles = normalizeList(rolesMock, "roles");
 
@@ -20,21 +20,6 @@ export async function getRoles() {
   return normalizeList(response.data, "roles").map(normalizeRole);
 }
 
-export async function createRole(payload) {
-  if (shouldUseMock()) {
-    const role = normalizeRole({
-      ...payload,
-      id: nextId(mockRoles),
-      level: `L${payload.hierarchy}`,
-    });
-    mockRoles = [...mockRoles, role];
-    return role;
-  }
-
-  const response = await axiosInstance.post("/api/roles/", payload);
-  return normalizeRole(response.data);
-}
-
 export async function updateRole(id, payload) {
   if (shouldUseMock()) {
     const index = mockRoles.findIndex((item) => String(item.id) === String(id));
@@ -43,6 +28,9 @@ export async function updateRole(id, payload) {
     return mockRoles[index];
   }
 
-  const response = await axiosInstance.put(`/api/roles/${id}`, payload);
+  const response = await axiosInstance.put(`/api/roles/${id}`, {
+    name: payload.name,
+    description: payload.description,
+  });
   return normalizeRole(response.data);
 }

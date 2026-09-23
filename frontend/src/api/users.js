@@ -1,4 +1,5 @@
 import axiosInstance from "./axios";
+import { getRoles } from "./roles";
 import usersMock from "../mocks/users.json";
 import {
   applyTextSearch,
@@ -9,6 +10,18 @@ import {
 } from "./helpers";
 
 let mockUsers = normalizeList(usersMock, "collaborators");
+
+async function toBackendPayload(payload) {
+  const { role, work_area, ...fields } = payload;
+  if (work_area !== undefined) fields.area = work_area;
+  if (role !== undefined) {
+    const roles = await getRoles();
+    const match = roles.find((item) => item.level === role);
+    if (!match) throw createApiError("El rol seleccionado no existe en el servidor.");
+    fields.role_id = match.id;
+  }
+  return fields;
+}
 
 export async function getCollaborators(filters = {}) {
   if (shouldUseMock()) {
@@ -59,7 +72,7 @@ export async function createCollaborator(payload) {
     return user;
   }
 
-  const response = await axiosInstance.post("/api/users/", payload);
+  const response = await axiosInstance.post("/api/users/", await toBackendPayload(payload));
   return response.data;
 }
 
@@ -75,7 +88,7 @@ export async function updateCollaborator(id, payload) {
     return mockUsers[index];
   }
 
-  const response = await axiosInstance.put(`/api/users/${id}`, payload);
+  const response = await axiosInstance.put(`/api/users/${id}`, await toBackendPayload(payload));
   return response.data;
 }
 

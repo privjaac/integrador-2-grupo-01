@@ -64,8 +64,12 @@ function parseDate(value) {
     return isNaN(value.getTime()) ? null : value;
   }
 
-  // Si es string o número, intenta convertirlo a Date
-  const parsed = new Date(value);
+  // Una fecha sin hora representa un día de calendario, no medianoche UTC.
+  // Usar mediodía UTC evita que en Lima aparezca como el día anterior.
+  const parsed =
+    typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)
+      ? new Date(`${value}T12:00:00Z`)
+      : new Date(value);
 
   // Verifica que la conversión resultó en una fecha válida
   // isNaN(date.getTime()) devuelve true si la fecha es inválida

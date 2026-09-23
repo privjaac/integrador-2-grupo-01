@@ -7,11 +7,11 @@ export async function getNextCupe(type) {
     return `${prefix}-${String(Math.floor(Math.random() * 90000000) + 10000000)}`;
   }
 
-  const response = await axiosInstance.get(`/api/cupe/next-${type}`);
+  const response = await axiosInstance.get(`/api/cupe-log/next-${type}`);
   return response.data.next_cupe || response.data.cupe || response.data;
 }
 
-export async function changeCupe(type, id, newCupe, reason) {
+export async function changeCupe(type, id, newCupe, reason, observations) {
   if (shouldUseMock()) {
     return {
       entity_type: type,
@@ -22,9 +22,12 @@ export async function changeCupe(type, id, newCupe, reason) {
     };
   }
 
-  const response = await axiosInstance.post(`/api/cupe/change-${type}/${id}`, {
+  const response = await axiosInstance.post('/api/cupe-log/', {
+    entity_type: type,
+    entity_id: Number(id),
     new_cupe: newCupe,
     reason,
+    observations: observations || null,
   });
   return response.data;
 }
@@ -34,6 +37,15 @@ export async function getCupeHistory(type, id) {
     return [];
   }
 
-  const response = await axiosInstance.get(`/api/cupe/history/${type}/${id}`);
-  return Array.isArray(response.data) ? response.data : response.data.history || [];
+  const response = await axiosInstance.get('/api/cupe-log/', {
+    params: { entity_type: type, entity_id: id },
+  });
+  const history = Array.isArray(response.data) ? response.data : response.data.history || [];
+  return history.map((entry) => ({
+    ...entry,
+    motivo: entry.reason,
+    observaciones: entry.observations,
+    authorized_by: entry.authorized_by_name,
+    created_at: entry.changed_at,
+  }));
 }
