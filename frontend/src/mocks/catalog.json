@@ -57,7 +57,7 @@
       "id": 1,
       "name": "Chat en vivo (WhatsApp flotante)",
       "extra_price": 20.0,
-      "web_type_id": null,
+      "web_type_ids": [],
       "is_active": true,
       "created_at": "2026-03-01T08:00:00Z"
     },
@@ -65,7 +65,7 @@
       "id": 2,
       "name": "Formulario de contacto",
       "extra_price": 15.0,
-      "web_type_id": null,
+      "web_type_ids": [],
       "is_active": true,
       "created_at": "2026-03-01T08:00:00Z"
     },
@@ -73,7 +73,7 @@
       "id": 3,
       "name": "Galería de imágenes",
       "extra_price": 25.0,
-      "web_type_id": null,
+      "web_type_ids": [],
       "is_active": true,
       "created_at": "2026-03-01T08:00:00Z"
     },
@@ -81,7 +81,7 @@
       "id": 4,
       "name": "Integración con redes sociales",
       "extra_price": 30.0,
-      "web_type_id": null,
+      "web_type_ids": [],
       "is_active": true,
       "created_at": "2026-03-01T08:00:00Z"
     },
@@ -89,7 +89,7 @@
       "id": 5,
       "name": "Sistema de reservas online",
       "extra_price": 80.0,
-      "web_type_id": 3,
+      "web_type_ids": [3],
       "is_active": true,
       "created_at": "2026-03-01T08:00:00Z"
     },
@@ -97,7 +97,7 @@
       "id": 6,
       "name": "Pasarela de pagos (Culqi/Mercado Pago)",
       "extra_price": 120.0,
-      "web_type_id": 3,
+      "web_type_ids": [3],
       "is_active": true,
       "created_at": "2026-03-01T08:00:00Z"
     },
@@ -105,7 +105,7 @@
       "id": 7,
       "name": "SEO avanzado",
       "extra_price": 50.0,
-      "web_type_id": null,
+      "web_type_ids": [],
       "is_active": true,
       "created_at": "2026-03-01T08:00:00Z"
     },
@@ -113,7 +113,7 @@
       "id": 8,
       "name": "Soporte prioritario 24/7",
       "extra_price": 40.0,
-      "web_type_id": null,
+      "web_type_ids": [],
       "is_active": true,
       "created_at": "2026-03-01T08:00:00Z"
     }

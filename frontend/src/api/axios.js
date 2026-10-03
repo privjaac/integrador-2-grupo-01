@@ -1,4 +1,5 @@
 import axios from "axios";
+import { normalizeApiError } from "./errorMessage";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8001";
 
@@ -20,10 +21,7 @@ axiosInstance.interceptors.request.use((config) => {
 axiosInstance.interceptors.response.use(
   (response) => response,
   (error) => {
-    error.userMessage =
-      error.response?.data?.detail ||
-      error.message ||
-      "No se pudo completar la operación.";
+    error.userMessage = normalizeApiError(error);
     return Promise.reject(error);
   },
 );

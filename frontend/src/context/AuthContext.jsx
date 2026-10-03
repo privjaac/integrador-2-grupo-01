@@ -45,6 +45,7 @@ export function AuthProvider({ children }) {
   const logout = useCallback(() => {
     setToken(null);
     setUser(null);
+    window.__elisa_token__ = null;
     localStorage.removeItem(KEY_USER);
     localStorage.removeItem(KEY_REFRESH);
     localStorage.removeItem(KEY_LAST_CLICK);

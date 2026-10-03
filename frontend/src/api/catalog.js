@@ -34,7 +34,10 @@ export async function getWebFeatures(webTypeId = null, activeOnly = false) {
     let features = [...mockWebFeatures];
     if (webTypeId) {
       features = features.filter(
-        (item) => !item.web_type_id || String(item.web_type_id) === String(webTypeId),
+        (item) => {
+          const ids = item.web_type_ids || [];
+          return ids.length === 0 || ids.some((id) => String(id) === String(webTypeId));
+        },
       );
     }
     return activeOnly
@@ -53,7 +56,12 @@ export async function getWebFeatures(webTypeId = null, activeOnly = false) {
 
 export async function createWebFeature(payload) {
   if (shouldUseMock()) {
-    const item = { ...payload, id: nextId(mockWebFeatures), is_active: true };
+    const item = {
+      ...payload,
+      web_type_ids: payload.web_type_ids || [],
+      id: nextId(mockWebFeatures),
+      is_active: true,
+    };
     mockWebFeatures = [...mockWebFeatures, item];
     return item;
   }
@@ -78,7 +86,13 @@ export async function updateWebFeature(id, payload) {
   if (shouldUseMock()) {
     const index = mockWebFeatures.findIndex((item) => String(item.id) === String(id));
     if (index === -1) throw createApiError("Funcionalidad no encontrada.");
-    mockWebFeatures[index] = { ...mockWebFeatures[index], ...payload };
+    mockWebFeatures[index] = {
+      ...mockWebFeatures[index],
+      ...payload,
+      web_type_ids: Object.hasOwn(payload, "web_type_ids")
+        ? payload.web_type_ids
+        : mockWebFeatures[index].web_type_ids || [],
+    };
     return mockWebFeatures[index];
   }
 

@@ -282,10 +282,7 @@ export default function CatalogPage() {
 
   const handleNewFeature = () => {
     setEditingFeature(null);
-    setFeatureForm({
-      ...INITIAL_FEATURE_FORM,
-      web_type_ids: webTypes.map((t) => t.id),
-    });
+    setFeatureForm(INITIAL_FEATURE_FORM);
     setFeatureErrors({});
     setShowFeatureForm(true);
     setShowTypeForm(false);
@@ -295,9 +292,7 @@ export default function CatalogPage() {
     setFeatureForm({
       name: feature.name,
       extra_price: feature.extra_price,
-      web_type_ids:
-        feature.web_type_ids ||
-        (feature.web_type_id ? [feature.web_type_id] : []),
+      web_type_ids: feature.web_type_ids || [],
       is_active: feature.is_active,
     });
     setFeatureErrors({});
@@ -868,11 +863,7 @@ export default function CatalogPage() {
                             }}
                           >
                             {(() => {
-                              const ids =
-                                feature.web_type_ids ||
-                                (feature.web_type_id
-                                  ? [feature.web_type_id]
-                                  : []);
+                              const ids = feature.web_type_ids || [];
                               if (ids.length === 0) return "Todos";
                               const first =
                                 webTypes.find((t) => t.id === ids[0])?.name ||

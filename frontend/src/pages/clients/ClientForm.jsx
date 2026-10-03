@@ -462,8 +462,6 @@ export default function ClientForm() {
               options={[
                 { value: "DNI", label: "DNI" },
                 { value: "RUC", label: "RUC" },
-                { value: "CE", label: "Carné de Extranjería" },
-                { value: "Pasaporte", label: "Pasaporte" },
               ]}
               required
             />
