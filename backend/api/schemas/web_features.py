@@ -15,9 +15,11 @@
 #   - WebFeatureResponse → datos que devuelve la API al consultar
 # ==============================================================================
 
-from pydantic import BaseModel
+from decimal import Decimal
+from typing import Annotated, Optional
+
+from pydantic import BaseModel, Field
 from api.schemas.safe_input import SafeInputModel
-from typing import Optional
 from datetime import datetime
 
 
@@ -34,9 +36,10 @@ from datetime import datetime
 # }
 # ------------------------------------------------------------------------------
 class WebFeatureCreate(SafeInputModel):
-    name: str               # Nombre de la funcionalidad
-    extra_price: float      # Precio adicional en soles
+    name: str = Field(min_length=1, max_length=100)
+    extra_price: Annotated[Decimal, Field(max_digits=8, decimal_places=2)]
     is_active: bool = True  # Por defecto activa al crear
+    web_type_ids: list[Annotated[int, Field(gt=0)]] = Field(default_factory=list)
 
 
 # ------------------------------------------------------------------------------
@@ -46,9 +49,14 @@ class WebFeatureCreate(SafeInputModel):
 # sin tocar el nombre, o desactivarla sin cambiar nada más.
 # ------------------------------------------------------------------------------
 class WebFeatureUpdate(SafeInputModel):
-    name: Optional[str] = None
-    extra_price: Optional[float] = None
+    non_nullable_update_fields = frozenset({
+        'name', 'extra_price', 'is_active', 'web_type_ids',
+    })
+
+    name: Optional[Annotated[str, Field(min_length=1, max_length=100)]] = None
+    extra_price: Optional[Annotated[Decimal, Field(max_digits=8, decimal_places=2)]] = None
     is_active: Optional[bool] = None
+    web_type_ids: Optional[list[Annotated[int, Field(gt=0)]]] = None
 
 
 # ------------------------------------------------------------------------------
@@ -61,6 +69,7 @@ class WebFeatureResponse(BaseModel):
     name: str
     extra_price: float
     is_active: bool
+    web_type_ids: list[int]
     created_at: datetime
 
     class Config:

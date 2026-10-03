@@ -11,10 +11,19 @@
 #   - ClientList      → versión resumida para listar clientes
 # ==============================================================================
 
+from decimal import Decimal
+from typing import Annotated, Literal, Optional
+
 from pydantic import BaseModel, EmailStr, Field
 from api.schemas.safe_input import SafeInputModel
-from typing import Optional
 from datetime import datetime, date
+
+
+Money8 = Annotated[Decimal, Field(max_digits=8, decimal_places=2)]
+Money10 = Annotated[Decimal, Field(max_digits=10, decimal_places=2)]
+ClientDocumentType = Literal['DNI', 'RUC']
+ClientPlan = Literal['alquiler', 'venta']
+ClientStatus = Literal['activo', 'desarrollo', 'inactivo']
 
 
 # ------------------------------------------------------------------------------
@@ -32,21 +41,19 @@ from datetime import datetime, date
 # ------------------------------------------------------------------------------
 class ClientCreate(SafeInputModel):
     name: str = Field(min_length=1, max_length=200)
-    document_type: str                      # 'DNI' o 'RUC'
-    document_number: str                    # Número de documento
-    phone: Optional[str] = None
-    email: Optional[EmailStr] = None
-    web_type_id: int                        # ID del tipo de web — obligatorio
-    plan: str                               # 'alquiler' o 'venta'
-    status: str = 'desarrollo'              # Por defecto en desarrollo
-    base_price: Optional[float] = None      # Precio base del tipo de web
-    initial_payment: Optional[float] = None # Monto que pagó al registrarse
+    document_type: ClientDocumentType
+    document_number: str = Field(min_length=1, max_length=20)
+    phone: Optional[str] = Field(default=None, max_length=20)
+    email: Optional[EmailStr] = Field(default=None, max_length=254)
+    web_type_id: int = Field(gt=0)
+    plan: ClientPlan
+    status: ClientStatus = 'desarrollo'
+    initial_payment: Optional[Money10] = None
     registration_date: Optional[date] = None  # Día que pagó el inicial
     delivery_date: Optional[date] = None    # Día que se entregó la web
-    payment_frequency: Optional[str] = None # 'mensual' o 'anual'
-    domain_price: Optional[float] = None    # NULL=sin dominio, 0=gratis, monto=precio
+    domain_price: Optional[Money8] = None
     notes: Optional[str] = None
-    feature_ids: list[int] = Field(default_factory=list)
+    feature_ids: list[Annotated[int, Field(gt=0)]] = Field(default_factory=list)
 
 
 # ------------------------------------------------------------------------------
@@ -56,25 +63,24 @@ class ClientCreate(SafeInputModel):
 # o llenar la delivery_date cuando la web esté lista.
 # ------------------------------------------------------------------------------
 class ClientUpdate(SafeInputModel):
-    name: Optional[str] = None
-    document_type: Optional[str] = None
-    document_number: Optional[str] = None
-    phone: Optional[str] = None
-    email: Optional[EmailStr] = None
-    web_type_id: Optional[int] = None
-    plan: Optional[str] = None
-    status: Optional[str] = None
-    base_price: Optional[float] = None
-    initial_payment: Optional[float] = None
-    extra_price: Optional[float] = None
-    total_price: Optional[float] = None
+    non_nullable_update_fields = frozenset({
+        'name', 'document_type', 'document_number', 'web_type_id', 'plan', 'status',
+    })
+
+    name: Optional[Annotated[str, Field(min_length=1, max_length=200)]] = None
+    document_type: Optional[ClientDocumentType] = None
+    document_number: Optional[Annotated[str, Field(min_length=1, max_length=20)]] = None
+    phone: Optional[Annotated[str, Field(max_length=20)]] = None
+    email: Optional[Annotated[EmailStr, Field(max_length=254)]] = None
+    web_type_id: Optional[Annotated[int, Field(gt=0)]] = None
+    plan: Optional[ClientPlan] = None
+    status: Optional[ClientStatus] = None
+    initial_payment: Optional[Money10] = None
     registration_date: Optional[date] = None
     delivery_date: Optional[date] = None    # El trabajador llena esto manualmente
-    next_payment_date: Optional[date] = None
-    payment_frequency: Optional[str] = None
-    domain_price: Optional[float] = None
+    domain_price: Optional[Money8] = None
     notes: Optional[str] = None
-    feature_ids: Optional[list[int]] = None
+    feature_ids: Optional[list[Annotated[int, Field(gt=0)]]] = None
 
 
 # ------------------------------------------------------------------------------

@@ -19,6 +19,7 @@
 
 from fastapi import HTTPException, status, Depends
 from api.router import APIRouter
+from django.db import IntegrityError, transaction
 from typing import Optional
 from django.db.models import Q
 
@@ -241,24 +242,29 @@ def create_collaborator(
     # Crear el colaborador con la contraseña encriptada
     # hash_password convierte la contraseña en texto plano a bcrypt
     # Nunca guardamos la contraseña original — solo el hash
-    collaborator = Collaborator.objects.create(
-        first_name=data.first_name,
-        last_name=data.last_name,
-        document_type=data.document_type,
-        document_number=data.document_number,
-        email=data.email,
-        phone=data.phone,
-        city=data.city,
-        username=data.username,
-        password_hash=hash_password(data.password),
-        role=role,
-        area=data.area,
-        is_active=True,  # Todo colaborador nuevo empieza activo
-    )
-
-    # Generar CUPE usando el ID que Django asignó automáticamente
-    collaborator.cupe = generate_cupe(collaborator.id)
-    collaborator.save()
+    try:
+        with transaction.atomic():
+            collaborator = Collaborator.objects.create(
+                first_name=data.first_name,
+                last_name=data.last_name,
+                document_type=data.document_type,
+                document_number=data.document_number,
+                email=data.email,
+                phone=data.phone,
+                city=data.city,
+                username=data.username,
+                password_hash=hash_password(data.password),
+                role=role,
+                area=data.area,
+                is_active=True,
+            )
+            collaborator.cupe = generate_cupe(collaborator.id)
+            collaborator.save()
+    except IntegrityError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail='El username, email, documento o CUPE ya está registrado',
+        ) from exc
 
     return collaborator_to_response(collaborator)
 
@@ -297,6 +303,18 @@ def update_collaborator(
         require_lower_role(user, collaborator.role)
 
     update_data = data.model_dump(exclude_unset=True)
+    unique_fields = {
+        'username': 'El username ya está en uso',
+        'email': 'El email ya está registrado',
+        'document_number': 'El documento ya está registrado',
+    }
+    for field, message in unique_fields.items():
+        if (
+            field in update_data
+            and Collaborator.objects.filter(**{field: update_data[field]})
+            .exclude(id=collaborator_id).exists()
+        ):
+            raise HTTPException(status_code=400, detail=message)
     if 'is_active' in update_data and user.get('role') != 'L1':
         raise HTTPException(status_code=403, detail='Solo Superadmin puede cambiar el estado')
     if update_data.get('is_active') is False and collaborator.role and collaborator.role.level == 'L1':
@@ -325,7 +343,13 @@ def update_collaborator(
         else:
             setattr(collaborator, field, value)
 
-    collaborator.save()
+    try:
+        collaborator.save()
+    except IntegrityError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail='El username, email, documento o CUPE ya está registrado',
+        ) from exc
 
     return collaborator_to_response(collaborator)
 

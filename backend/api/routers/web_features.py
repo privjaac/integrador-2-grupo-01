@@ -19,10 +19,12 @@
 from fastapi import HTTPException, status, Depends
 from api.router import APIRouter
 from typing import Optional
+from django.db import IntegrityError, transaction
+from django.db.models import Q
 
 from api.dependencies import get_current_user
 from api.schemas.web_features import WebFeatureCreate, WebFeatureUpdate, WebFeatureResponse
-from clients.models import WebFeature
+from clients.models import WebCatalog, WebFeature
 
 
 router = APIRouter()
@@ -48,8 +50,18 @@ def feature_to_response(feature: WebFeature) -> dict:
         'name': feature.name,
         'extra_price': float(feature.extra_price),
         'is_active': feature.is_active,
+        'web_type_ids': [web_type.id for web_type in feature.web_types.all()],
         'created_at': feature.created_at,
     }
+
+
+def selected_web_types(web_type_ids: list[int]) -> list[WebCatalog]:
+    if len(web_type_ids) != len(set(web_type_ids)):
+        raise HTTPException(status_code=400, detail='Hay tipos de web duplicados')
+    web_types = list(WebCatalog.objects.filter(id__in=web_type_ids))
+    if len(web_types) != len(web_type_ids):
+        raise HTTPException(status_code=400, detail='Uno o más tipos de web no existen')
+    return web_types
 
 
 # ------------------------------------------------------------------------------
@@ -65,13 +77,18 @@ def feature_to_response(feature: WebFeature) -> dict:
 @router.get('/', response_model=list[WebFeatureResponse])
 def get_web_features(
     is_active: Optional[bool] = None,  # None → muestra todas
+    web_type_id: Optional[int] = None,
     user: dict = Depends(get_current_user)
 ):
-    features = WebFeature.objects.all()
+    features = WebFeature.objects.prefetch_related('web_types').all()
 
     # is not None → permite filtrar por False sin que se ignore
     if is_active is not None:
         features = features.filter(is_active=is_active)
+    if web_type_id is not None:
+        features = features.filter(
+            Q(web_types__id=web_type_id) | Q(web_types__isnull=True)
+        ).distinct()
 
     return [feature_to_response(f) for f in features]
 
@@ -90,7 +107,7 @@ def get_web_feature(
     user: dict = Depends(get_current_user)
 ):
     try:
-        feature = WebFeature.objects.get(id=feature_id)
+        feature = WebFeature.objects.prefetch_related('web_types').get(id=feature_id)
     except WebFeature.DoesNotExist:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -118,6 +135,7 @@ def create_web_feature(
     user: dict = Depends(get_current_user)
 ):
     require_superadmin(user)
+    web_types = selected_web_types(data.web_type_ids)
 
     # Verificar que no exista otra funcionalidad con el mismo nombre
     if WebFeature.objects.filter(name=data.name).exists():
@@ -126,11 +144,19 @@ def create_web_feature(
             detail=f'Ya existe una funcionalidad con el nombre {data.name}'
         )
 
-    feature = WebFeature.objects.create(
-        name=data.name,
-        extra_price=data.extra_price,
-        is_active=data.is_active,
-    )
+    try:
+        with transaction.atomic():
+            feature = WebFeature.objects.create(
+                name=data.name,
+                extra_price=data.extra_price,
+                is_active=data.is_active,
+            )
+            feature.web_types.set(web_types)
+    except IntegrityError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f'Ya existe una funcionalidad con el nombre {data.name}',
+        ) from exc
 
     return feature_to_response(feature)
 
@@ -157,7 +183,7 @@ def update_web_feature(
     require_superadmin(user)
 
     try:
-        feature = WebFeature.objects.get(id=feature_id)
+        feature = WebFeature.objects.prefetch_related('web_types').get(id=feature_id)
     except WebFeature.DoesNotExist:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -165,6 +191,8 @@ def update_web_feature(
         )
 
     update_data = data.model_dump(exclude_unset=True)
+    web_type_ids = update_data.pop('web_type_ids', None)
+    web_types = selected_web_types(web_type_ids) if web_type_ids is not None else None
 
     # Si viene un nuevo nombre verificar que no esté en uso por otra funcionalidad
     if 'name' in update_data:
@@ -174,10 +202,18 @@ def update_web_feature(
                 detail=f'Ya existe una funcionalidad con el nombre {update_data["name"]}'
             )
 
-    for field, value in update_data.items():
-        setattr(feature, field, value)
-
-    feature.save()
+    try:
+        with transaction.atomic():
+            for field, value in update_data.items():
+                setattr(feature, field, value)
+            feature.save()
+            if web_types is not None:
+                feature.web_types.set(web_types)
+    except IntegrityError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail='Ya existe una funcionalidad con ese nombre',
+        ) from exc
 
     return feature_to_response(feature)
 

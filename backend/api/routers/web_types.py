@@ -18,6 +18,7 @@
 
 from fastapi import HTTPException, status, Depends
 from api.router import APIRouter
+from django.db import IntegrityError
 from typing import Optional
 
 from api.dependencies import get_current_user
@@ -129,12 +130,18 @@ def create_web_type(
             detail=f'Ya existe un tipo de web con el nombre {data.name}'
         )
 
-    web_type = WebCatalog.objects.create(
-        name=data.name,
-        base_price_rent=data.base_price_rent,
-        base_price_sale=data.base_price_sale,
-        is_active=data.is_active,
-    )
+    try:
+        web_type = WebCatalog.objects.create(
+            name=data.name,
+            base_price_rent=data.base_price_rent,
+            base_price_sale=data.base_price_sale,
+            is_active=data.is_active,
+        )
+    except IntegrityError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f'Ya existe un tipo de web con el nombre {data.name}',
+        ) from exc
 
     return web_type_to_response(web_type)
 
@@ -182,7 +189,13 @@ def update_web_type(
     for field, value in update_data.items():
         setattr(web_type, field, value)
 
-    web_type.save()
+    try:
+        web_type.save()
+    except IntegrityError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail='Ya existe un tipo de web con ese nombre',
+        ) from exc
 
     return web_type_to_response(web_type)
 

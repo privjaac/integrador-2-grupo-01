@@ -2,10 +2,14 @@
 
 from html import unescape
 
-from pydantic import BaseModel, field_validator
+from typing import ClassVar
+
+from pydantic import BaseModel, field_validator, model_validator
 
 
 class SafeInputModel(BaseModel):
+    non_nullable_update_fields: ClassVar[frozenset[str]] = frozenset()
+
     @field_validator('*', mode='before')
     @classmethod
     def reject_html_input(cls, value, info):
@@ -35,3 +39,14 @@ class SafeInputModel(BaseModel):
         if value is not None and len(value.encode('utf-8')) > 72:
             raise ValueError('La contraseña no puede superar 72 bytes en UTF-8')
         return value
+
+    @model_validator(mode='after')
+    def reject_explicit_null_for_required_fields(self):
+        invalid_fields = sorted(
+            field for field in self.non_nullable_update_fields
+            if field in self.model_fields_set and getattr(self, field) is None
+        )
+        if invalid_fields:
+            fields = ', '.join(invalid_fields)
+            raise ValueError(f'Los campos obligatorios no aceptan null: {fields}')
+        return self

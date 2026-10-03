@@ -16,10 +16,15 @@
 # Al editar no todos los campos son obligatorios.
 # ==============================================================================
 
+from typing import Annotated, Literal, Optional
+
 from pydantic import BaseModel, EmailStr, Field, model_validator
 from api.schemas.safe_input import SafeInputModel
-from typing import Optional
 from datetime import datetime
+
+
+DocumentType = Literal['DNI', 'Pasaporte', 'CE']
+City = Literal['Lima', 'Arequipa', 'Cusco', 'Trujillo', 'Piura', 'Ica']
 
 
 # ------------------------------------------------------------------------------
@@ -31,15 +36,15 @@ from datetime import datetime
 class CollaboratorCreate(SafeInputModel):
     first_name: str = Field(min_length=1, max_length=100)
     last_name: str = Field(min_length=1, max_length=100)
-    document_type: str        # 'DNI', 'Pasaporte' o 'CE'
-    document_number: str
-    email: EmailStr           # EmailStr valida que tenga formato de email válido
-    phone: Optional[str] = None   # Optional → puede no mandarse, queda como None
-    city: str
-    username: str = Field(min_length=3, max_length=150)
+    document_type: DocumentType
+    document_number: str = Field(min_length=1, max_length=20)
+    email: EmailStr = Field(max_length=254)
+    phone: Optional[str] = Field(default=None, max_length=20)
+    city: City
+    username: str = Field(min_length=3, max_length=50)
     password: str = Field(min_length=8)  # Se almacena únicamente como hash bcrypt
-    role_id: int              # ID del rol asignado (referencia a la tabla roles)
-    area: Optional[str] = None
+    role_id: int = Field(gt=0)
+    area: Optional[str] = Field(default=None, max_length=100)
 
 
 # ------------------------------------------------------------------------------
@@ -50,17 +55,22 @@ class CollaboratorCreate(SafeInputModel):
 # por ejemplo, sin tocar los demás campos.
 # ------------------------------------------------------------------------------
 class CollaboratorUpdate(SafeInputModel):
-    first_name: Optional[str] = None
-    last_name: Optional[str] = None
-    document_type: Optional[str] = None
-    document_number: Optional[str] = None
-    email: Optional[EmailStr] = None
-    phone: Optional[str] = None
-    city: Optional[str] = None
-    username: Optional[str] = None
+    non_nullable_update_fields = frozenset({
+        'first_name', 'last_name', 'document_type', 'document_number',
+        'email', 'city', 'username', 'password', 'is_active',
+    })
+
+    first_name: Optional[Annotated[str, Field(min_length=1, max_length=100)]] = None
+    last_name: Optional[Annotated[str, Field(min_length=1, max_length=100)]] = None
+    document_type: Optional[DocumentType] = None
+    document_number: Optional[Annotated[str, Field(min_length=1, max_length=20)]] = None
+    email: Optional[Annotated[EmailStr, Field(max_length=254)]] = None
+    phone: Optional[Annotated[str, Field(max_length=20)]] = None
+    city: Optional[City] = None
+    username: Optional[Annotated[str, Field(min_length=3, max_length=50)]] = None
     password: Optional[str] = Field(default=None, min_length=8)
-    role_id: Optional[int] = None
-    area: Optional[str] = None
+    role_id: Optional[Annotated[int, Field(gt=0)]] = None
+    area: Optional[Annotated[str, Field(max_length=100)]] = None
     is_active: Optional[bool] = None
 
     @model_validator(mode='after')

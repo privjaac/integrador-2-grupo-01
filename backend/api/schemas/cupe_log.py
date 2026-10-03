@@ -14,9 +14,10 @@
 #   - CupeLogList     → versión resumida para listar el historial
 # ==============================================================================
 
-from pydantic import BaseModel
+from typing import Annotated, Literal, Optional
+
+from pydantic import BaseModel, Field
 from api.schemas.safe_input import SafeInputModel
-from typing import Optional
 from datetime import datetime
 
 
@@ -39,16 +40,20 @@ from datetime import datetime
 # ------------------------------------------------------------------------------
 class CupeLogCreate(SafeInputModel):
     # 'client' o 'collaborator' — a quién se le cambia el CUPE
-    entity_type: str
+    entity_type: Literal['client', 'collaborator']
 
     # ID del cliente o colaborador al que se le cambia el CUPE
-    entity_id: int
+    entity_id: int = Field(gt=0)
 
     # El nuevo CUPE que se quiere asignar
-    new_cupe: str
+    new_cupe: str = Field(min_length=12, max_length=15)
 
     # Motivo del cambio
-    reason: str  # 'error_generacion', 'reingreso', 'correccion_admin', 'otro'
+    reason: Literal[
+        'error_generacion', 'reingreso', 'correccion_admin',
+        'correccion_administrativa', 'solicitud_cliente',
+        'migracion_sistema', 'otro',
+    ]
 
     # Observaciones adicionales — obligatorio si reason='otro'
     observations: Optional[str] = None

@@ -13,9 +13,11 @@
 #   - WebCatalogResponse → datos que devuelve la API al consultar
 # ==============================================================================
 
-from pydantic import BaseModel
+from decimal import Decimal
+from typing import Annotated, Optional
+
+from pydantic import BaseModel, Field
 from api.schemas.safe_input import SafeInputModel
-from typing import Optional
 from datetime import datetime
 
 
@@ -32,9 +34,9 @@ from datetime import datetime
 # }
 # ------------------------------------------------------------------------------
 class WebCatalogCreate(SafeInputModel):
-    name: str                    # Nombre del tipo, ej: 'Pollería'
-    base_price_rent: float       # Precio mensual en soles (plan alquiler)
-    base_price_sale: float       # Precio de venta única en soles (plan venta)
+    name: str = Field(min_length=1, max_length=100)
+    base_price_rent: Annotated[Decimal, Field(max_digits=8, decimal_places=2)]
+    base_price_sale: Annotated[Decimal, Field(max_digits=8, decimal_places=2)]
     is_active: bool = True       # Por defecto activo al crear
 
 
@@ -45,9 +47,13 @@ class WebCatalogCreate(SafeInputModel):
 # sin cambiar el nombre, o desactivarlo sin tocar nada más.
 # ------------------------------------------------------------------------------
 class WebCatalogUpdate(SafeInputModel):
-    name: Optional[str] = None
-    base_price_rent: Optional[float] = None
-    base_price_sale: Optional[float] = None
+    non_nullable_update_fields = frozenset({
+        'name', 'base_price_rent', 'base_price_sale', 'is_active',
+    })
+
+    name: Optional[Annotated[str, Field(min_length=1, max_length=100)]] = None
+    base_price_rent: Optional[Annotated[Decimal, Field(max_digits=8, decimal_places=2)]] = None
+    base_price_sale: Optional[Annotated[Decimal, Field(max_digits=8, decimal_places=2)]] = None
     is_active: Optional[bool] = None
 
 

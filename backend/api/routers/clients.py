@@ -22,7 +22,7 @@ from fastapi import HTTPException, status, Depends
 from api.router import APIRouter
 from typing import Optional
 from decimal import Decimal
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from datetime import date, timedelta
 from dateutil.relativedelta import relativedelta
@@ -49,12 +49,33 @@ def generate_cupe(id: int) -> str:
     return f"CLI-{str(code).zfill(8)}"
 
 
-def selected_features(feature_ids: list[int]) -> list[WebFeature]:
+def validate_feature_applicability(
+    features: list[WebFeature], web_type: WebCatalog
+) -> None:
+    invalid = []
+    for feature in features:
+        allowed_type_ids = {item.id for item in feature.web_types.all()}
+        if allowed_type_ids and web_type.id not in allowed_type_ids:
+            invalid.append(feature.name)
+    if invalid:
+        raise HTTPException(
+            status_code=400,
+            detail='Una funcionalidad no aplica al tipo de web seleccionado',
+        )
+
+
+def selected_features(
+    feature_ids: list[int], web_type: WebCatalog
+) -> list[WebFeature]:
     if len(feature_ids) != len(set(feature_ids)):
         raise HTTPException(status_code=400, detail='Hay funcionalidades duplicadas')
-    features = list(WebFeature.objects.filter(id__in=feature_ids, is_active=True))
+    features = list(
+        WebFeature.objects.filter(id__in=feature_ids, is_active=True)
+        .prefetch_related('web_types')
+    )
     if len(features) != len(feature_ids):
         raise HTTPException(status_code=400, detail='Una funcionalidad no existe o está inactiva')
+    validate_feature_applicability(features, web_type)
     return features
 
 
@@ -204,8 +225,6 @@ def create_client(
     if user.get('role') not in ('L1', 'L2', 'L3', 'L4'):
         raise HTTPException(status_code=403, detail='No tienes permiso para crear clientes')
 
-    features = selected_features(data.feature_ids)
-
     # Verificar que no exista otro cliente con el mismo documento
     if Client.objects.filter(document_number=data.document_number).exists():
         raise HTTPException(
@@ -227,6 +246,8 @@ def create_client(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f'El tipo de web {web_type.name} no está disponible'
         )
+
+    features = selected_features(data.feature_ids, web_type)
 
     # Obtener el colaborador que está creando el cliente desde el token
     collaborator_id = user.get('collaborator_id')
@@ -264,27 +285,33 @@ def create_client(
 
     # Crear el cliente en PostgreSQL
     with transaction.atomic():
-        client = Client.objects.create(
-            name=data.name,
-            document_type=data.document_type,
-            document_number=data.document_number,
-            phone=data.phone,
-            email=data.email,
-            web_type=web_type,
-            plan=data.plan,
-            status=data.status,
-            base_price=base_price,
-            initial_payment=data.initial_payment,
-            extra_price=extra_price,
-            total_price=total_price,
-            registration_date=data.registration_date,
-            delivery_date=data.delivery_date,
-            next_payment_date=next_payment_date,
-            payment_frequency=payment_frequency,
-            domain_price=data.domain_price,
-            notes=data.notes,
-            created_by=created_by,
-        )
+        try:
+            client = Client.objects.create(
+                name=data.name,
+                document_type=data.document_type,
+                document_number=data.document_number,
+                phone=data.phone,
+                email=data.email,
+                web_type=web_type,
+                plan=data.plan,
+                status=data.status,
+                base_price=base_price,
+                initial_payment=data.initial_payment,
+                extra_price=extra_price,
+                total_price=total_price,
+                registration_date=data.registration_date,
+                delivery_date=data.delivery_date,
+                next_payment_date=next_payment_date,
+                payment_frequency=payment_frequency,
+                domain_price=data.domain_price,
+                notes=data.notes,
+                created_by=created_by,
+            )
+        except IntegrityError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail='El documento o CUPE del cliente ya está registrado',
+            ) from exc
         client.cupe = generate_cupe(client.id)
         client.save(update_fields=['cupe', 'updated_at'])
         ClientFeature.objects.bulk_create([
@@ -327,20 +354,42 @@ def update_client(
 
     update_data = data.model_dump(exclude_unset=True)
     feature_ids = update_data.pop('feature_ids', None)
-    features = selected_features(feature_ids) if feature_ids is not None else None
     for calculated_field in ('base_price', 'extra_price', 'total_price', 'payment_frequency', 'next_payment_date'):
         update_data.pop(calculated_field, None)
+    if (
+        'document_number' in update_data
+        and Client.objects.filter(document_number=update_data['document_number'])
+        .exclude(id=client_id).exists()
+    ):
+        raise HTTPException(status_code=400, detail='El documento ya está registrado')
+
+    target_web_type = client.web_type
+    if 'web_type_id' in update_data:
+        try:
+            target_web_type = WebCatalog.objects.get(
+                id=update_data['web_type_id'], is_active=True,
+            )
+        except WebCatalog.DoesNotExist:
+            raise HTTPException(
+                status_code=400,
+                detail=f'Tipo de web con id {update_data["web_type_id"]} no encontrado',
+            )
+
+    features = (
+        selected_features(feature_ids, target_web_type)
+        if feature_ids is not None else None
+    )
+    if features is None and target_web_type.id != client.web_type_id:
+        existing_features = list(
+            WebFeature.objects.filter(client_features__client=client)
+            .prefetch_related('web_types')
+        )
+        validate_feature_applicability(existing_features, target_web_type)
 
     with transaction.atomic():
         for field, value in update_data.items():
             if field == 'web_type_id':
-                try:
-                    client.web_type = WebCatalog.objects.get(id=value, is_active=True)
-                except WebCatalog.DoesNotExist:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f'Tipo de web con id {value} no encontrado'
-                    )
+                client.web_type = target_web_type
             else:
                 setattr(client, field, value)
 
@@ -371,7 +420,13 @@ def update_client(
             if client.delivery_date and client.status == 'desarrollo':
                 client.status = 'activo'
 
-        client.save()
+        try:
+            client.save()
+        except IntegrityError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail='El documento o CUPE del cliente ya está registrado',
+            ) from exc
 
     client = Client.objects.select_related('web_type', 'created_by').prefetch_related('features__feature').get(id=client.id)
     return client_to_response(client)

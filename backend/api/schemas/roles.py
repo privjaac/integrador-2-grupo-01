@@ -10,9 +10,10 @@
 # Hay schemas para editar y consultar los cinco niveles fijos.
 # ==============================================================================
 
-from pydantic import BaseModel
+from typing import Annotated, Optional
+
+from pydantic import BaseModel, Field
 from api.schemas.safe_input import SafeInputModel
-from typing import Optional
 from datetime import datetime
 
 
@@ -22,7 +23,9 @@ from datetime import datetime
 # El nivel jerárquico no puede modificarse.
 # ------------------------------------------------------------------------------
 class RoleUpdate(SafeInputModel):
-    name: Optional[str] = None
+    non_nullable_update_fields = frozenset({'name', 'description'})
+
+    name: Optional[Annotated[str, Field(min_length=1, max_length=50)]] = None
     description: Optional[str] = None
 
 

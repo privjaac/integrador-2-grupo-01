@@ -325,13 +325,13 @@ class Client(models.Model):
 # ------------------------------------------------------------------------------
 # WEBFEATURE — Funcionalidades adicionales
 #
-# Catálogo independiente de funcionalidades extra que se pueden agregar
-# a cualquier cliente por un precio adicional.
+# Catálogo de funcionalidades extra que se pueden agregar a clientes.
+# Sin tipos asociados la funcionalidad es global; con asociaciones sólo
+# aplica a los tipos de web seleccionados.
 #
 # Ejemplos: Sistema de citas, Carrito de compras, Pasarela de pagos
 #
-# No depende de ningún tipo de web — cualquier funcionalidad se puede
-# agregar a cualquier cliente. La relación va en ClientFeature.
+# ClientFeature registra las funcionalidades contratadas por cada cliente.
 # ------------------------------------------------------------------------------
 class WebFeature(models.Model):
 
@@ -343,6 +343,12 @@ class WebFeature(models.Model):
 
     # Si está disponible para asignar a clientes
     is_active = models.BooleanField(default=True)
+
+    web_types = models.ManyToManyField(
+        WebCatalog,
+        blank=True,
+        related_name='available_features',
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
 

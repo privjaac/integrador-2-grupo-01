@@ -14,6 +14,7 @@
 
 from fastapi import HTTPException, status, Depends
 from api.router import APIRouter
+from django.db import IntegrityError
 
 from api.dependencies import get_current_user
 from api.schemas.roles import RoleUpdate, RoleResponse
@@ -132,6 +133,12 @@ def update_role(
     for field, value in update_data.items():
         setattr(role, field, value)
 
-    role.save()
+    try:
+        role.save()
+    except IntegrityError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail='Ya existe un rol con ese nombre',
+        ) from exc
 
     return role_to_response(role)
