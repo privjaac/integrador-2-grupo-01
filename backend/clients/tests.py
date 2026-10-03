@@ -60,6 +60,42 @@ class ApiContractTests(TransactionTestCase):
         )
         self.assertEqual(inactive.status_code, 401)
 
+    def test_refresh_token_returns_new_access_token(self):
+        tokens = self.login()
+        response = self.api.post(
+            '/api/auth/refresh',
+            json={'refresh_token': tokens['refresh_token']},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        refreshed = response.json()
+        self.assertIsInstance(refreshed['access_token'], str)
+        self.assertTrue(refreshed['access_token'])
+        self.assertEqual(refreshed['refresh_token'], tokens['refresh_token'])
+        self.assertEqual(refreshed['token_type'], 'bearer')
+
+    def test_access_token_cannot_be_used_as_refresh_token(self):
+        tokens = self.login()
+        response = self.api.post(
+            '/api/auth/refresh',
+            json={'refresh_token': tokens['access_token']},
+        )
+        self.assertEqual(response.status_code, 401, response.text)
+
+    def test_invalid_refresh_token_is_rejected(self):
+        response = self.api.post(
+            '/api/auth/refresh',
+            json={'refresh_token': 'invalid-refresh-token'},
+        )
+        self.assertEqual(response.status_code, 401, response.text)
+
+    def test_logout_returns_success_message(self):
+        response = self.api.post('/api/auth/logout')
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            response.json(),
+            {'message': 'Sesión cerrada correctamente'},
+        )
+
     def test_collaborator_list_returns_users_and_supports_filters(self):
         token = self.login()['access_token']
         headers = {'Authorization': f'Bearer {token}'}
