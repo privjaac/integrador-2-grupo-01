@@ -1,0 +1,35 @@
+# Environments and secrets (including nested copies).
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+
+# Local Python environments and caches.
+**/venv
+**/.venv
+**/env
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.cache
+**/.coverage
+**/.coverage.*
+**/htmlcov
+
+# Version control, editors and local artifacts.
+**/.git
+**/.idea
+**/.vscode
+**/*.sqlite3
+**/*.sqlite3-*
+**/*.log
+**/logs
+**/node_modules
+**/dist
+**/output
+**/.DS_Store
+**/Thumbs.db
