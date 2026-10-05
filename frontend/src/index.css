@@ -25,14 +25,13 @@
    Todo se configura desde el CSS usando @import y directivas @theme.
    Esta línea importa el motor completo de Tailwind.
    ============================================================================== */
-@import url("https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&family=Rajdhani:wght@300;400;500;600;700&family=Share+Tech+Mono&display=swap");
 @import "tailwindcss";
 @source "../src";
 
 /* ==============================================================================
    SECCIÓN 2 — IMPORTACIÓN DE TIPOGRAFÍAS
   
-   Las fuentes vienen de Google Fonts. Se cargan aquí para que estén
+   Las fuentes vienen de Google Fonts. Se cargan en index.html para que estén
    disponibles en todo el proyecto.
   
    Fuentes del sistema ELISA:
