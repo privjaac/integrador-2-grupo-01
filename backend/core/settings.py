@@ -195,17 +195,26 @@ if DB_REPLICA_ENABLED and not DB_REPLICA_HOST:
         'DB_REPLICA_HOST es obligatorio cuando DB_REPLICA_ENABLED=True.'
     )
 
-DATABASES = {
-    # Alias obligatorio de Django: canal exclusivo de escritura (maestro).
-    'default': _postgres_database(
-        DB_MASTER_HOST, DB_MASTER_PORT, 'DB_WRITE', 1, 5
-    ),
-    # El alias se declara también en local para mantener una configuración uniforme.
-    # Con la réplica desactivada, el router no lo utiliza.
-    'replica': _postgres_database(
-        DB_REPLICA_HOST or DB_MASTER_HOST, DB_REPLICA_PORT, 'DB_READ', 2, 10
-    ),
-}
+DB_ENGINE = os.getenv('DB_ENGINE', 'sqlite3')
+
+if DB_ENGINE == 'postgresql':
+    DATABASES = {
+        'default': _postgres_database(
+            DB_MASTER_HOST, DB_MASTER_PORT, 'DB_WRITE', 1, 5
+        ),
+        'replica': _postgres_database(
+            DB_REPLICA_HOST or DB_MASTER_HOST, DB_REPLICA_PORT, 'DB_READ', 2, 10
+        ),
+    }
+else:
+    _sqlite_database = {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
+    }
+    DATABASES = {
+        'default': _sqlite_database,
+        'replica': _sqlite_database,
+    }
 
 DATABASE_ROUTERS = ['core.database_router.PrimaryReplicaRouter']
 
