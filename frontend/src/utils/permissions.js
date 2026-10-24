@@ -55,14 +55,14 @@ export const ROLES = {
     level: 2,
     label: "Scrum Master",
     // Scrum Master ve todo excepto gestión de roles
-    routes: ["/clientes", "/usuarios", "/catalogo"],
+    routes: ["/clientes", "/proyectos", "/usuarios", "/catalogo"],
   },
 
   L3: {
     level: 3,
     label: "Tech Lead",
     // Tech Lead gestiona clientes, usuarios y catálogo
-    routes: ["/clientes", "/usuarios", "/catalogo"],
+    routes: ["/clientes", "/proyectos", "/usuarios", "/catalogo"],
   },
 
   L4: {

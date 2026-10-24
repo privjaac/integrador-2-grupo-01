@@ -56,6 +56,7 @@ from api.routers import (
     web_features,
     client_features,
     cupe_log,
+    projects,
 )
 
 
@@ -175,6 +176,12 @@ app.include_router(
     cupe_log.router,
     prefix='/api/cupe-log',
     tags=['Historial CUPE']
+)
+
+app.include_router(
+    projects.router,
+    prefix='/api/projects',
+    tags=['Proyectos']
 )
 
 

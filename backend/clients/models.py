@@ -322,6 +322,39 @@ class Client(models.Model):
         return f"{self.cupe} — {self.name}"
 
 
+class Project(models.Model):
+    STATUS_CHOICES = [
+        ('Planificado', 'Planificado'),
+        ('En progreso', 'En progreso'),
+        ('En pausa', 'En pausa'),
+        ('Completado', 'Completado'),
+        ('Cancelado', 'Cancelado'),
+    ]
+
+    client = models.ForeignKey(
+        Client,
+        on_delete=models.PROTECT,
+        related_name='projects',
+    )
+    name = models.CharField(max_length=200)
+    objective = models.TextField(blank=True, null=True)
+    scope = models.TextField(blank=True, null=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='Planificado')
+
+    class Meta:
+        db_table = 'projects'
+        ordering = ['id']
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(status__in=['Planificado', 'En progreso', 'En pausa', 'Completado', 'Cancelado']),
+                name='project_status_valid',
+            ),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
 # ------------------------------------------------------------------------------
 # WEBFEATURE — Funcionalidades adicionales
 #
