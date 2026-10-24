@@ -1,0 +1,57 @@
+name: CI ELISA - APF3 S22
+
+on:
+  push:
+    branches:
+      - main
+      - release/apf2
+  pull_request:
+    branches:
+      - main
+      - release/apf2
+
+permissions:
+  contents: read
+
+jobs:
+  backend-tests:
+    name: Backend - Django/FastAPI tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Run isolated backend tests (no production DB)
+        run: python manage.py test clients --settings=core.test_settings -v 2
+
+  frontend-build-tests:
+    name: Frontend - unit tests and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Run existing frontend tests
+        run: npm run test:error-message
+      - name: Build frontend
+        run: npm run build
