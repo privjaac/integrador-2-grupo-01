@@ -131,6 +131,14 @@ const PERMISSIONS = {
     delete: ["L1"],
   },
 
+  // ── MÓDULO PROYECTOS (F2-01) ─────────────────────────────────────────────
+  projects: {
+    view: ["L2", "L3"],
+    create: ["L2"],
+    edit: [],
+    delete: [],
+  },
+
   // ── MÓDULO CATÁLOGO ──────────────────────────────────────────────────────
   catalog: {
     // L1 a L3 pueden ver el catálogo

@@ -1,10 +1,14 @@
 import { useEffect, useState } from "react";
 import { getClients } from "../../api/clients";
+import { useAuth } from "../../hooks/useAuth";
+import { can } from "../../utils/permissions";
 import { createProject, getProjects } from "../../api/projects";
 
 const fieldStyle = { padding: "10px 12px", background: "#0b0d1a", color: "white", border: "1px solid #34394a", borderRadius: 6 };
 
 export default function ProjectsPage() {
+  const { user } = useAuth();
+  const canCreateProject = can(user, "projects", "create");
   const [projects, setProjects] = useState([]);
   const [clients, setClients] = useState([]);
   const [form, setForm] = useState({ client_id: "", name: "", objective: "", scope: "" });
@@ -40,6 +44,7 @@ export default function ProjectsPage() {
     <h1>Proyectos</h1>
     <p style={{ color: "#aab2c5" }}>Los proyectos nuevos se crean en estado Planificado.</p>
     {error && <p role="alert" style={{ color: "#ff718b" }}>{String(error)}</p>}
+    {canCreateProject && (
     <form onSubmit={submit} style={{ display: "grid", gap: 12, margin: "24px 0", maxWidth: 600 }}>
       <h2>Crear proyecto</h2>
       <select required value={form.client_id} onChange={(e) => setForm({ ...form, client_id: e.target.value })} style={fieldStyle}>
@@ -50,6 +55,7 @@ export default function ProjectsPage() {
       <textarea placeholder="Alcance (opcional)" value={form.scope} onChange={(e) => setForm({ ...form, scope: e.target.value })} style={fieldStyle} />
       <button type="submit" style={{ ...fieldStyle, cursor: "pointer" }}>Crear proyecto</button>
     </form>
+    )}
     <h2>Proyectos registrados</h2>
     {loading ? <p>Cargando…</p> : projects.length === 0 ? <p>No hay proyectos registrados.</p> : <div style={{ overflowX: "auto" }}><table style={{ width: "100%", borderCollapse: "collapse" }}><thead><tr>{["Nombre", "Cliente", "Estado", "Objetivo", "Alcance"].map((label) => <th key={label} style={{ textAlign: "left", padding: 10, borderBottom: "1px solid #34394a" }}>{label}</th>)}</tr></thead><tbody>{projects.map((project) => <tr key={project.id}>{[project.name, project.client_name, project.status, project.objective || "—", project.scope || "—"].map((value, index) => <td key={index} style={{ padding: 10, borderBottom: "1px solid #202434" }}>{value}</td>)}</tr>)}</tbody></table></div>}
   </section>;
