@@ -35,6 +35,8 @@ def create_project(payload: ProjectCreate, user: dict = Depends(get_current_user
     require_project_creator(user)
     if not payload.name.strip():
         raise HTTPException(status_code=422, detail='El nombre del proyecto es obligatorio')
+    if payload.status not in (None, 'Planificado'):
+        raise HTTPException(status_code=422, detail='Todo proyecto debe crearse en estado Planificado')
     try:
         client = Client.objects.get(pk=payload.client_id)
     except Client.DoesNotExist:

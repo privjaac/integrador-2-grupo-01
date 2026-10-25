@@ -11,6 +11,10 @@ class ProjectCreate(SafeInputModel):
     name: str = Field(min_length=1, max_length=200)
     objective: Optional[str] = None
     scope: Optional[str] = None
+    status: Optional[Literal[
+        'Planificado', 'En ejecución', 'En validación técnica',
+        'Listo para entrega', 'Entregado',
+    ]] = None
 
 
 class ProjectResponse(BaseModel):
@@ -20,7 +24,10 @@ class ProjectResponse(BaseModel):
     name: str
     objective: Optional[str]
     scope: Optional[str]
-    status: Literal['Planificado', 'En progreso', 'En pausa', 'Completado', 'Cancelado']
+    status: Literal[
+        'Planificado', 'En ejecución', 'En validación técnica',
+        'Listo para entrega', 'Entregado',
+    ]
 
 
 class ProjectListItem(ProjectResponse):

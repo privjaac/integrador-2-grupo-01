@@ -22,6 +22,12 @@ class ProjectModelTests(TestCase):
             web_type=web_type, plan='alquiler',
         )
 
+    def test_model_exposes_exact_official_status_catalog(self):
+        self.assertEqual(
+            [value for value, _label in Project.STATUS_CHOICES],
+            ['Planificado', 'En ejecución', 'En validación técnica', 'Listo para entrega', 'Entregado'],
+        )
+
     def test_project_defaults_to_planned_and_stores_optional_fields(self):
         project = Project.objects.create(client=self.client_record, name='Sitio institucional')
 
@@ -31,10 +37,12 @@ class ProjectModelTests(TestCase):
         self.assertEqual(self.client_record.projects.get(), project)
 
     def test_database_rejects_status_outside_approved_catalog(self):
-        with self.assertRaises(IntegrityError), transaction.atomic():
-            Project.objects.create(
-                client=self.client_record, name='Estado inválido', status='Iniciado'
-            )
+        for invalid_status in ('Iniciado', 'En progreso', 'En pausa', 'Completado', 'Cancelado'):
+            with self.subTest(status=invalid_status):
+                with self.assertRaises(IntegrityError), transaction.atomic():
+                    Project.objects.create(
+                        client=self.client_record, name='Estado inválido', status=invalid_status
+                    )
 
     def test_client_cannot_be_physically_deleted_while_projects_exist(self):
         Project.objects.create(client=self.client_record, name='Protegido')
@@ -113,6 +121,15 @@ class ProjectApiTests(TransactionTestCase):
             '/api/projects/', headers=self.headers,
             json={'client_id': self.client_record.id, 'name': '   '},
         )
+        invalid_initial_statuses = [
+            self.api.post(
+                '/api/projects/', headers=self.headers,
+                json={'client_id': self.client_record.id, 'name': 'Estado no inicial', 'status': state},
+            )
+            for state in ('En ejecución', 'En validación técnica', 'Listo para entrega', 'Entregado',
+                          'En progreso', 'En pausa', 'Completado', 'Cancelado')
+        ]
 
         self.assertEqual(missing_client.status_code, 404, missing_client.text)
         self.assertEqual(blank_name.status_code, 422, blank_name.text)
+        self.assertTrue(all(response.status_code == 422 for response in invalid_initial_statuses))

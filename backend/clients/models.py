@@ -325,10 +325,10 @@ class Client(models.Model):
 class Project(models.Model):
     STATUS_CHOICES = [
         ('Planificado', 'Planificado'),
-        ('En progreso', 'En progreso'),
-        ('En pausa', 'En pausa'),
-        ('Completado', 'Completado'),
-        ('Cancelado', 'Cancelado'),
+        ('En ejecución', 'En ejecución'),
+        ('En validación técnica', 'En validación técnica'),
+        ('Listo para entrega', 'Listo para entrega'),
+        ('Entregado', 'Entregado'),
     ]
 
     client = models.ForeignKey(
@@ -339,14 +339,17 @@ class Project(models.Model):
     name = models.CharField(max_length=200)
     objective = models.TextField(blank=True, null=True)
     scope = models.TextField(blank=True, null=True)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='Planificado')
+    status = models.CharField(max_length=24, choices=STATUS_CHOICES, default='Planificado')
 
     class Meta:
         db_table = 'projects'
         ordering = ['id']
         constraints = [
             models.CheckConstraint(
-                condition=models.Q(status__in=['Planificado', 'En progreso', 'En pausa', 'Completado', 'Cancelado']),
+                condition=models.Q(status__in=[
+                    'Planificado', 'En ejecución', 'En validación técnica',
+                    'Listo para entrega', 'Entregado',
+                ]),
                 name='project_status_valid',
             ),
         ]
