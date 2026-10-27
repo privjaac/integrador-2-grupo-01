@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import { getClients } from "../../api/clients";
 import { designateCoordinator, getTaskContext, removeCoordinator } from "../../api/tasks";
-import { createProject, enterTechnicalValidation, getProjects } from "../../api/projects";
+import {
+  createCommercialAuthorization, createProject, enterTechnicalValidation,
+  getCommercialAuthorizations, getProjects, startProject, withdrawCommercialAuthorization,
+} from "../../api/projects";
 import { useAuth } from "../../hooks/useAuth";
 import { can } from "../../utils/permissions";
 
@@ -11,11 +14,16 @@ export default function ProjectsPage() {
   const { user } = useAuth();
   const canCreate = can(user, "projects", "create");
   const canStartValidation = can(user, "projects", "enterTechnicalValidation");
+  const canAuthorizeStart = can(user, "projects", "authorizeProjectStart");
+  const canStartProject = can(user, "projects", "startProject");
   const [projects, setProjects] = useState([]);
   const [clients, setClients] = useState([]);
+  const [commercialAuthorizations, setCommercialAuthorizations] = useState({});
   const [taskContext, setTaskContext] = useState({ coordinators: [], coordination_assignments: [] });
   const [coordinatorSelection, setCoordinatorSelection] = useState({});
   const [validationInputs, setValidationInputs] = useState({});
+  const [authorizationInputs, setAuthorizationInputs] = useState({});
+  const [startInputs, setStartInputs] = useState({});
   const [form, setForm] = useState({ client_id: "", name: "", objective: "", scope: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -27,9 +35,21 @@ export default function ProjectsPage() {
         getProjects(),
         canCreate ? getClients() : Promise.resolve([]),
       ]);
+      const context = ["L2", "L3"].includes(user?.role)
+        ? await getTaskContext()
+        : { coordinators: [], coordination_assignments: [], projects: [] };
       setProjects(projectRows);
       setClients(clientRows);
-      if (user?.role === "L2") setTaskContext(await getTaskContext());
+      setTaskContext(context);
+      const authorizationProjectIds = user?.role === "L3"
+        ? new Set((context.projects || []).map((item) => item.id))
+        : user?.role === "L2" ? new Set(projectRows.map((item) => item.id)) : new Set();
+      const authorizationRows = await Promise.all(
+        projectRows.filter((project) => authorizationProjectIds.has(project.id)).map(async (project) => [
+          project.id, await getCommercialAuthorizations(project.id),
+        ]),
+      );
+      setCommercialAuthorizations(Object.fromEntries(authorizationRows));
     } catch (err) {
       setError(err.response?.data?.detail || "No se pudieron cargar los proyectos.");
     } finally { setLoading(false); }
@@ -81,6 +101,70 @@ export default function ProjectsPage() {
     }
   }
 
+  async function submitCommercialAuthorization(projectId) {
+    setError("");
+    try {
+      const input = authorizationInputs[projectId] || {};
+      await createCommercialAuthorization(projectId, {
+        ...input,
+        effective_at: new Date(input.effective_at).toISOString(),
+        expires_at: input.expires_at ? new Date(input.expires_at).toISOString() : null,
+        replaces_authorization_id: input.replaces_authorization_id ? Number(input.replaces_authorization_id) : null,
+        replacement_reason: input.replaces_authorization_id ? input.replacement_reason : null,
+      });
+      await refresh();
+      setAuthorizationInputs((items) => ({ ...items, [projectId]: {} }));
+    } catch (err) {
+      setError(err.userMessage || err.response?.data?.detail || "No se pudo registrar la habilitación comercial.");
+    }
+  }
+
+  async function withdrawAuthorization(projectId, authorizationId) {
+    const reason = window.prompt("Motivo para retirar esta habilitación comercial:");
+    if (!reason?.trim()) return;
+    setError("");
+    try {
+      await withdrawCommercialAuthorization(projectId, authorizationId, reason.trim());
+      await refresh();
+    } catch (err) {
+      setError(err.userMessage || err.response?.data?.detail || "No se pudo retirar la habilitación comercial.");
+    }
+  }
+
+  async function submitProjectStart(projectId) {
+    setError("");
+    try {
+      const input = startInputs[projectId] || {};
+      const updated = await startProject(projectId, {
+        ...input,
+        commercial_authorization_id: Number(input.commercial_authorization_id),
+      });
+      setProjects((items) => items.map((item) => item.id === projectId ? updated : item));
+      setStartInputs((items) => ({ ...items, [projectId]: {} }));
+      await refresh();
+    } catch (err) {
+      setError(err.userMessage || err.response?.data?.detail || "No se pudo registrar el inicio del proyecto.");
+    }
+  }
+
+  function updateAuthorization(projectId, field, value) {
+    setAuthorizationInputs((items) => ({ ...items, [projectId]: { ...items[projectId], [field]: value } }));
+  }
+
+  function updateStart(projectId, field, value) {
+    setStartInputs((items) => ({ ...items, [projectId]: { ...items[projectId], [field]: value } }));
+  }
+
+  function localDateTime(minutesAhead = 10) {
+    const value = new Date(Date.now() + minutesAhead * 60_000);
+    value.setMinutes(value.getMinutes() - value.getTimezoneOffset());
+    return value.toISOString().slice(0, 16);
+  }
+
+  const scopedProjects = user?.role === "L3"
+    ? new Set((taskContext.projects || []).map((item) => item.id))
+    : new Set();
+
   const validationFields = [
     ["scope_within_current_commitment", "El alcance está incluido en el compromiso vigente"],
     ["criteria_identifiable", "Los requisitos y criterios de validación son identificables"],
@@ -127,6 +211,56 @@ export default function ProjectsPage() {
         </div>
         {(project.events || []).map((event, index) => <p key={`${event.event_type}-${index}`} style={{ color: "#aab2c5" }}>Historial: {event.previous_status} → {event.new_status} · {event.actor_name} · {new Date(event.occurred_at).toLocaleString()} · {event.reason}</p>)}
       </article>)}
+    </section>}
+    {canAuthorizeStart && <section style={{ marginTop: 28 }}>
+      <h2>Habilitación comercial para iniciar</h2>
+      <p style={{ color: "#aab2c5" }}>L2 registra la autorización positiva y sus referencias. Este acto no inicia automáticamente el proyecto.</p>
+      {projects.map((project) => {
+        const rows = commercialAuthorizations[project.id] || [];
+        const input = authorizationInputs[project.id] || {};
+        const replaceable = rows.filter((item) => !item.events?.some((event) => ["retirada", "sustituida"].includes(event.event_type)));
+        return <article key={project.id} style={{ border: "1px solid #34394a", borderRadius: 8, padding: 16, margin: "12px 0" }}>
+          <h3>{project.name}</h3>
+          {rows.map((item) => <div key={item.id} style={{ color: "#aab2c5", marginBottom: 8 }}>
+            <p>#{item.id} · {item.authorized_scope} · L2 {item.authorized_by_name} · efectiva {new Date(item.effective_at).toLocaleString()}{item.expires_at ? ` · vence ${new Date(item.expires_at).toLocaleString()}` : " · sin vencimiento específico"}</p>
+            <p>Compromiso: {item.commitment_reference} · Condiciones: {item.start_conditions} · Evidencia: {item.evidence_reference}</p>
+            {item.events?.map((event, index) => <p key={index}>{event.event_type} por {event.actor_name} · {event.reason}</p>)}
+            {!item.events?.length && <button type="button" onClick={() => withdrawAuthorization(project.id, item.id)} style={fieldStyle}>Retirar habilitación</button>}
+          </div>)}
+          <form onSubmit={(event) => { event.preventDefault(); submitCommercialAuthorization(project.id); }} style={{ display: "grid", gap: 8, maxWidth: 700 }}>
+            <label>Alcance autorizado<textarea required value={input.authorized_scope || ""} onChange={(event) => updateAuthorization(project.id, "authorized_scope", event.target.value)} style={fieldStyle} /></label>
+            <label>Referencia del compromiso<input required value={input.commitment_reference || ""} onChange={(event) => updateAuthorization(project.id, "commitment_reference", event.target.value)} style={fieldStyle} /></label>
+            <label>Condiciones de inicio acreditadas<textarea required value={input.start_conditions || ""} onChange={(event) => updateAuthorization(project.id, "start_conditions", event.target.value)} style={fieldStyle} /></label>
+            <label style={{ display: "flex", gap: 8 }}><input type="checkbox" checked={input.start_conditions_accredited || false} onChange={(event) => updateAuthorization(project.id, "start_conditions_accredited", event.target.checked)} />Confirmo que las condiciones de inicio documentadas están satisfechas</label>
+            <label>Referencia documental<input required value={input.evidence_reference || ""} onChange={(event) => updateAuthorization(project.id, "evidence_reference", event.target.value)} style={fieldStyle} /></label>
+            <label>Efectiva desde<input type="datetime-local" required value={input.effective_at || localDateTime()} onChange={(event) => updateAuthorization(project.id, "effective_at", event.target.value)} style={fieldStyle} /></label>
+            <label>Vencimiento específico documentado (opcional)<input type="datetime-local" value={input.expires_at || ""} onChange={(event) => updateAuthorization(project.id, "expires_at", event.target.value)} style={fieldStyle} /></label>
+            {replaceable.length > 0 && <label>Sustituir habilitación (opcional)<select value={input.replaces_authorization_id || ""} onChange={(event) => updateAuthorization(project.id, "replaces_authorization_id", event.target.value)} style={fieldStyle}><option value="">Nueva habilitación independiente</option>{replaceable.map((item) => <option key={item.id} value={item.id}>#{item.id} · {item.authorized_scope}</option>)}</select></label>}
+            {input.replaces_authorization_id && <label>Motivo de sustitución<input required value={input.replacement_reason || ""} onChange={(event) => updateAuthorization(project.id, "replacement_reason", event.target.value)} style={fieldStyle} /></label>}
+            <button type="submit" disabled={!input.start_conditions_accredited} style={fieldStyle}>Registrar habilitación positiva</button>
+          </form>
+        </article>;
+      })}
+    </section>}
+    {canStartProject && projects.some((project) => (taskContext.projects || []).some((item) => item.id === project.id) && project.status === "Planificado") && <section style={{ marginTop: 28 }}>
+      <h2>Inicio de ejecución</h2>
+      <p style={{ color: "#aab2c5" }}>L3 registra la preparación técnica inicial; la información comercial detallada permanece reservada a L2.</p>
+      {projects.filter((project) => (taskContext.projects || []).some((item) => item.id === project.id) && project.status === "Planificado").map((project) => {
+        const rows = commercialAuthorizations[project.id] || [];
+        const input = startInputs[project.id] || {};
+        return <article key={project.id} style={{ border: "1px solid #34394a", borderRadius: 8, padding: 16, margin: "12px 0" }}><h3>{project.name}</h3>
+          {rows.length === 0 ? <p>No hay habilitación comercial aplicable disponible.</p> : <div style={{ display: "grid", gap: 8, maxWidth: 700 }}>
+            <label>Habilitación L2<select required value={input.commercial_authorization_id || ""} onChange={(event) => updateStart(project.id, "commercial_authorization_id", event.target.value)} style={fieldStyle}><option value="">Seleccionar</option>{rows.map((item) => <option key={item.id} value={item.id}>#{item.id} · {item.authorized_scope} · efectiva {new Date(item.effective_at).toLocaleString()}</option>)}</select></label>
+            <label>Actividades iniciales<textarea required value={input.initial_activities || ""} onChange={(event) => updateStart(project.id, "initial_activities", event.target.value)} style={fieldStyle} /></label>
+            <label><input type="checkbox" checked={input.initial_scope_within_authorization || false} onChange={(event) => updateStart(project.id, "initial_scope_within_authorization", event.target.checked)} />Confirmo que las actividades iniciales están comprendidas en el alcance autorizado</label>
+            {[["responsible_parties_identified", "Responsables identificados"], ["resources_ready", "Recursos listos"], ["dependencies_ready", "Dependencias iniciales listas"]].map(([field, label]) => <label key={field}><input type="checkbox" checked={input[field] || false} onChange={(event) => updateStart(project.id, field, event.target.checked)} /> {label}</label>)}
+            <label><input type="checkbox" checked={input.restrictions_assessed || false} onChange={(event) => updateStart(project.id, "restrictions_assessed", event.target.checked)} />Evalué las restricciones relevantes para el inicio</label>
+            <label>Motivo<textarea required value={input.reason || ""} onChange={(event) => updateStart(project.id, "reason", event.target.value)} style={fieldStyle} /></label>
+            <label>Evidencia técnica<input required value={input.evidence || ""} onChange={(event) => updateStart(project.id, "evidence", event.target.value)} style={fieldStyle} /></label>
+            <button type="button" disabled={!input.commercial_authorization_id || !input.initial_activities?.trim() || !input.reason?.trim() || !input.evidence?.trim() || !input.initial_scope_within_authorization || !input.responsible_parties_identified || !input.resources_ready || !input.dependencies_ready || !input.restrictions_assessed} onClick={() => submitProjectStart(project.id)} style={fieldStyle}>Iniciar ejecución</button>
+          </div>}
+        </article>;
+      })}
     </section>}
   </section>;
 }

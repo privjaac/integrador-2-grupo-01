@@ -383,6 +383,59 @@ class ProjectCoordination(models.Model):
         )]
 
 
+class ProjectCommercialAuthorization(models.Model):
+    """Positive L2 evidence that a project's authorized work may start."""
+
+    project = models.ForeignKey(
+        Project, on_delete=models.PROTECT, related_name='commercial_authorizations',
+    )
+    authorized_by = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='project_commercial_authorizations',
+    )
+    authorized_at = models.DateTimeField(auto_now_add=True)
+    effective_at = models.DateTimeField()
+    expires_at = models.DateTimeField(null=True, blank=True)
+    authorized_scope = models.TextField()
+    commitment_reference = models.CharField(max_length=200)
+    start_conditions = models.TextField()
+    start_conditions_accredited = models.BooleanField(default=False)
+    evidence_reference = models.CharField(max_length=300)
+
+    class Meta:
+        db_table = 'project_commercial_authorizations'
+        ordering = ['-authorized_at', '-id']
+
+
+class ProjectCommercialAuthorizationEvent(models.Model):
+    EVENT_CHOICES = [
+        ('retirada', 'Retirada'),
+        ('sustituida', 'Sustituida'),
+    ]
+
+    authorization = models.ForeignKey(
+        ProjectCommercialAuthorization, on_delete=models.PROTECT, related_name='events',
+    )
+    event_type = models.CharField(max_length=12, choices=EVENT_CHOICES)
+    actor = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='commercial_authorization_events',
+    )
+    reason = models.TextField()
+    replacement = models.ForeignKey(
+        ProjectCommercialAuthorization, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='replaced_authorizations',
+    )
+    occurred_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'project_commercial_authorization_events'
+        ordering = ['occurred_at', 'id']
+        constraints = [models.UniqueConstraint(
+            fields=['authorization'],
+            condition=models.Q(event_type__in=['retirada', 'sustituida']),
+            name='project_auth_single_close_event',
+        )]
+
+
 class ProjectLeadership(models.Model):
     """Explicit L3→L4 delegation within an L3-coordinated project."""
 
@@ -416,6 +469,10 @@ class ProjectEvent(models.Model):
     event_type = models.CharField(max_length=40)
     project = models.ForeignKey(Project, on_delete=models.PROTECT, related_name='events')
     actor = models.ForeignKey(Collaborator, on_delete=models.PROTECT, related_name='project_events')
+    commercial_authorization = models.ForeignKey(
+        ProjectCommercialAuthorization, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='project_transitions',
+    )
     previous_status = models.CharField(max_length=24)
     new_status = models.CharField(max_length=24)
     reason = models.TextField()

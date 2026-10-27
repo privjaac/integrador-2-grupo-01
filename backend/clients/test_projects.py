@@ -1,6 +1,8 @@
 from django.db import IntegrityError, transaction
 from django.db.models.deletion import ProtectedError
 from django.test import TestCase, TransactionTestCase
+from django.utils import timezone
+from datetime import timedelta
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -9,7 +11,9 @@ from api.routers.projects import require_project_creator, require_project_reader
 from api.main import app
 from api.routers.auth import hash_password
 from fastapi.testclient import TestClient
-from clients.models import Client, Collaborator, Project, ProjectCoordination, ProjectEvent, Role, WebCatalog
+from clients.models import (Client, Collaborator, Project, ProjectCommercialAuthorization,
+                            ProjectCommercialAuthorizationEvent, ProjectCoordination,
+                            ProjectEvent, Role, WebCatalog)
 
 
 class ProjectModelTests(TestCase):
@@ -265,3 +269,191 @@ class ProjectApiTests(TransactionTestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(Project.objects.get(pk=project.id).status, 'En ejecución')
         self.assertEqual(ProjectEvent.objects.count(), 0)
+
+    @staticmethod
+    def start_payload(authorization_id, **overrides):
+        payload = {
+            'commercial_authorization_id': authorization_id,
+            'initial_activities': 'Planificación y configuración inicial',
+            'initial_scope_within_authorization': True,
+            'responsible_parties_identified': True,
+            'resources_ready': True,
+            'dependencies_ready': True,
+            'restrictions_assessed': True,
+            'reason': 'Inicio autorizado con preparación suficiente',
+            'evidence': 'Acta técnica inicial',
+        }
+        payload.update(overrides)
+        return payload
+
+    def create_authorization(self, project, **overrides):
+        payload = {
+            'authorized_scope': 'Sitio institucional y módulos acordados',
+            'commitment_reference': 'COMP-2026-41',
+            'start_conditions': 'Condiciones de inicio revisadas y acreditadas',
+            'start_conditions_accredited': True,
+            'evidence_reference': 'EXP-41/ANEXO-2',
+            'effective_at': (timezone.now() + timedelta(minutes=2)).isoformat(),
+        }
+        payload.update(overrides)
+        return self.api.post(
+            f'/api/projects/{project.id}/commercial-authorizations',
+            headers=self.tokens['L2'], json=payload,
+        )
+
+    def coordinate_l3(self, project):
+        return ProjectCoordination.objects.create(
+            project=project,
+            coordinator=Collaborator.objects.get(username='project-api-L3'),
+            assigned_by=Collaborator.objects.get(username='project-api-L2'),
+        )
+
+    def test_l2_authorization_and_scoped_l3_start_are_explicit_and_historical(self):
+        project = Project.objects.create(client=self.client_record, name='Inicio B4-09')
+        self.coordinate_l3(project)
+        authorized = self.create_authorization(project)
+        self.assertEqual(authorized.status_code, 201, authorized.text)
+        auth_id = authorized.json()['id']
+        # Make its effectivity immediate in the test fixture.
+        ProjectCommercialAuthorization.objects.filter(pk=auth_id).update(effective_at=timezone.now() - timedelta(seconds=1))
+        l3_list = self.api.get(f'/api/projects/{project.id}/commercial-authorizations', headers=self.tokens['L3'])
+        self.assertEqual(l3_list.status_code, 200, l3_list.text)
+        self.assertEqual([row['id'] for row in l3_list.json()], [auth_id])
+        self.assertNotIn('commitment_reference', l3_list.json()[0])
+        started = self.api.post(
+            f'/api/projects/{project.id}/start', headers=self.tokens['L3'],
+            json=self.start_payload(auth_id),
+        )
+        self.assertEqual(started.status_code, 200, started.text)
+        self.assertEqual(started.json()['status'], 'En ejecución')
+        event = ProjectEvent.objects.get(project=project)
+        self.assertEqual(event.commercial_authorization_id, auth_id)
+        self.assertEqual((event.actor.role.level, event.previous_status, event.new_status),
+                         ('L3', 'Planificado', 'En ejecución'))
+        self.assertEqual(ProjectCommercialAuthorizationEvent.objects.count(), 0)
+        withdrawn = self.api.post(
+            f'/api/projects/{project.id}/commercial-authorizations/{auth_id}/withdrawal',
+            headers=self.tokens['L2'], json={'reason': 'Cambio posterior de condiciones'},
+        )
+        self.assertEqual(withdrawn.status_code, 200, withdrawn.text)
+        self.assertEqual(Project.objects.get(pk=project.id).status, 'En ejecución')
+        self.assertEqual(ProjectEvent.objects.get(project=project).commercial_authorization_id, auth_id)
+        self.assertEqual(self.api.post(
+            f'/api/projects/{project.id}/start', headers=self.tokens['L3'],
+            json=self.start_payload(auth_id),
+        ).status_code, 409)
+
+    def test_start_rejects_missing_wrong_project_future_expired_and_closed_authorization(self):
+        project = Project.objects.create(client=self.client_record, name='Proyecto inicio')
+        other = Project.objects.create(client=self.client_record, name='Proyecto ajeno')
+        self.coordinate_l3(project)
+        foreign = self.create_authorization(other)
+        self.assertEqual(foreign.status_code, 201, foreign.text)
+        unauthorized = self.api.post(f'/api/projects/{project.id}/start', headers=self.tokens['L3'],
+                                     json=self.start_payload(foreign.json()['id']))
+        self.assertEqual(unauthorized.status_code, 409)
+        self.assertEqual(self.api.post(f'/api/projects/{project.id}/start', headers=self.tokens['L3'],
+                                       json=self.start_payload(999999)).status_code, 409)
+        for field, value in [('effective_at', timezone.now() + timedelta(days=1)),
+                             ('expires_at', timezone.now() - timedelta(days=1))]:
+            options = {'effective_at': (timezone.now() + timedelta(minutes=2)).isoformat()}
+            options[field] = value.isoformat()
+            if field == 'expires_at':
+                options['effective_at'] = (timezone.now() + timedelta(minutes=1)).isoformat()
+                options['expires_at'] = (timezone.now() + timedelta(minutes=2)).isoformat()
+            created = self.create_authorization(project, **options)
+            self.assertEqual(created.status_code, 201, created.text)
+            if field == 'expires_at':
+                ProjectCommercialAuthorization.objects.filter(pk=created.json()['id']).update(
+                    effective_at=timezone.now() - timedelta(days=2),
+                    expires_at=timezone.now() - timedelta(days=1),
+                )
+            response = self.api.post(f'/api/projects/{project.id}/start', headers=self.tokens['L3'],
+                                     json=self.start_payload(created.json()['id']))
+            self.assertEqual(response.status_code, 409)
+        auth = self.create_authorization(project, effective_at=(timezone.now() + timedelta(minutes=2)).isoformat())
+        auth_id = auth.json()['id']
+        ProjectCommercialAuthorization.objects.filter(pk=auth_id).update(
+            effective_at=timezone.now() - timedelta(minutes=1),
+        )
+        self.assertEqual(self.api.post(
+            f'/api/projects/{project.id}/commercial-authorizations/{auth_id}/withdrawal',
+            headers=self.tokens['L2'], json={'reason': 'Se retiró el alcance aprobado'},
+        ).status_code, 200)
+        self.assertEqual(self.api.post(f'/api/projects/{project.id}/start', headers=self.tokens['L3'],
+                                       json=self.start_payload(auth_id)).status_code, 409)
+        self.assertEqual(ProjectEvent.objects.count(), 0)
+        self.assertEqual(Project.objects.get(pk=project.id).status, 'Planificado')
+
+    def test_authorization_roles_conditions_coordination_and_atomic_start(self):
+        project = Project.objects.create(client=self.client_record, name='Permisos inicio')
+        denied_auth = self.api.post(
+            f'/api/projects/{project.id}/commercial-authorizations', headers=self.tokens['L3'],
+            json={'authorized_scope': 'X', 'commitment_reference': 'X', 'start_conditions': 'X',
+                  'start_conditions_accredited': True,
+                  'evidence_reference': 'X', 'effective_at': (timezone.now()+timedelta(minutes=2)).isoformat()},
+        )
+        self.assertEqual(denied_auth.status_code, 403)
+        future = self.create_authorization(project)
+        auth_id = future.json()['id']
+        self.assertEqual(self.api.get(f'/api/projects/{project.id}/commercial-authorizations',
+                                      headers=self.tokens['L4']).status_code, 403)
+        self.assertEqual(self.api.get(f'/api/projects/{project.id}/commercial-authorizations',
+                                      headers=self.tokens['L3']).status_code, 404)
+        self.coordinate_l3(project)
+        ProjectCommercialAuthorization.objects.filter(pk=auth_id).update(
+            effective_at=timezone.now() - timedelta(seconds=1),
+        )
+        # Scope mismatch and incomplete technical readiness reject before writes.
+        mismatch = self.api.post(
+            f'/api/projects/{project.id}/start', headers=self.tokens['L3'],
+            json=self.start_payload(auth_id, initial_scope_within_authorization=False),
+        )
+        self.assertEqual(mismatch.status_code, 409)
+        payload = self.start_payload(auth_id, resources_ready=False)
+        response = self.api.post(f'/api/projects/{project.id}/start', headers=self.tokens['L3'], json=payload)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(Project.objects.get(pk=project.id).status, 'Planificado')
+        self.assertEqual(ProjectEvent.objects.count(), 0)
+        pending_conditions = self.create_authorization(
+            project, start_conditions_accredited=False,
+        )
+        self.assertEqual(pending_conditions.status_code, 409)
+        self.assertEqual(ProjectCommercialAuthorization.objects.filter(project=project).count(), 1)
+        ProjectCoordination.objects.filter(project=project).update(is_active=False)
+        self.assertEqual(self.api.post(f'/api/projects/{project.id}/start', headers=self.tokens['L3'],
+                                       json=self.start_payload(auth_id)).status_code, 404)
+        for level in ('L1', 'L2', 'L4', 'L5'):
+            self.assertEqual(self.api.post(f'/api/projects/{project.id}/start', headers=self.tokens[level],
+                                           json=self.start_payload(auth_id)).status_code, 403)
+
+    def test_replacement_preserves_prior_authorization_and_failed_transition_is_atomic(self):
+        project = Project.objects.create(client=self.client_record, name='Historial de habilitación')
+        self.coordinate_l3(project)
+        original = self.create_authorization(project)
+        self.assertEqual(original.status_code, 201, original.text)
+        replacement = self.create_authorization(
+            project, replaces_authorization_id=original.json()['id'],
+            replacement_reason='El alcance autorizado fue actualizado',
+        )
+        self.assertEqual(replacement.status_code, 201, replacement.text)
+        prior_event = ProjectCommercialAuthorizationEvent.objects.get(authorization_id=original.json()['id'])
+        self.assertEqual(prior_event.event_type, 'sustituida')
+        self.assertEqual(prior_event.replacement_id, replacement.json()['id'])
+        self.assertEqual(ProjectCommercialAuthorization.objects.count(), 2)
+        self.assertEqual(self.api.post(
+            f'/api/projects/{project.id}/start', headers=self.tokens['L3'],
+            json=self.start_payload(original.json()['id']),
+        ).status_code, 409)
+        ProjectCommercialAuthorization.objects.filter(pk=replacement.json()['id']).update(
+            effective_at=timezone.now() - timedelta(seconds=1),
+        )
+        with patch('api.routers.projects.ProjectEvent.objects.create', side_effect=IntegrityError):
+            failed = self.api.post(
+                f'/api/projects/{project.id}/start', headers=self.tokens['L3'],
+                json=self.start_payload(replacement.json()['id']),
+            )
+        self.assertEqual(failed.status_code, 409)
+        self.assertEqual(Project.objects.get(pk=project.id).status, 'Planificado')
+        self.assertEqual(ProjectEvent.objects.count(), 0)
+        self.assertEqual(ProjectCommercialAuthorization.objects.count(), 2)
