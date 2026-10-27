@@ -1,6 +1,7 @@
 from django.db import IntegrityError, transaction
 from django.db.models.deletion import ProtectedError
 from django.test import TestCase, TransactionTestCase
+from unittest.mock import patch
 
 from fastapi import HTTPException
 
@@ -8,7 +9,7 @@ from api.routers.projects import require_project_creator, require_project_reader
 from api.main import app
 from api.routers.auth import hash_password
 from fastapi.testclient import TestClient
-from clients.models import Client, Collaborator, Project, Role, WebCatalog
+from clients.models import Client, Collaborator, Project, ProjectCoordination, ProjectEvent, Role, WebCatalog
 
 
 class ProjectModelTests(TestCase):
@@ -180,3 +181,87 @@ class ProjectApiTests(TransactionTestCase):
                     json={'client_id': self.client_record.id, 'name': f'Proyecto {client_status}'},
                 )
                 self.assertEqual(response.status_code, 201, response.text)
+
+    @staticmethod
+    def validation_payload(**overrides):
+        payload = {
+            'scope_within_current_commitment': True,
+            'criteria_identifiable': True,
+            'results_and_evidence_available': True,
+            'validation_conditions_ready': True,
+            'responsible_parties_identified': True,
+            'dependencies_ready': True,
+            'pending_obligations_assessed': True,
+            'evidence': 'Informe técnico disponible para la evaluación',
+            'reason': 'Preparación suficiente para iniciar validación',
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_l3_enters_technical_validation_with_active_scope_and_complete_evidence(self):
+        project = Project.objects.create(client=self.client_record, name='Validación', status='En ejecución')
+        coordinator = Collaborator.objects.get(username='project-api-L3')
+        ProjectCoordination.objects.create(
+            project=project, coordinator=coordinator,
+            assigned_by=Collaborator.objects.get(username='project-api-L2'),
+        )
+        response = self.api.post(
+            f'/api/projects/{project.id}/technical-validation',
+            headers=self.tokens['L3'], json=self.validation_payload(),
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['status'], 'En validación técnica')
+        event = ProjectEvent.objects.get(project=project)
+        self.assertEqual(event.event_type, 'ingreso_validacion_tecnica')
+        self.assertEqual(event.actor_id, coordinator.id)
+        self.assertEqual((event.previous_status, event.new_status), ('En ejecución', 'En validación técnica'))
+        self.assertIn('Criterios identificables: sí', event.evidence)
+
+    def test_validation_transition_denies_invalid_role_scope_origin_and_evidence(self):
+        project = Project.objects.create(client=self.client_record, name='Fuera de ámbito', status='En ejecución')
+        payload = self.validation_payload()
+        for level in ('L1', 'L2', 'L4', 'L5'):
+            response = self.api.post(
+                f'/api/projects/{project.id}/technical-validation',
+                headers=self.tokens[level], json=payload,
+            )
+            self.assertEqual(response.status_code, 403)
+        self.assertEqual(ProjectEvent.objects.count(), 0)
+        self.assertEqual(Project.objects.get(pk=project.id).status, 'En ejecución')
+
+        coordinator = Collaborator.objects.get(username='project-api-L3')
+        l2 = Collaborator.objects.get(username='project-api-L2')
+        coordination = ProjectCoordination.objects.create(project=project, coordinator=coordinator, assigned_by=l2)
+        ProjectCoordination.objects.filter(pk=coordination.pk).update(is_active=False)
+        self.assertEqual(self.api.post(
+            f'/api/projects/{project.id}/technical-validation', headers=self.tokens['L3'], json=payload,
+        ).status_code, 404)
+        ProjectCoordination.objects.filter(pk=coordination.pk).update(is_active=True)
+        project.status = 'Planificado'
+        project.save(update_fields=['status'])
+        self.assertEqual(self.api.post(
+            f'/api/projects/{project.id}/technical-validation', headers=self.tokens['L3'], json=payload,
+        ).status_code, 409)
+        project.status = 'En ejecución'
+        project.save(update_fields=['status'])
+        self.assertEqual(self.api.post(
+            f'/api/projects/{project.id}/technical-validation', headers=self.tokens['L3'],
+            json=self.validation_payload(criteria_identifiable=False),
+        ).status_code, 409)
+        self.assertEqual(ProjectEvent.objects.count(), 0)
+        self.assertEqual(Project.objects.get(pk=project.id).status, 'En ejecución')
+
+    def test_failed_project_event_write_rolls_back_status_transition(self):
+        project = Project.objects.create(client=self.client_record, name='Rollback', status='En ejecución')
+        ProjectCoordination.objects.create(
+            project=project, coordinator=Collaborator.objects.get(username='project-api-L3'),
+            assigned_by=Collaborator.objects.get(username='project-api-L2'),
+        )
+        with patch('api.routers.projects.ProjectEvent.objects.create', side_effect=IntegrityError):
+            response = self.api.post(
+                f'/api/projects/{project.id}/technical-validation', headers=self.tokens['L3'],
+                json=self.validation_payload(),
+            )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(Project.objects.get(pk=project.id).status, 'En ejecución')
+        self.assertEqual(ProjectEvent.objects.count(), 0)

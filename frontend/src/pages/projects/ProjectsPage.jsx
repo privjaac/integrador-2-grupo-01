@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { getClients } from "../../api/clients";
 import { designateCoordinator, getTaskContext, removeCoordinator } from "../../api/tasks";
-import { createProject, getProjects } from "../../api/projects";
+import { createProject, enterTechnicalValidation, getProjects } from "../../api/projects";
 import { useAuth } from "../../hooks/useAuth";
 import { can } from "../../utils/permissions";
 
@@ -10,10 +10,12 @@ const fieldStyle = { padding: "10px 12px", background: "#0b0d1a", color: "white"
 export default function ProjectsPage() {
   const { user } = useAuth();
   const canCreate = can(user, "projects", "create");
+  const canStartValidation = can(user, "projects", "enterTechnicalValidation");
   const [projects, setProjects] = useState([]);
   const [clients, setClients] = useState([]);
   const [taskContext, setTaskContext] = useState({ coordinators: [], coordination_assignments: [] });
   const [coordinatorSelection, setCoordinatorSelection] = useState({});
+  const [validationInputs, setValidationInputs] = useState({});
   const [form, setForm] = useState({ client_id: "", name: "", objective: "", scope: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -68,6 +70,31 @@ export default function ProjectsPage() {
     }
   }
 
+  async function submitValidation(projectId) {
+    setError("");
+    try {
+      const updated = await enterTechnicalValidation(projectId, validationInputs[projectId] || {});
+      setProjects((items) => items.map((item) => item.id === projectId ? updated : item));
+      setValidationInputs((items) => ({ ...items, [projectId]: {} }));
+    } catch (err) {
+      setError(err.userMessage || err.response?.data?.detail || "No se pudo registrar el ingreso a validación técnica.");
+    }
+  }
+
+  const validationFields = [
+    ["scope_within_current_commitment", "El alcance está incluido en el compromiso vigente"],
+    ["criteria_identifiable", "Los requisitos y criterios de validación son identificables"],
+    ["results_and_evidence_available", "Hay resultados y evidencia disponibles para validar"],
+    ["validation_conditions_ready", "El entorno, recursos y condiciones permiten validar"],
+    ["responsible_parties_identified", "Los responsables adecuados están identificados"],
+    ["dependencies_ready", "Las dependencias indispensables permiten validar"],
+    ["pending_obligations_assessed", "Los pendientes y obligaciones fueron evaluados"],
+    ["evidence", "Referencia de evidencia técnica"], ["reason", "Motivo de ingreso"],
+  ];
+  function updateValidation(projectId, field, value) {
+    setValidationInputs((items) => ({ ...items, [projectId]: { ...items[projectId], [field]: value } }));
+  }
+
   return <section style={{ color: "white", maxWidth: 1050, margin: "0 auto" }}>
     <h1>Proyectos</h1>
     <p style={{ color: "#aab2c5" }}>Los proyectos nuevos se crean en estado Planificado.</p>
@@ -90,5 +117,16 @@ export default function ProjectsPage() {
         <div style={{ display: "flex", gap: 6 }}><select aria-label={`Coordinación de ${project.name}`} value={coordinatorSelection[project.id] || ""} onChange={(event) => setCoordinatorSelection({ ...coordinatorSelection, [project.id]: event.target.value })} style={fieldStyle}><option value="">Seleccionar L3</option>{taskContext.coordinators?.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" disabled={!coordinatorSelection[project.id]} onClick={() => assignCoordinator(project.id)} style={{ ...fieldStyle, cursor: "pointer" }}>Designar</button></div>
       </td>}</tr>;
     })}</tbody></table></div>}
+    {canStartValidation && projects.some((project) => project.status === "En ejecución") && <section style={{ marginTop: 28 }}>
+      <h2>Ingreso a validación técnica</h2>
+      <p style={{ color: "#aab2c5" }}>L3 evalúa preparación suficiente para comenzar una validación significativa. Este acto no declara resultados aprobados ni finaliza el proyecto.</p>
+      {projects.filter((project) => project.status === "En ejecución").map((project) => <article key={project.id} style={{ border: "1px solid #34394a", borderRadius: 8, padding: 16, margin: "12px 0" }}>
+        <h3>{project.name}</h3>
+        <div style={{ display: "grid", gap: 8, maxWidth: 700 }}>{validationFields.map(([field, label]) => field === "evidence" || field === "reason" ? <label key={field} style={{ display: "grid", gap: 4 }}>{label}<textarea required value={validationInputs[project.id]?.[field] || ""} onChange={(event) => updateValidation(project.id, field, event.target.value)} style={fieldStyle} /></label> : <label key={field} style={{ display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={validationInputs[project.id]?.[field] || false} onChange={(event) => updateValidation(project.id, field, event.target.checked)} />{label}</label>)}
+          <button type="button" onClick={() => submitValidation(project.id)} disabled={validationFields.some(([field]) => !validationInputs[project.id]?.[field]?.trim())} style={{ ...fieldStyle, cursor: "pointer" }}>Registrar ingreso a validación técnica</button>
+        </div>
+        {(project.events || []).map((event, index) => <p key={`${event.event_type}-${index}`} style={{ color: "#aab2c5" }}>Historial: {event.previous_status} → {event.new_status} · {event.actor_name} · {new Date(event.occurred_at).toLocaleString()} · {event.reason}</p>)}
+      </article>)}
+    </section>}
   </section>;
 }

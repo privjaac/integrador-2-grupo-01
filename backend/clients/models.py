@@ -410,6 +410,23 @@ class ProjectLeadership(models.Model):
         )]
 
 
+class ProjectEvent(models.Model):
+    """Audit record of explicitly authorized project status transitions."""
+
+    event_type = models.CharField(max_length=40)
+    project = models.ForeignKey(Project, on_delete=models.PROTECT, related_name='events')
+    actor = models.ForeignKey(Collaborator, on_delete=models.PROTECT, related_name='project_events')
+    previous_status = models.CharField(max_length=24)
+    new_status = models.CharField(max_length=24)
+    reason = models.TextField()
+    evidence = models.TextField()
+    occurred_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'project_events'
+        ordering = ['occurred_at', 'id']
+
+
 class TeamMembership(models.Model):
     """Explicit L4→L5 team membership, scoped to a project leadership."""
 
