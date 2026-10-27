@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { addTeamMember, assignTask, createTask, designateCoordinator, designateLeader, getTaskContext, removeCoordinator, removeLeader, removeTeamMember, reviewTask, startTask, submitTaskReview } from "../../api/tasks";
+import { addTeamMember, assignTask, createTask, designateCoordinator, designateLeader, getTaskContext, removeCoordinator, removeLeader, removeTeamMember, removeTaskExecutor, reassignTask, reviewTask, startTask, submitTaskReview } from "../../api/tasks";
 import Button from "../../components/ui/Button";
 import Input from "../../components/ui/Input";
 import Table from "../../components/ui/Table";
@@ -15,6 +15,8 @@ const eventLabels = {
   observada: "Resultado observado",
   aprobada_revision: "Revisión aprobada",
   correccion_iniciada: "Corrección iniciada",
+  ejecutor_reasignado: "Ejecutor reasignado",
+  ejecutor_retirado: "Ejecutor retirado",
 };
 
 export default function TasksPage() {
@@ -25,6 +27,8 @@ export default function TasksPage() {
   const [assignment, setAssignment] = useState({});
   const [results, setResults] = useState({});
   const [reviewReasons, setReviewReasons] = useState({});
+  const [reassignments, setReassignments] = useState({});
+  const [removalReasons, setRemovalReasons] = useState({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
@@ -177,6 +181,35 @@ export default function TasksPage() {
     }
   }
 
+  async function submitReassignment(task) {
+    const values = reassignments[task.id] || {};
+    setError("");
+    try {
+      await reassignTask(task.id, {
+        assignee_id: Number(values.assignee_id),
+        responsible_id: user?.role === "L3" ? Number(values.responsible_id) : undefined,
+        reason: values.reason,
+      });
+      setReassignments((items) => ({ ...items, [task.id]: {} }));
+      setNotice("Tarea reasignada; el historial anterior se conservó.");
+      await refresh();
+    } catch (err) {
+      setError(err.userMessage || "No se pudo reasignar la tarea.");
+    }
+  }
+
+  async function submitExecutorRemoval(taskId) {
+    setError("");
+    try {
+      await removeTaskExecutor(taskId, removalReasons[taskId]);
+      setRemovalReasons((items) => ({ ...items, [taskId]: "" }));
+      setNotice("Ejecutor retirado; la tarea continúa pendiente.");
+      await refresh();
+    } catch (err) {
+      setError(err.userMessage || "No se pudo retirar al ejecutor.");
+    }
+  }
+
   const selectStyle = { background: "#1a1d30", color: "white", border: "1px solid rgba(63,229,229,0.2)", borderRadius: 4, padding: "8px 10px", width: "100%" };
   const optionsFor = (items) => items.map((item) => ({ value: item.id, label: item.name }));
 
@@ -233,14 +266,24 @@ export default function TasksPage() {
     <Table isLoading={loading}>
       <Table.Head><Table.Row><Table.HeadCell>Proyecto</Table.HeadCell><Table.HeadCell>Tarea</Table.HeadCell><Table.HeadCell>Estado</Table.HeadCell><Table.HeadCell>Ejecutor</Table.HeadCell><Table.HeadCell>Acción</Table.HeadCell></Table.Row></Table.Head>
       <Table.Body>{context.tasks.length === 0 ? <Table.Empty colSpan={5} message="No hay tareas en tu ámbito." /> : context.tasks.map((task, index) => {
+        const reassignment = reassignments[task.id] || {};
         const options = context.developers.filter((person) => person.project_id === task.project_id);
+        const targetResponsibleId = user?.role === "L3" ? Number(reassignment.responsible_id) : task.responsible_id;
+        const replacementOptions = options.filter((person) => Number(person.responsible_id) === Number(targetResponsibleId));
         return <Table.Row key={task.id} index={index}>
-          <Table.Cell>{task.project_name}</Table.Cell><Table.Cell><strong>{task.title}</strong>{task.description && <div style={{ color: "#8892a4", marginTop: 4 }}>{task.description}</div>}<details style={{ color: "#8892a4", fontSize: 12, marginTop: 6 }}><summary style={{ cursor: "pointer" }}>Responsables e historial</summary><p>Responsable actual: {task.responsible_name || "—"}<br />Creada por: {task.created_by_name || "—"}<br />Registro: {new Date(task.created_at).toLocaleString()}</p>{task.assigned_at && <p>Asignada: {new Date(task.assigned_at).toLocaleString()}</p>}{task.events?.map((event, eventIndex) => <div key={`${event.event_type}-${eventIndex}`} style={{ padding: "4px 0" }}><p>{eventLabels[event.event_type] || event.event_type} por {event.actor_name} · {new Date(event.occurred_at).toLocaleString()}{event.assignee_name ? ` · Ejecutor ${event.assignee_name}` : ""}{event.previous_status && event.new_status ? ` · ${event.previous_status} → ${event.new_status}` : ""}</p>{event.result_text && <p>Resultado presentado: {event.result_text}</p>}{event.reason && <p>Motivo de revisión: {event.reason}</p>}</div>)}</details></Table.Cell><Table.Cell>{task.status}</Table.Cell><Table.Cell>{task.assignee_name || "Sin asignar"}</Table.Cell>
+          <Table.Cell>{task.project_name}</Table.Cell><Table.Cell><strong>{task.title}</strong>{task.description && <div style={{ color: "#8892a4", marginTop: 4 }}>{task.description}</div>}<details style={{ color: "#8892a4", fontSize: 12, marginTop: 6 }}><summary style={{ cursor: "pointer" }}>Responsables e historial</summary><p>Responsable actual: {task.responsible_name || "—"}<br />Creada por: {task.created_by_name || "—"}<br />Registro: {new Date(task.created_at).toLocaleString()}</p>{task.assigned_at && <p>Asignada: {new Date(task.assigned_at).toLocaleString()}</p>}{task.events?.map((event, eventIndex) => <div key={`${event.event_type}-${eventIndex}`} style={{ padding: "4px 0" }}><p>{eventLabels[event.event_type] || event.event_type} por {event.actor_name} · {new Date(event.occurred_at).toLocaleString()}{event.previous_status && event.new_status ? ` · ${event.previous_status} → ${event.new_status}` : ""}</p>{(event.previous_assignee_name || event.assignee_name) && <p>Ejecutor: {event.previous_assignee_name || "Sin asignar"} → {event.assignee_name || "Sin asignar"}</p>}{(event.previous_responsible_name || event.responsible_name) && <p>Responsable: {event.previous_responsible_name || "Sin asignar"} → {event.responsible_name || "Sin asignar"}</p>}{event.result_text && <p>Resultado presentado: {event.result_text}</p>}{event.reason && <p>Motivo: {event.reason}</p>}</div>)}</details></Table.Cell><Table.Cell>{task.status}</Table.Cell><Table.Cell>{task.assignee_name || "Sin asignar"}</Table.Cell>
           <Table.Cell>
             {user?.role === "L4" && task.status === "Pendiente" && <div style={{ display: "flex", gap: 8 }}><select aria-label={`Ejecutor para ${task.title}`} style={selectStyle} value={assignment[task.id] || ""} onChange={(e) => setAssignment({ ...assignment, [task.id]: e.target.value })}><option value="">Selecciona L5</option>{options.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select><Button size="sm" disabled={!assignment[task.id]} onClick={() => submitAssignment(task.id)}>Asignar</Button></div>}
             {can(user, "tasks", "start") && task.actions?.can_start && <Button size="sm" onClick={() => startTaskAction(task)}>{task.status === "Observada" ? "Iniciar corrección" : "Iniciar tarea"}</Button>}
             {can(user, "tasks", "submitReview") && task.actions?.can_submit_result && <div style={{ display: "grid", gap: 8, minWidth: 220 }}><Input label="Resultado presentado" name={`result-${task.id}`} type="textarea" value={results[task.id] || ""} onChange={(e) => setResults({ ...results, [task.id]: e.target.value })} required /><Button size="sm" disabled={!results[task.id]?.trim()} onClick={() => submitResult(task.id)}>Enviar a revisión</Button></div>}
             {can(user, "tasks", "review") && task.actions?.can_review && <div style={{ display: "grid", gap: 8, minWidth: 220 }}><Input label="Motivo de observación" name={`reason-${task.id}`} type="textarea" value={reviewReasons[task.id] || ""} onChange={(e) => setReviewReasons({ ...reviewReasons, [task.id]: e.target.value })} /><Button size="sm" variant="ghost" disabled={!reviewReasons[task.id]?.trim()} onClick={() => resolveReview(task.id, "Observada")}>Devolver con observaciones</Button><Button size="sm" onClick={() => resolveReview(task.id, "Finalizada")}>Aprobar resultado</Button></div>}
+            {can(user, "tasks", "reassign") && task.actions?.can_reassign && <div style={{ display: "grid", gap: 8, minWidth: 220 }}>
+              {user?.role === "L3" && <Input label="Nuevo responsable L4" name={`responsible-${task.id}`} type="select" value={reassignment.responsible_id || ""} onChange={(e) => setReassignments({ ...reassignments, [task.id]: { ...reassignment, responsible_id: e.target.value, assignee_id: "" } })} options={(context.leadership_assignments || []).filter((item) => item.project_id === task.project_id).map((item) => ({ value: item.leader_id, label: item.leader_name }))} />}
+              <Input label="Nuevo ejecutor L5" name={`reassignee-${task.id}`} type="select" value={reassignment.assignee_id || ""} onChange={(e) => setReassignments({ ...reassignments, [task.id]: { ...reassignment, assignee_id: e.target.value } })} options={replacementOptions.map((person) => ({ value: person.id, label: person.name }))} />
+              <Input label="Motivo de reasignación" name={`reassignment-reason-${task.id}`} type="textarea" value={reassignment.reason || ""} onChange={(e) => setReassignments({ ...reassignments, [task.id]: { ...reassignment, reason: e.target.value } })} />
+              <Button size="sm" disabled={!reassignment.assignee_id || !reassignment.reason?.trim() || (user?.role === "L3" && !reassignment.responsible_id)} onClick={() => submitReassignment(task)}>Reasignar</Button>
+            </div>}
+            {can(user, "tasks", "removeExecutor") && task.actions?.can_remove_executor && <div style={{ display: "grid", gap: 8, minWidth: 220 }}><Input label="Motivo para retirar al ejecutor" name={`remove-reason-${task.id}`} type="textarea" value={removalReasons[task.id] || ""} onChange={(e) => setRemovalReasons({ ...removalReasons, [task.id]: e.target.value })} /><Button size="sm" variant="ghost" disabled={!removalReasons[task.id]?.trim()} onClick={() => submitExecutorRemoval(task.id)}>Retirar ejecutor y dejar pendiente</Button></div>}
           </Table.Cell>
         </Table.Row>;
       })}</Table.Body>

@@ -30,6 +30,18 @@ export async function reviewTask(id, resolution, reason = null) {
   return data;
 }
 
+export async function reassignTask(id, { assignee_id, responsible_id, reason }) {
+  const { data } = await axiosInstance.post(`/api/tasks/${id}/reassignment`, {
+    assignee_id, responsible_id, reason,
+  });
+  return data;
+}
+
+export async function removeTaskExecutor(id, reason) {
+  const { data } = await axiosInstance.post(`/api/tasks/${id}/remove-executor`, { reason });
+  return data;
+}
+
 export async function designateLeader(projectId, collaborator_id) {
   const { data } = await axiosInstance.post(`/api/tasks/projects/${projectId}/leadership`, { collaborator_id });
   return data;

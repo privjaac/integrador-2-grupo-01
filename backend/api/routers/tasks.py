@@ -5,7 +5,10 @@ from fastapi import Depends, HTTPException, status
 
 from api.dependencies import get_current_user
 from api.router import APIRouter
-from api.schemas.tasks import Designation, TaskAssign, TaskCreate, TaskReview, TaskSubmission
+from api.schemas.tasks import (
+    Designation, TaskAssign, TaskCreate, TaskExecutorRemoval,
+    TaskReassignment, TaskReview, TaskSubmission,
+)
 from clients.models import (
     Collaborator, Project, ProjectCoordination, ProjectLeadership, Task,
     TaskEvent, TeamMembership,
@@ -86,10 +89,19 @@ def task_action_permissions(task: Task, user: dict) -> dict:
             'can_start': member and task.status in {'Asignada', 'Observada'},
             'can_submit_result': member and task.status == 'En proceso',
             'can_review': False,
+            'can_reassign': False,
+            'can_remove_executor': False,
         }
     if role == 'L4':
         in_scope = task_queryset(user).filter(pk=task.pk).exists()
         member = active_team_membership(task).exists()
+        responsible_leadership = ProjectLeadership.objects.filter(
+            leader_id=collaborator_id, coordination__project_id=task.project_id,
+            coordination__is_active=True, is_active=True,
+            leader__is_active=True, leader__role__level='L4',
+            coordination__coordinator__is_active=True,
+            coordination__coordinator__role__level='L3',
+        ).exists()
         return {
             'can_start': False,
             'can_submit_result': False,
@@ -97,8 +109,28 @@ def task_action_permissions(task: Task, user: dict) -> dict:
                 in_scope and task.responsible_id == collaborator_id
                 and task.status == 'En revisión' and member
             ),
+            'can_reassign': (
+                in_scope and task.responsible_id == collaborator_id and responsible_leadership
+                and task.status in {'En proceso', 'Observada'} and member
+            ),
+            'can_remove_executor': (
+                in_scope and task.responsible_id == collaborator_id and responsible_leadership
+                and task.status in {'Asignada', 'En proceso'} and member
+            ),
         }
-    return {'can_start': False, 'can_submit_result': False, 'can_review': False}
+    if role == 'L3':
+        in_scope = task_queryset(user).filter(pk=task.pk).exists()
+        return {
+            'can_start': False,
+            'can_submit_result': False,
+            'can_review': False,
+            'can_reassign': in_scope and task.status in {'En proceso', 'Observada'},
+            'can_remove_executor': in_scope and task.status in {'Asignada', 'En proceso'},
+        }
+    return {
+        'can_start': False, 'can_submit_result': False, 'can_review': False,
+        'can_reassign': False, 'can_remove_executor': False,
+    }
 
 
 def task_response(task: Task, user: dict) -> dict:
@@ -130,11 +162,28 @@ def task_response(task: Task, user: dict) -> dict:
                 'assignee_name': (
                     f'{event.assignee.first_name} {event.assignee.last_name}' if event.assignee_id else None
                 ),
+                'previous_assignee_id': event.previous_assignee_id,
+                'previous_assignee_name': (
+                    f'{event.previous_assignee.first_name} {event.previous_assignee.last_name}'
+                    if event.previous_assignee_id else None
+                ),
+                'responsible_id': event.responsible_id,
+                'responsible_name': (
+                    f'{event.responsible.first_name} {event.responsible.last_name}'
+                    if event.responsible_id else None
+                ),
+                'previous_responsible_id': event.previous_responsible_id,
+                'previous_responsible_name': (
+                    f'{event.previous_responsible.first_name} {event.previous_responsible.last_name}'
+                    if event.previous_responsible_id else None
+                ),
                 'result_text': event.result_text,
                 'reason': event.reason,
                 'occurred_at': event.occurred_at.isoformat(),
             }
-            for event in task.events.select_related('actor', 'assignee').all()
+            for event in task.events.select_related(
+                'actor', 'assignee', 'previous_assignee', 'responsible', 'previous_responsible',
+            ).all()
         ],
         'actions': task_action_permissions(task, user),
     }
@@ -231,6 +280,106 @@ def lock_task_for_l4_review(task_id: int, collaborator_id: int) -> Task:
     return task
 
 
+def lock_task_for_reassignment(
+    task_id: int, actor_id: int, target_responsible_id: int, target_assignee_id: int,
+) -> tuple[Task, TeamMembership]:
+    candidate = Task.objects.filter(pk=task_id).values(
+        'project_id', 'responsible_id', 'assignee_id',
+    ).first()
+    if candidate is None or candidate['assignee_id'] is None:
+        raise HTTPException(404, 'Tarea asignada no encontrada en tu ámbito')
+    coordinations = lock_project_coordinations(candidate['project_id'])
+    actor_role = Collaborator.objects.select_related('role').filter(pk=actor_id).values_list(
+        'role__level', flat=True,
+    ).first()
+    if actor_role == 'L3':
+        if not any(item.coordinator_id == actor_id for item in coordinations):
+            raise HTTPException(404, 'Tarea no encontrada en tu coordinación vigente')
+        leadership_ids = ProjectLeadership.objects.filter(
+            coordination_id__in=[item.id for item in coordinations],
+            leader_id__in=[candidate['responsible_id'], target_responsible_id],
+            is_active=True, leader__is_active=True, leader__role__level='L4',
+        ).order_by('id').values_list('id', flat=True)
+        leaderships = list(ProjectLeadership.objects.select_for_update(of=('self',)).filter(
+            pk__in=leadership_ids, coordination_id__in=[item.id for item in coordinations],
+            is_active=True, leader__is_active=True, leader__role__level='L4',
+        ).order_by('id'))
+        if not any(item.leader_id == target_responsible_id for item in leaderships):
+            raise HTTPException(400, 'El nuevo responsable debe ser L4 vigente de esta coordinación')
+    elif actor_role == 'L4':
+        if actor_id != candidate['responsible_id'] or target_responsible_id != actor_id:
+            raise HTTPException(403, 'L4 solo puede reasignar dentro de su propia responsabilidad')
+        _coordinations, leaderships = lock_l4_leaderships(candidate['project_id'], actor_id)
+        if not leaderships:
+            raise HTTPException(404, 'La responsabilidad L4 ya no está vigente')
+    else:
+        raise HTTPException(403, 'Solo L4 responsable o L3 coordinador puede reasignar')
+
+    target_leaderships = [item.id for item in leaderships if item.leader_id == target_responsible_id]
+    target_developer = Collaborator.objects.select_for_update().filter(
+        pk=target_assignee_id, is_active=True, role__level='L5',
+    ).first()
+    if target_developer is None:
+        raise HTTPException(400, 'El nuevo ejecutor debe ser un L5 activo')
+    membership = TeamMembership.objects.select_for_update(of=('self',)).filter(
+        leadership_id__in=target_leaderships,
+        developer_id=target_developer.id, is_active=True,
+    ).first()
+    if membership is None:
+        raise HTTPException(400, 'El nuevo ejecutor debe ser L5 activo del equipo responsable')
+    task = Task.objects.select_for_update().filter(pk=task_id).first()
+    if (
+        task is None or task.project_id != candidate['project_id']
+        or task.assignee_id != candidate['assignee_id']
+        or task.responsible_id != candidate['responsible_id']
+    ):
+        raise HTTPException(409, 'La asignación cambió durante la operación')
+    if actor_role == 'L4' and not task_queryset({'role': 'L4', 'collaborator_id': actor_id}).filter(pk=task_id).exists():
+        raise HTTPException(404, 'Tarea fuera de tu ámbito vigente')
+    return task, membership
+
+
+def lock_task_for_executor_removal(task_id: int, actor_id: int) -> Task:
+    candidate = Task.objects.filter(pk=task_id).values(
+        'project_id', 'responsible_id', 'assignee_id',
+    ).first()
+    if candidate is None or candidate['assignee_id'] is None:
+        raise HTTPException(404, 'Tarea con ejecutor no encontrada en tu ámbito')
+    coordinations = lock_project_coordinations(candidate['project_id'])
+    actor_role = Collaborator.objects.select_related('role').filter(pk=actor_id).values_list(
+        'role__level', flat=True,
+    ).first()
+    if actor_role == 'L4':
+        if actor_id != candidate['responsible_id']:
+            raise HTTPException(404, 'Tarea fuera de tu responsabilidad vigente')
+        _coordinations, leaderships = lock_l4_leaderships(candidate['project_id'], actor_id)
+        if not leaderships:
+            raise HTTPException(404, 'La responsabilidad L4 ya no está vigente')
+        membership = TeamMembership.objects.select_for_update(of=('self',)).filter(
+            leadership_id__in=[item.id for item in leaderships],
+            developer_id=candidate['assignee_id'], developer__is_active=True,
+            developer__role__level='L5', is_active=True,
+        ).exists()
+        if not membership:
+            raise HTTPException(404, 'La pertenencia del ejecutor ya no está vigente')
+    elif actor_role == 'L3':
+        if not any(item.coordinator_id == actor_id for item in coordinations):
+            raise HTTPException(404, 'Tarea no encontrada en tu coordinación vigente')
+    else:
+        raise HTTPException(403, 'Solo L4 responsable o L3 coordinador puede retirar ejecutores')
+    if actor_role == 'L4' and not Collaborator.objects.select_for_update().filter(
+        pk=candidate['assignee_id'], is_active=True, role__level='L5',
+    ).exists():
+        raise HTTPException(404, 'El ejecutor ya no está activo')
+    task = Task.objects.select_for_update().filter(pk=task_id).first()
+    if (
+        task is None or task.assignee_id != candidate['assignee_id']
+        or task.responsible_id != candidate['responsible_id']
+    ):
+        raise HTTPException(409, 'La asignación cambió durante la operación')
+    return task
+
+
 @router.get('/context')
 def get_task_context(user: dict = Depends(get_current_user)):
     role = user.get('role')
@@ -307,8 +456,28 @@ def get_task_context(user: dict = Depends(get_current_user)):
                 'membership_id': membership.id,
                 'can_remove': membership.added_by_id == collaborator_id,
                 'project_id': membership.leadership.coordination.project_id,
+                'responsible_id': membership.leadership.leader_id,
             })
         result['developers'] = list(unique_members.values())
+        result['tasks'] = [task_response(t, user) for t in task_queryset(user).select_related('project', 'assignee').distinct()]
+    elif role == 'L3':
+        memberships = TeamMembership.objects.filter(
+            leadership__coordination__coordinator_id=collaborator_id,
+            leadership__coordination__is_active=True,
+            leadership__coordination__coordinator__is_active=True,
+            leadership__is_active=True, leadership__leader__is_active=True,
+            leadership__leader__role__level='L4', is_active=True,
+            developer__is_active=True, developer__role__level='L5',
+        ).select_related('developer', 'leadership__coordination', 'leadership__leader')
+        result['developers'] = [
+            {
+                'id': membership.developer_id,
+                'name': f'{membership.developer.first_name} {membership.developer.last_name}',
+                'project_id': membership.leadership.coordination.project_id,
+                'responsible_id': membership.leadership.leader_id,
+            }
+            for membership in memberships
+        ]
         result['tasks'] = [task_response(t, user) for t in task_queryset(user).select_related('project', 'assignee').distinct()]
     elif role == 'L5':
         result['tasks'] = [task_response(t, user) for t in task_queryset(user).select_related('project', 'assignee').distinct()]
@@ -590,6 +759,90 @@ def assign_task(task_id: int, payload: TaskAssign, user: dict = Depends(get_curr
             )
     except IntegrityError:
         raise HTTPException(409, 'No se pudo registrar la asignación')
+    return task_response(Task.objects.select_related('project', 'assignee').get(pk=task_id), user)
+
+
+@router.post('/{task_id}/reassignment')
+def reassign_task(
+    task_id: int, payload: TaskReassignment, user: dict = Depends(get_current_user),
+):
+    role = user.get('role')
+    if role not in {'L3', 'L4'}:
+        raise HTTPException(403, 'Solo L4 responsable o L3 coordinador puede reasignar')
+    reason = payload.reason.strip()
+    if not reason:
+        raise HTTPException(422, 'El motivo de reasignación es obligatorio')
+    if role == 'L3' and payload.responsible_id is None:
+        raise HTTPException(422, 'L3 debe identificar al nuevo responsable L4')
+    target_responsible_id = payload.responsible_id or user['collaborator_id']
+    if payload.assignee_id == user['collaborator_id']:
+        raise HTTPException(400, 'El nuevo ejecutor debe ser un colaborador L5 distinto al actor')
+    current_actor = actor(user)
+    try:
+        with transaction.atomic():
+            task, membership = lock_task_for_reassignment(
+                task_id, user['collaborator_id'], target_responsible_id, payload.assignee_id,
+            )
+            if task.assignee_id == membership.developer_id and task.responsible_id == target_responsible_id:
+                raise HTTPException(409, 'La tarea ya está asignada a ese ejecutor y responsable')
+            if task.status not in {'En proceso', 'Observada'}:
+                if task.status == 'En revisión':
+                    raise HTTPException(409, 'L4 debe resolver la revisión abierta antes de reasignar')
+                raise HTTPException(409, 'Solo tareas En proceso u Observadas admiten reasignación')
+            previous_status = task.status
+            previous_assignee_id = task.assignee_id
+            previous_responsible_id = task.responsible_id
+            task.assignee_id = membership.developer_id
+            task.responsible_id = target_responsible_id
+            task.assigned_at = timezone.now()
+            if previous_status == 'En proceso':
+                task.status = 'Asignada'
+            task.save(update_fields=['assignee', 'responsible', 'assigned_at', 'status'])
+            TaskEvent.objects.create(
+                task=task, event_type='ejecutor_reasignado', actor=current_actor,
+                previous_status=previous_status, new_status=task.status,
+                previous_assignee_id=previous_assignee_id, assignee_id=membership.developer_id,
+                previous_responsible_id=previous_responsible_id,
+                responsible_id=target_responsible_id, reason=reason,
+            )
+    except IntegrityError:
+        raise HTTPException(409, 'No se pudo registrar la reasignación')
+    return task_response(Task.objects.select_related('project', 'assignee').get(pk=task_id), user)
+
+
+@router.post('/{task_id}/remove-executor')
+def remove_task_executor(
+    task_id: int, payload: TaskExecutorRemoval, user: dict = Depends(get_current_user),
+):
+    role = user.get('role')
+    if role not in {'L3', 'L4'}:
+        raise HTTPException(403, 'Solo L4 responsable o L3 coordinador puede retirar ejecutores')
+    reason = payload.reason.strip()
+    if not reason:
+        raise HTTPException(422, 'El motivo de retirada es obligatorio')
+    current_actor = actor(user)
+    try:
+        with transaction.atomic():
+            task = lock_task_for_executor_removal(task_id, user['collaborator_id'])
+            if task.status not in {'Asignada', 'En proceso'}:
+                if task.status == 'En revisión':
+                    raise HTTPException(409, 'L4 debe resolver la revisión abierta antes de retirar al ejecutor')
+                raise HTTPException(409, 'Solo tareas Asignadas o En proceso pueden quedar sin ejecutor')
+            previous_status = task.status
+            previous_assignee_id = task.assignee_id
+            task.assignee = None
+            task.assigned_at = None
+            task.status = 'Pendiente'
+            task.save(update_fields=['assignee', 'assigned_at', 'status'])
+            TaskEvent.objects.create(
+                task=task, event_type='ejecutor_retirado', actor=current_actor,
+                previous_status=previous_status, new_status='Pendiente',
+                previous_assignee_id=previous_assignee_id, assignee=None,
+                responsible_id=task.responsible_id,
+                previous_responsible_id=task.responsible_id, reason=reason,
+            )
+    except IntegrityError:
+        raise HTTPException(409, 'No se pudo registrar la retirada del ejecutor')
     return task_response(Task.objects.select_related('project', 'assignee').get(pk=task_id), user)
 
 

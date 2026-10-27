@@ -489,6 +489,8 @@ class TaskEvent(models.Model):
         ('iniciada', 'Iniciada'), ('resultado_presentado', 'Resultado presentado'),
         ('observada', 'Observada'), ('aprobada_revision', 'Aprobada en revisión'),
         ('correccion_iniciada', 'Corrección iniciada'),
+        ('ejecutor_reasignado', 'Ejecutor reasignado'),
+        ('ejecutor_retirado', 'Ejecutor retirado'),
     ]
 
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='events')
@@ -498,6 +500,18 @@ class TaskEvent(models.Model):
     new_status = models.CharField(max_length=20)
     assignee = models.ForeignKey(
         Collaborator, on_delete=models.PROTECT, null=True, blank=True, related_name='task_assignment_events',
+    )
+    previous_assignee = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='task_previous_assignment_events',
+    )
+    responsible = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='task_responsibility_events',
+    )
+    previous_responsible = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='task_previous_responsibility_events',
     )
     result_text = models.TextField(blank=True, default='')
     reason = models.TextField(blank=True, default='')

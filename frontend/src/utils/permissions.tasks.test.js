@@ -20,6 +20,8 @@ test("task controls follow the explicit designation and work permissions", () =>
     start: ["L5"],
     submitReview: ["L5"],
     review: ["L4"],
+    reassign: ["L3", "L4"],
+    removeExecutor: ["L3", "L4"],
     designate: ["L2"],
     withdrawCoordination: ["L2"],
     delegate: ["L3"],

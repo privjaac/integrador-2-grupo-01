@@ -501,3 +501,221 @@ class TaskWorkflowApiTests(TransactionTestCase):
         task = Task.objects.get(pk=task_id)
         self.assertEqual(task.status, 'Asignada')
         self.assertEqual(TaskEvent.objects.filter(task_id=task_id).count(), before_events)
+
+    def test_l4_reassignment_preserves_execution_and_observation_history(self):
+        self.api.post(
+            f'/api/tasks/projects/{self.project.id}/team', headers=self.headers['L4'],
+            json={'collaborator_id': self.people['L5C'].id},
+        )
+        first = self.create('L4', status='Asignada', assignee=self.people['L5'])
+        task_id = first.json()['id']
+        self.api.post(f'/api/tasks/{task_id}/start', headers=self.headers['L5'])
+        project_status = self.project.status
+        reassigned = self.api.post(
+            f'/api/tasks/{task_id}/reassignment', headers=self.headers['L4'],
+            json={'assignee_id': self.people['L5C'].id, 'reason': 'Redistribución interna'},
+        )
+        self.assertEqual(reassigned.status_code, 200, reassigned.text)
+        self.assertEqual(reassigned.json()['status'], 'Asignada')
+        self.assertEqual(reassigned.json()['assignee_id'], self.people['L5C'].id)
+        event = reassigned.json()['events'][-1]
+        self.assertEqual(event['previous_assignee_id'], self.people['L5'].id)
+        self.assertEqual(event['assignee_id'], self.people['L5C'].id)
+        self.assertEqual(event['responsible_id'], self.people['L4'].id)
+        self.assertEqual(event['previous_status'], 'En proceso')
+        self.assertEqual(event['new_status'], 'Asignada')
+        self.assertEqual(event['reason'], 'Redistribución interna')
+
+        second = self.create('L4', status='Asignada', assignee=self.people['L5'])
+        second_id = second.json()['id']
+        self.api.post(f'/api/tasks/{second_id}/start', headers=self.headers['L5'])
+        self.api.post(
+            f'/api/tasks/{second_id}/submit-review', headers=self.headers['L5'],
+            json={'result_text': 'Entrega preservada'},
+        )
+        self.api.post(
+            f'/api/tasks/{second_id}/review', headers=self.headers['L4'],
+            json={'resolution': 'Observada', 'reason': 'Debe corregirse el detalle'},
+        )
+        observed_reassignment = self.api.post(
+            f'/api/tasks/{second_id}/reassignment', headers=self.headers['L4'],
+            json={'assignee_id': self.people['L5C'].id, 'reason': 'Cambio de ejecutor para corregir'},
+        )
+        self.assertEqual(observed_reassignment.status_code, 200, observed_reassignment.text)
+        self.assertEqual(observed_reassignment.json()['status'], 'Observada')
+        events = observed_reassignment.json()['events']
+        self.assertEqual(events[-1]['previous_status'], 'Observada')
+        self.assertEqual(events[-1]['new_status'], 'Observada')
+        self.assertEqual(events[2]['result_text'], 'Entrega preservada')
+        self.assertEqual(events[3]['reason'], 'Debe corregirse el detalle')
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.status, project_status)
+
+    def test_l3_reassigns_between_teams_and_l4_cannot_cross_team(self):
+        self.api.post(
+            f'/api/tasks/projects/{self.project.id}/team', headers=self.headers['L4'],
+            json={'collaborator_id': self.people['L5C'].id},
+        )
+        second_leadership = ProjectLeadership.objects.create(
+            coordination=self.coordination, leader=self.people['L4B'], designated_by=self.people['L3'],
+        )
+        TeamMembership.objects.create(
+            leadership=second_leadership, developer=self.people['L5B'], added_by=self.people['L4B'],
+        )
+        first = self.create('L4', status='Asignada', assignee=self.people['L5'])
+        task_id = first.json()['id']
+        self.api.post(f'/api/tasks/{task_id}/start', headers=self.headers['L5'])
+
+        forbidden = self.api.post(
+            f'/api/tasks/{task_id}/reassignment', headers=self.headers['L4'],
+            json={
+                'assignee_id': self.people['L5B'].id,
+                'responsible_id': self.people['L4B'].id,
+                'reason': 'Debe denegarse al L4 ajeno',
+            },
+        )
+        self.assertEqual(forbidden.status_code, 403)
+        self.assertEqual(Task.objects.get(pk=task_id).assignee_id, self.people['L5'].id)
+
+        moved = self.api.post(
+            f'/api/tasks/{task_id}/reassignment', headers=self.headers['L3'],
+            json={
+                'assignee_id': self.people['L5B'].id,
+                'responsible_id': self.people['L4B'].id,
+                'reason': 'Reorganización entre equipos',
+            },
+        )
+        self.assertEqual(moved.status_code, 200, moved.text)
+        self.assertEqual(moved.json()['status'], 'Asignada')
+        self.assertEqual(moved.json()['responsible_id'], self.people['L4B'].id)
+        event = moved.json()['events'][-1]
+        self.assertEqual(event['previous_responsible_id'], self.people['L4'].id)
+        self.assertEqual(event['responsible_id'], self.people['L4B'].id)
+
+    def test_open_review_blocks_reassignment_and_executor_removal_without_partial_changes(self):
+        self.api.post(
+            f'/api/tasks/projects/{self.project.id}/team', headers=self.headers['L4'],
+            json={'collaborator_id': self.people['L5C'].id},
+        )
+        first = self.create('L4', status='Asignada', assignee=self.people['L5'])
+        task_id = first.json()['id']
+        self.api.post(f'/api/tasks/{task_id}/start', headers=self.headers['L5'])
+        self.api.post(
+            f'/api/tasks/{task_id}/submit-review', headers=self.headers['L5'],
+            json={'result_text': 'Presentación pendiente'},
+        )
+        before = list(TaskEvent.objects.filter(task_id=task_id).values_list('event_type', 'reason'))
+        reassignment = self.api.post(
+            f'/api/tasks/{task_id}/reassignment', headers=self.headers['L4'],
+            json={'assignee_id': self.people['L5C'].id, 'reason': 'Intento no permitido'},
+        )
+        withdrawal = self.api.post(
+            f'/api/tasks/{task_id}/remove-executor', headers=self.headers['L4'],
+            json={'reason': 'Intento no permitido'},
+        )
+        self.assertEqual(reassignment.status_code, 409)
+        self.assertEqual(withdrawal.status_code, 409)
+        task = Task.objects.get(pk=task_id)
+        self.assertEqual((task.status, task.assignee_id), ('En revisión', self.people['L5'].id))
+        self.assertEqual(list(TaskEvent.objects.filter(task_id=task_id).values_list('event_type', 'reason')), before)
+
+    def test_executor_withdrawal_returns_assigned_or_running_task_to_pending_with_history(self):
+        project_status = self.project.status
+        for status in ('Asignada', 'En proceso'):
+            created = self.create('L4', status='Asignada', assignee=self.people['L5'])
+            task_id = created.json()['id']
+            if status == 'En proceso':
+                self.api.post(f'/api/tasks/{task_id}/start', headers=self.headers['L5'])
+            removed = self.api.post(
+                f'/api/tasks/{task_id}/remove-executor', headers=self.headers['L4'],
+                json={'reason': f'Retiro motivado desde {status}'},
+            )
+            self.assertEqual(removed.status_code, 200, removed.text)
+            task = Task.objects.get(pk=task_id)
+            self.assertEqual((task.status, task.assignee_id, task.assigned_at), ('Pendiente', None, None))
+            event = removed.json()['events'][-1]
+            self.assertEqual(event['event_type'], 'ejecutor_retirado')
+            self.assertEqual(event['previous_status'], status)
+            self.assertEqual(event['new_status'], 'Pendiente')
+            self.assertEqual(event['previous_assignee_id'], self.people['L5'].id)
+            self.assertIsNone(event['assignee_id'])
+            self.assertEqual(event['responsible_id'], self.people['L4'].id)
+            self.assertTrue(event['reason'])
+            self.assertEqual(removed.json()['responsible_id'], self.people['L4'].id)
+            self.assertEqual(self.api.get(f'/api/tasks/{task_id}', headers=self.headers['L5']).status_code, 404)
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.status, project_status)
+
+    def test_reassignment_and_removal_denials_do_not_change_assignment_or_history(self):
+        self.api.post(
+            f'/api/tasks/projects/{self.project.id}/team', headers=self.headers['L4'],
+            json={'collaborator_id': self.people['L5C'].id},
+        )
+        created = self.create('L4', status='Asignada', assignee=self.people['L5'])
+        task_id = created.json()['id']
+        self.api.post(f'/api/tasks/{task_id}/start', headers=self.headers['L5'])
+        initial_events = TaskEvent.objects.filter(task_id=task_id).count()
+
+        no_membership = self.api.post(
+            f'/api/tasks/{task_id}/reassignment', headers=self.headers['L4'],
+            json={'assignee_id': self.people['L5B'].id, 'reason': 'Ejecutor externo'},
+        )
+        foreign_l4 = self.api.post(
+            f'/api/tasks/{task_id}/remove-executor', headers=self.headers['L4B'],
+            json={'reason': 'Fuera de ámbito'},
+        )
+        denied_l5 = self.api.post(
+            f'/api/tasks/{task_id}/remove-executor', headers=self.headers['L5'],
+            json={'reason': 'Sin competencia'},
+        )
+        self.assertEqual(no_membership.status_code, 400)
+        self.assertEqual(foreign_l4.status_code, 404)
+        self.assertEqual(denied_l5.status_code, 403)
+        task = Task.objects.get(pk=task_id)
+        self.assertEqual((task.status, task.assignee_id), ('En proceso', self.people['L5'].id))
+        self.assertEqual(TaskEvent.objects.filter(task_id=task_id).count(), initial_events)
+
+        with patch('api.routers.tasks.TaskEvent.objects.create', side_effect=IntegrityError):
+            failed_reassignment = self.api.post(
+                f'/api/tasks/{task_id}/reassignment', headers=self.headers['L4'],
+                json={'assignee_id': self.people['L5C'].id, 'reason': 'Falla de historial'},
+            )
+        self.assertEqual(failed_reassignment.status_code, 409)
+        task.refresh_from_db()
+        self.assertEqual((task.status, task.assignee_id), ('En proceso', self.people['L5'].id))
+        self.assertEqual(TaskEvent.objects.filter(task_id=task_id).count(), initial_events)
+
+        with patch('api.routers.tasks.TaskEvent.objects.create', side_effect=IntegrityError):
+            failed_removal = self.api.post(
+                f'/api/tasks/{task_id}/remove-executor', headers=self.headers['L4'],
+                json={'reason': 'Falla de historial'},
+            )
+        self.assertEqual(failed_removal.status_code, 409)
+        task.refresh_from_db()
+        self.assertEqual((task.status, task.assignee_id), ('En proceso', self.people['L5'].id))
+        self.assertEqual(TaskEvent.objects.filter(task_id=task_id).count(), initial_events)
+
+    def test_finalized_tasks_do_not_accept_reassignment_or_executor_removal(self):
+        created = self.create('L4', status='Asignada', assignee=self.people['L5'])
+        task_id = created.json()['id']
+        self.api.post(f'/api/tasks/{task_id}/start', headers=self.headers['L5'])
+        self.api.post(
+            f'/api/tasks/{task_id}/submit-review', headers=self.headers['L5'],
+            json={'result_text': 'Resultado aprobado'},
+        )
+        self.api.post(
+            f'/api/tasks/{task_id}/review', headers=self.headers['L4'],
+            json={'resolution': 'Finalizada'},
+        )
+        event_count = TaskEvent.objects.filter(task_id=task_id).count()
+        for route, payload in (
+            ('reassignment', {'assignee_id': self.people['L5'].id, 'reason': 'No permitida'}),
+            ('remove-executor', {'reason': 'No permitida'}),
+        ):
+            denied = self.api.post(
+                f'/api/tasks/{task_id}/{route}', headers=self.headers['L4'], json=payload,
+            )
+            self.assertEqual(denied.status_code, 409)
+        task = Task.objects.get(pk=task_id)
+        self.assertEqual((task.status, task.assignee_id), ('Finalizada', self.people['L5'].id))
+        self.assertEqual(TaskEvent.objects.filter(task_id=task_id).count(), event_count)
