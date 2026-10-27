@@ -135,7 +135,7 @@ def active_commercial_authorizations(project_id: int, now=None):
         Q(expires_at__isnull=True) | Q(expires_at__gt=now),
     ).exclude(
         events__event_type__in=['retirada', 'sustituida'],
-    ).distinct()
+    )
 
 
 def commercial_authorization_response(authorization: ProjectCommercialAuthorization, *, include_private: bool):
@@ -214,6 +214,7 @@ def authorize_project_start(
                 authorized_scope=payload.authorized_scope.strip(),
                 commitment_reference=payload.commitment_reference.strip(),
                 start_conditions=payload.start_conditions.strip(),
+                start_conditions_accredited=payload.start_conditions_accredited,
                 evidence_reference=payload.evidence_reference.strip(),
             )
             if replaced is not None:
