@@ -271,6 +271,92 @@ class ProjectApiTests(TransactionTestCase):
         self.assertEqual(ProjectEvent.objects.count(), 0)
 
     @staticmethod
+    def return_payload(**overrides):
+        payload = {
+            'additional_execution_required': True,
+            'materially_affects_validation': True,
+            'within_current_commitment': True,
+            'evidence': 'Hallazgo técnico que requiere trabajo adicional',
+            'reason': 'Se requiere completar el alcance comprometido antes de continuar la validación',
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_l3_returns_technical_validation_to_execution_with_audit(self):
+        project = Project.objects.create(client=self.client_record, name='Devolución', status='En validación técnica')
+        coordinator = Collaborator.objects.get(username='project-api-L3')
+        ProjectCoordination.objects.create(
+            project=project, coordinator=coordinator,
+            assigned_by=Collaborator.objects.get(username='project-api-L2'),
+        )
+
+        response = self.api.post(
+            f'/api/projects/{project.id}/return-to-execution', headers=self.tokens['L3'],
+            json=self.return_payload(),
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['status'], 'En ejecución')
+        event = ProjectEvent.objects.get(project=project)
+        self.assertEqual(event.event_type, 'devolucion_ejecucion')
+        self.assertEqual(event.actor_id, coordinator.id)
+        self.assertEqual((event.previous_status, event.new_status), ('En validación técnica', 'En ejecución'))
+        self.assertIn('Afecta materialmente suficiencia/continuidad de validación: sí', event.evidence)
+
+    def test_return_denies_other_roles_missing_scope_wrong_state_and_incomplete_conditions(self):
+        project = Project.objects.create(client=self.client_record, name='Denegación devolución', status='En validación técnica')
+        payload = self.return_payload()
+        for level in ('L1', 'L2', 'L4', 'L5'):
+            response = self.api.post(
+                f'/api/projects/{project.id}/return-to-execution', headers=self.tokens[level], json=payload,
+            )
+            self.assertEqual(response.status_code, 403)
+        self.assertEqual(self.api.post(
+            f'/api/projects/{project.id}/return-to-execution', headers=self.tokens['L3'], json=payload,
+        ).status_code, 404)
+
+        coordinator = Collaborator.objects.get(username='project-api-L3')
+        coordination = ProjectCoordination.objects.create(
+            project=project, coordinator=coordinator,
+            assigned_by=Collaborator.objects.get(username='project-api-L2'),
+        )
+        coordination.is_active = False
+        coordination.save(update_fields=['is_active'])
+        self.assertEqual(self.api.post(
+            f'/api/projects/{project.id}/return-to-execution', headers=self.tokens['L3'], json=payload,
+        ).status_code, 404)
+        coordination.is_active = True
+        coordination.save(update_fields=['is_active'])
+        for overrides in ({'additional_execution_required': False}, {'within_current_commitment': False}):
+            response = self.api.post(
+                f'/api/projects/{project.id}/return-to-execution', headers=self.tokens['L3'],
+                json=self.return_payload(**overrides),
+            )
+            self.assertEqual(response.status_code, 409, response.text)
+        project.status = 'En ejecución'
+        project.save(update_fields=['status'])
+        response = self.api.post(
+            f'/api/projects/{project.id}/return-to-execution', headers=self.tokens['L3'], json=payload,
+        )
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(ProjectEvent.objects.count(), 0)
+
+    def test_failed_return_event_write_rolls_back_status_transition(self):
+        project = Project.objects.create(client=self.client_record, name='Rollback devolución', status='En validación técnica')
+        ProjectCoordination.objects.create(
+            project=project, coordinator=Collaborator.objects.get(username='project-api-L3'),
+            assigned_by=Collaborator.objects.get(username='project-api-L2'),
+        )
+        with patch('api.routers.projects.ProjectEvent.objects.create', side_effect=IntegrityError):
+            response = self.api.post(
+                f'/api/projects/{project.id}/return-to-execution', headers=self.tokens['L3'],
+                json=self.return_payload(),
+            )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(Project.objects.get(pk=project.id).status, 'En validación técnica')
+        self.assertEqual(ProjectEvent.objects.count(), 0)
+
+    @staticmethod
     def start_payload(authorization_id, **overrides):
         payload = {
             'commercial_authorization_id': authorization_id,

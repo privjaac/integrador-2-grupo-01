@@ -15,6 +15,11 @@ export async function enterTechnicalValidation(projectId, payload) {
   return data;
 }
 
+export async function returnProjectToExecution(projectId, payload) {
+  const { data } = await axiosInstance.post(`/api/projects/${projectId}/return-to-execution`, payload);
+  return data;
+}
+
 export async function getCommercialAuthorizations(projectId) {
   const { data } = await axiosInstance.get(`/api/projects/${projectId}/commercial-authorizations`);
   return data;

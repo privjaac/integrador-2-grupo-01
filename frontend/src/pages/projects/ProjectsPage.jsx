@@ -3,7 +3,8 @@ import { getClients } from "../../api/clients";
 import { designateCoordinator, getTaskContext, removeCoordinator } from "../../api/tasks";
 import {
   createCommercialAuthorization, createProject, enterTechnicalValidation,
-  getCommercialAuthorizations, getProjects, startProject, withdrawCommercialAuthorization,
+  getCommercialAuthorizations, getProjects, returnProjectToExecution, startProject,
+  withdrawCommercialAuthorization,
 } from "../../api/projects";
 import { useAuth } from "../../hooks/useAuth";
 import { can } from "../../utils/permissions";
@@ -14,6 +15,7 @@ export default function ProjectsPage() {
   const { user } = useAuth();
   const canCreate = can(user, "projects", "create");
   const canStartValidation = can(user, "projects", "enterTechnicalValidation");
+  const canReturnToExecution = can(user, "projects", "returnProjectToExecution");
   const canAuthorizeStart = can(user, "projects", "authorizeProjectStart");
   const canStartProject = can(user, "projects", "startProject");
   const [projects, setProjects] = useState([]);
@@ -22,6 +24,7 @@ export default function ProjectsPage() {
   const [taskContext, setTaskContext] = useState({ coordinators: [], coordination_assignments: [] });
   const [coordinatorSelection, setCoordinatorSelection] = useState({});
   const [validationInputs, setValidationInputs] = useState({});
+  const [returnInputs, setReturnInputs] = useState({});
   const [authorizationInputs, setAuthorizationInputs] = useState({});
   const [startInputs, setStartInputs] = useState({});
   const [form, setForm] = useState({ client_id: "", name: "", objective: "", scope: "" });
@@ -98,6 +101,17 @@ export default function ProjectsPage() {
       setValidationInputs((items) => ({ ...items, [projectId]: {} }));
     } catch (err) {
       setError(err.userMessage || err.response?.data?.detail || "No se pudo registrar el ingreso a validación técnica.");
+    }
+  }
+
+  async function submitReturn(projectId) {
+    setError("");
+    try {
+      const updated = await returnProjectToExecution(projectId, returnInputs[projectId] || {});
+      setProjects((items) => items.map((item) => item.id === projectId ? updated : item));
+      setReturnInputs((items) => ({ ...items, [projectId]: {} }));
+    } catch (err) {
+      setError(err.userMessage || err.response?.data?.detail || "No se pudo registrar la devolución a ejecución.");
     }
   }
 
@@ -178,6 +192,9 @@ export default function ProjectsPage() {
   function updateValidation(projectId, field, value) {
     setValidationInputs((items) => ({ ...items, [projectId]: { ...items[projectId], [field]: value } }));
   }
+  function updateReturn(projectId, field, value) {
+    setReturnInputs((items) => ({ ...items, [projectId]: { ...items[projectId], [field]: value } }));
+  }
 
   return <section style={{ color: "white", maxWidth: 1050, margin: "0 auto" }}>
     <h1>Proyectos</h1>
@@ -208,6 +225,20 @@ export default function ProjectsPage() {
         <h3>{project.name}</h3>
         <div style={{ display: "grid", gap: 8, maxWidth: 700 }}>{validationFields.map(([field, label]) => field === "evidence" || field === "reason" ? <label key={field} style={{ display: "grid", gap: 4 }}>{label}<textarea required value={validationInputs[project.id]?.[field] || ""} onChange={(event) => updateValidation(project.id, field, event.target.value)} style={fieldStyle} /></label> : <label key={field} style={{ display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={validationInputs[project.id]?.[field] || false} onChange={(event) => updateValidation(project.id, field, event.target.checked)} />{label}</label>)}
           <button type="button" onClick={() => submitValidation(project.id)} disabled={validationFields.some(([field]) => !validationInputs[project.id]?.[field]?.trim())} style={{ ...fieldStyle, cursor: "pointer" }}>Registrar ingreso a validación técnica</button>
+        </div>
+        {(project.events || []).map((event, index) => <p key={`${event.event_type}-${index}`} style={{ color: "#aab2c5" }}>Historial: {event.previous_status} → {event.new_status} · {event.actor_name} · {new Date(event.occurred_at).toLocaleString()} · {event.reason}</p>)}
+      </article>)}
+    </section>}
+    {canReturnToExecution && projects.some((project) => project.status === "En validación técnica") && <section style={{ marginTop: 28 }}>
+      <h2>Devolución a ejecución</h2>
+      <p style={{ color: "#aab2c5" }}>L3 puede devolver el proyecto cuando el trabajo adicional sea necesario para la suficiencia o continuidad de la validación y permanezca dentro del compromiso vigente.</p>
+      {projects.filter((project) => project.status === "En validación técnica").map((project) => <article key={project.id} style={{ border: "1px solid #34394a", borderRadius: 8, padding: 16, margin: "12px 0" }}>
+        <h3>{project.name}</h3>
+        <div style={{ display: "grid", gap: 8, maxWidth: 700 }}>
+          {[["additional_execution_required", "Se requiere trabajo adicional"], ["materially_affects_validation", "Afecta materialmente la suficiencia o continuidad de la validación"], ["within_current_commitment", "El trabajo permanece dentro del compromiso vigente"]].map(([field, label]) => <label key={field} style={{ display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={returnInputs[project.id]?.[field] || false} onChange={(event) => updateReturn(project.id, field, event.target.checked)} />{label}</label>)}
+          <label style={{ display: "grid", gap: 4 }}>Evidencia<textarea required value={returnInputs[project.id]?.evidence || ""} onChange={(event) => updateReturn(project.id, "evidence", event.target.value)} style={fieldStyle} /></label>
+          <label style={{ display: "grid", gap: 4 }}>Motivo<textarea required value={returnInputs[project.id]?.reason || ""} onChange={(event) => updateReturn(project.id, "reason", event.target.value)} style={fieldStyle} /></label>
+          <button type="button" onClick={() => submitReturn(project.id)} disabled={["additional_execution_required", "materially_affects_validation", "within_current_commitment"].some((field) => !returnInputs[project.id]?.[field]) || !returnInputs[project.id]?.evidence?.trim() || !returnInputs[project.id]?.reason?.trim()} style={{ ...fieldStyle, cursor: "pointer" }}>Registrar devolución a ejecución</button>
         </div>
         {(project.events || []).map((event, index) => <p key={`${event.event_type}-${index}`} style={{ color: "#aab2c5" }}>Historial: {event.previous_status} → {event.new_status} · {event.actor_name} · {new Date(event.occurred_at).toLocaleString()} · {event.reason}</p>)}
       </article>)}

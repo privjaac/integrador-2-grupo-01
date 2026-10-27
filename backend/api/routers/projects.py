@@ -7,7 +7,8 @@ from api.dependencies import get_current_user
 from api.router import APIRouter
 from api.schemas.projects import (
     ProjectCommercialAuthorizationCreate, ProjectCommercialAuthorizationWithdrawal,
-    ProjectCreate, ProjectResponse, ProjectStartReadiness, ProjectValidationReadiness,
+    ProjectCreate, ProjectExecutionReturn, ProjectResponse, ProjectStartReadiness,
+    ProjectValidationReadiness,
 )
 from clients.models import (
     Client, Collaborator, Project, ProjectCommercialAuthorization,
@@ -123,6 +124,67 @@ def enter_technical_validation(
             )
     except IntegrityError:
         raise HTTPException(status_code=409, detail='No se pudo registrar la transición por un cambio concurrente')
+
+    return to_response(Project.objects.select_related('client').get(pk=project_id))
+
+
+@router.post('/{project_id}/return-to-execution', response_model=ProjectResponse)
+def return_project_to_execution(
+    project_id: int,
+    payload: ProjectExecutionReturn,
+    user: dict = Depends(get_current_user),
+):
+    if user.get('role') != 'L3':
+        raise HTTPException(status_code=403, detail='Solo L3 puede autorizar la devolución a ejecución')
+    actor = Collaborator.objects.filter(
+        pk=user['collaborator_id'], is_active=True, role__level='L3',
+    ).first()
+    if actor is None:
+        raise HTTPException(status_code=403, detail='El colaborador L3 no está activo')
+    if not all((
+        payload.additional_execution_required,
+        payload.materially_affects_validation,
+        payload.within_current_commitment,
+    )):
+        raise HTTPException(status_code=409, detail='La devolución no cumple las condiciones autorizadas')
+
+    try:
+        with transaction.atomic():
+            coordination_ids = list(ProjectCoordination.objects.filter(
+                project_id=project_id, coordinator=actor, is_active=True,
+                coordinator__is_active=True, coordinator__role__level='L3',
+            ).order_by('id').values_list('id', flat=True))
+            if not coordination_ids:
+                if not Project.objects.filter(pk=project_id).exists():
+                    raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+                raise HTTPException(status_code=404, detail='Proyecto fuera de tu coordinación vigente')
+            locked_coordinations = list(ProjectCoordination.objects.select_for_update(of=('self',)).filter(
+                pk__in=coordination_ids, is_active=True,
+                coordinator__is_active=True, coordinator__role__level='L3',
+            ).order_by('id'))
+            if not locked_coordinations:
+                raise HTTPException(status_code=404, detail='Proyecto fuera de tu coordinación vigente')
+            project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
+            if project is None:
+                raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+            if project.status != 'En validación técnica':
+                raise HTTPException(status_code=409, detail='El proyecto debe estar En validación técnica')
+            previous_status = project.status
+            project.status = 'En ejecución'
+            project.save(update_fields=['status'])
+            ProjectEvent.objects.create(
+                event_type='devolucion_ejecucion', project=project, actor=actor,
+                previous_status=previous_status, new_status=project.status,
+                reason=payload.reason.strip(),
+                evidence=(
+                    'Trabajo adicional necesario: sí\n'
+                    'Afecta materialmente suficiencia/continuidad de validación: sí\n'
+                    'Dentro del compromiso vigente: sí\n'
+                    f'Evidencia: {payload.evidence.strip()}'
+                ),
+            )
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail='No se pudo registrar la devolución por un cambio concurrente')
 
     return to_response(Project.objects.select_related('client').get(pk=project_id))
 

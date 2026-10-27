@@ -17,9 +17,10 @@ test("F2-01 shows create permission only to L2", () => {
   }
 });
 
-test("B4-09 grants only the technical validation transition to L3", () => {
+test("B4-09 and B4-10 grant technical validation transitions only to L3", () => {
   for (const role of ["L1", "L2", "L3", "L4", "L5"]) {
     assert.equal(can(user(role), "projects", "enterTechnicalValidation"), role === "L3");
+    assert.equal(can(user(role), "projects", "returnProjectToExecution"), role === "L3");
   }
 });
 

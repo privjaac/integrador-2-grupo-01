@@ -113,6 +113,7 @@ const PERMISSIONS = {
     view: ["L2", "L3"],
     create: ["L2"],
     enterTechnicalValidation: ["L3"],
+    returnProjectToExecution: ["L3"],
     authorizeProjectStart: ["L2"],
     startProject: ["L3"],
     edit: [],

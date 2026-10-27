@@ -66,6 +66,21 @@ class ProjectValidationReadiness(SafeInputModel):
         return value
 
 
+class ProjectExecutionReturn(SafeInputModel):
+    additional_execution_required: bool
+    materially_affects_validation: bool
+    within_current_commitment: bool
+    evidence: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+    @field_validator('evidence', 'reason')
+    @classmethod
+    def reject_blank_return_details(cls, value):
+        if not value.strip():
+            raise ValueError('La evidencia y el motivo no pueden estar vacíos')
+        return value
+
+
 class ProjectCommercialAuthorizationCreate(SafeInputModel):
     authorized_scope: str = Field(min_length=1)
     commitment_reference: str = Field(min_length=1, max_length=200)
