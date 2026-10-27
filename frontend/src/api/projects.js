@@ -20,6 +20,45 @@ export async function returnProjectToExecution(projectId, payload) {
   return data;
 }
 
+export async function getDeliveryContext(projectId) {
+  const { data } = await axiosInstance.get(`/api/projects/${projectId}/delivery-context`);
+  return data;
+}
+
+export async function classifyProjectTask(projectId, taskId, payload) {
+  const { data } = await axiosInstance.post(
+    `/api/projects/${projectId}/tasks/${taskId}/delivery-classification`, payload,
+  );
+  return data;
+}
+
+export async function recordTechnicalEvaluation(projectId, payload) {
+  const { data } = await axiosInstance.post(`/api/projects/${projectId}/technical-evaluations`, payload);
+  return data;
+}
+
+export async function getDeliveryAuthorizations(projectId) {
+  const { data } = await axiosInstance.get(`/api/projects/${projectId}/delivery-authorizations`);
+  return data;
+}
+
+export async function createDeliveryAuthorization(projectId, payload) {
+  const { data } = await axiosInstance.post(`/api/projects/${projectId}/delivery-authorizations`, payload);
+  return data;
+}
+
+export async function withdrawDeliveryAuthorization(projectId, authorizationId, reason) {
+  const { data } = await axiosInstance.post(
+    `/api/projects/${projectId}/delivery-authorizations/${authorizationId}/withdrawal`, { reason },
+  );
+  return data;
+}
+
+export async function markProjectReadyForDelivery(projectId, payload) {
+  const { data } = await axiosInstance.post(`/api/projects/${projectId}/ready-for-delivery`, payload);
+  return data;
+}
+
 export async function getCommercialAuthorizations(projectId) {
   const { data } = await axiosInstance.get(`/api/projects/${projectId}/commercial-authorizations`);
   return data;

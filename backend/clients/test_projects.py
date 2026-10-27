@@ -13,7 +13,9 @@ from api.routers.auth import hash_password
 from fastapi.testclient import TestClient
 from clients.models import (Client, Collaborator, Project, ProjectCommercialAuthorization,
                             ProjectCommercialAuthorizationEvent, ProjectCoordination,
-                            ProjectEvent, Role, WebCatalog)
+                            ProjectDeliveryAuthorization, ProjectDeliveryAuthorizationEvent,
+                            ProjectEvent, ProjectTaskClassification, ProjectTechnicalEvaluation,
+                            Role, Task, TaskEvent, WebCatalog)
 
 
 class ProjectModelTests(TestCase):
@@ -543,3 +545,370 @@ class ProjectApiTests(TransactionTestCase):
         self.assertEqual(Project.objects.get(pk=project.id).status, 'Planificado')
         self.assertEqual(ProjectEvent.objects.count(), 0)
         self.assertEqual(ProjectCommercialAuthorization.objects.count(), 2)
+
+    @staticmethod
+    def delivery_authorization_payload(scope, **overrides):
+        payload = {
+            'authorized_scope': scope,
+            'effectivity_conditions': 'Condiciones comerciales y operativas de preparación cumplidas',
+            'conditions_accredited': True,
+            'evidence_reference': 'EXP-DELIVERY-22',
+            'effective_at': (timezone.now() + timedelta(minutes=5)).isoformat(),
+        }
+        payload.update(overrides)
+        return payload
+
+    @staticmethod
+    def technical_evaluation_payload(**overrides):
+        payload = {
+            'satisfactory': True,
+            'technical_enablement_status': 'Vigente',
+            'ordinary_close_valid': True,
+            'obligations_compatible': True,
+            'result_summary': 'El alcance integral vigente fue validado satisfactoriamente',
+            'evidence': 'Informe técnico integral EXP-TEC-22',
+            'ordinary_close_evidence': 'Cierre ordinario documentado',
+            'obligations_assessment': 'Sin obligaciones incompatibles con la habilitación',
+            'optional_task_assessments': [],
+        }
+        payload.update(overrides)
+        return payload
+
+    def create_validated_project(self, *, task_status='Finalizada', mandatory=True):
+        project = Project.objects.create(
+            client=self.client_record, name='Cierre integral', scope='Portal institucional y alcance acordado',
+            status='En validación técnica',
+        )
+        self.coordinate_l3(project)
+        l2 = Collaborator.objects.get(username='project-api-L2')
+        l3 = Collaborator.objects.get(username='project-api-L3')
+        l4 = Collaborator.objects.get(username='project-api-L4')
+        l5 = Collaborator.objects.get(username='project-api-L5')
+        validation_event = ProjectEvent.objects.create(
+            event_type='ingreso_validacion_tecnica', project=project, actor=l3,
+            previous_status='En ejecución', new_status='En validación técnica',
+            reason='Validación iniciada', evidence='Preparación de validación acreditada',
+        )
+        task = Task.objects.create(
+            project=project, title='Pruebas integrales', description='Validar el portal',
+            status=task_status, created_by=l2, responsible=l4,
+            assignee=l5 if task_status != 'Pendiente' else None,
+            assigned_at=timezone.now() if task_status != 'Pendiente' else None,
+        )
+        if task_status == 'Finalizada':
+            TaskEvent.objects.create(
+                task=task, event_type='aprobada_revision', actor=l4,
+                previous_status='En revisión', new_status='Finalizada',
+                reason='Revisión satisfactoria',
+            )
+        classification = self.api.post(
+            f'/api/projects/{project.id}/tasks/{task.id}/delivery-classification',
+            headers=self.tokens['L3'], json={'is_mandatory': mandatory, 'reason': 'Clasificación según el alcance aprobado'},
+        )
+        self.assertEqual(classification.status_code, 200, classification.text)
+        evaluation = self.api.post(
+            f'/api/projects/{project.id}/technical-evaluations', headers=self.tokens['L3'],
+            json=self.technical_evaluation_payload(),
+        )
+        return project, task, validation_event, evaluation
+
+    def create_delivery_authorization(self, project, **overrides):
+        return self.api.post(
+            f'/api/projects/{project.id}/delivery-authorizations', headers=self.tokens['L2'],
+            json=self.delivery_authorization_payload(project.scope, **overrides),
+        )
+
+    def test_l3_classifies_tasks_with_scope_and_preserves_each_revision(self):
+        project = Project.objects.create(
+            client=self.client_record, name='Clasificación con historial',
+            scope='Alcance uno', status='En ejecución',
+        )
+        self.coordinate_l3(project)
+        l2 = Collaborator.objects.get(username='project-api-L2')
+        l4 = Collaborator.objects.get(username='project-api-L4')
+        task = Task.objects.create(project=project, title='Tarea', created_by=l2, responsible=l4)
+        first = self.api.post(
+            f'/api/projects/{project.id}/tasks/{task.id}/delivery-classification', headers=self.tokens['L3'],
+            json={'is_mandatory': False, 'reason': 'No es requisito del cierre ordinario'},
+        )
+        second = self.api.post(
+            f'/api/projects/{project.id}/tasks/{task.id}/delivery-classification', headers=self.tokens['L3'],
+            json={'is_mandatory': True, 'reason': 'Nueva decisión conforme al alcance aprobado'},
+        )
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(second.status_code, 200, second.text)
+        revisions = list(ProjectTaskClassification.objects.filter(task=task).order_by('id'))
+        self.assertEqual(len(revisions), 2)
+        self.assertFalse(revisions[0].is_current)
+        self.assertTrue(revisions[1].is_current)
+        self.assertEqual(revisions[0].actor_id, Collaborator.objects.get(username='project-api-L3').id)
+        self.assertEqual(revisions[0].scope_snapshot, 'Alcance uno')
+
+    def test_task_classification_denies_non_l3_out_of_scope_and_inactive_coordination(self):
+        project = Project.objects.create(
+            client=self.client_record, name='Ámbito de clasificación', scope='Alcance', status='En ejecución',
+        )
+        l2 = Collaborator.objects.get(username='project-api-L2')
+        l4 = Collaborator.objects.get(username='project-api-L4')
+        task = Task.objects.create(project=project, title='Tarea', created_by=l2, responsible=l4)
+        url = f'/api/projects/{project.id}/tasks/{task.id}/delivery-classification'
+        for level in ('L1', 'L2', 'L4', 'L5'):
+            self.assertEqual(self.api.post(
+                url, headers=self.tokens[level], json={'is_mandatory': True, 'reason': 'Prueba'},
+            ).status_code, 403)
+        self.assertEqual(self.api.post(
+            url, headers=self.tokens['L3'], json={'is_mandatory': True, 'reason': 'Prueba'},
+        ).status_code, 404)
+        self.coordinate_l3(project)
+        ProjectCoordination.objects.filter(project=project).update(is_active=False)
+        self.assertEqual(self.api.post(
+            url, headers=self.tokens['L3'], json={'is_mandatory': True, 'reason': 'Prueba'},
+        ).status_code, 404)
+        self.assertEqual(ProjectTaskClassification.objects.count(), 0)
+
+    def test_required_task_pending_blocks_ordinary_close_evaluation(self):
+        project, _task, _validation_event, _initial = self.create_validated_project(
+            task_status='Pendiente', mandatory=True,
+        )
+        response = self.api.post(
+            f'/api/projects/{project.id}/technical-evaluations', headers=self.tokens['L3'],
+            json=self.technical_evaluation_payload(),
+        )
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(ProjectTechnicalEvaluation.objects.filter(project=project).count(), 0)
+
+    def test_optional_pending_task_requires_individual_l3_assessment(self):
+        project, task, _validation_event, _initial = self.create_validated_project(
+            task_status='Pendiente', mandatory=False,
+        )
+        missing = self.api.post(
+            f'/api/projects/{project.id}/technical-evaluations', headers=self.tokens['L3'],
+            json=self.technical_evaluation_payload(),
+        )
+        self.assertEqual(missing.status_code, 409, missing.text)
+        payload = self.technical_evaluation_payload(optional_task_assessments=[{
+            'task_id': task.id, 'impact_assessment': 'No impide la entrega preparada',
+            'evidence': 'Evaluación L3 de impacto EXP-22',
+        }])
+        accepted = self.api.post(
+            f'/api/projects/{project.id}/technical-evaluations', headers=self.tokens['L3'], json=payload,
+        )
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+
+    def test_ready_transition_requires_current_evaluation_and_delivery_authorization(self):
+        project, _task, validation_event, evaluation = self.create_validated_project()
+        self.assertEqual(evaluation.status_code, 200, evaluation.text)
+        self.assertEqual(Project.objects.get(pk=project.id).status, 'En validación técnica')
+        auth = self.create_delivery_authorization(project)
+        self.assertEqual(auth.status_code, 201, auth.text)
+        authorization = ProjectDeliveryAuthorization.objects.get(pk=auth.json()['id'])
+        now = timezone.now()
+        ProjectDeliveryAuthorization.objects.filter(pk=authorization.pk).update(effective_at=now - timedelta(seconds=1))
+        response = self.api.post(
+            f'/api/projects/{project.id}/ready-for-delivery', headers=self.tokens['L3'],
+            json={'delivery_authorization_id': authorization.id, 'reason': 'Cierre ordinario validado'},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        project.refresh_from_db()
+        self.assertEqual(project.status, 'Listo para entrega')
+        transition = ProjectEvent.objects.get(project=project, event_type='listo_para_entrega')
+        self.assertEqual(transition.previous_status, 'En validación técnica')
+        self.assertEqual(transition.new_status, 'Listo para entrega')
+        self.assertEqual(transition.technical_evaluation_id, evaluation.json()['id'])
+        self.assertEqual(transition.delivery_authorization_id, authorization.id)
+        self.assertEqual(transition.actor_id, Collaborator.objects.get(username='project-api-L3').id)
+        self.assertEqual(transition.technical_evaluation.validation_event_id, validation_event.id)
+
+    def test_unsatisfactory_or_unsubstantiated_technical_evaluation_cannot_enable_ready(self):
+        project, _task, _validation_event, _initial = self.create_validated_project()
+        blank_evidence = self.api.post(
+            f'/api/projects/{project.id}/technical-evaluations', headers=self.tokens['L3'],
+            json=self.technical_evaluation_payload(evidence='   '),
+        )
+        self.assertEqual(blank_evidence.status_code, 422, blank_evidence.text)
+        unsatisfactory = self.api.post(
+            f'/api/projects/{project.id}/technical-evaluations', headers=self.tokens['L3'],
+            json=self.technical_evaluation_payload(
+                satisfactory=False, ordinary_close_valid=False,
+                technical_enablement_status='En revisión',
+            ),
+        )
+        self.assertEqual(unsatisfactory.status_code, 200, unsatisfactory.text)
+        authorization = self.create_delivery_authorization(project)
+        self.assertEqual(authorization.status_code, 201, authorization.text)
+        ProjectDeliveryAuthorization.objects.filter(pk=authorization.json()['id']).update(
+            effective_at=timezone.now() - timedelta(seconds=1),
+        )
+        response = self.api.post(
+            f'/api/projects/{project.id}/ready-for-delivery', headers=self.tokens['L3'],
+            json={'delivery_authorization_id': authorization.json()['id'], 'reason': 'Cierre'},
+        )
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(Project.objects.get(pk=project.id).status, 'En validación técnica')
+
+    def test_ready_transition_rejects_scope_changes_after_evaluation(self):
+        project, _task, _validation_event, _evaluation = self.create_validated_project()
+        authorization = self.create_delivery_authorization(project)
+        self.assertEqual(authorization.status_code, 201, authorization.text)
+        ProjectDeliveryAuthorization.objects.filter(pk=authorization.json()['id']).update(
+            effective_at=timezone.now() - timedelta(seconds=1),
+        )
+        Project.objects.filter(pk=project.pk).update(scope='Alcance actual modificado')
+        response = self.api.post(
+            f'/api/projects/{project.id}/ready-for-delivery', headers=self.tokens['L3'],
+            json={'delivery_authorization_id': authorization.json()['id'], 'reason': 'Cierre'},
+        )
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(Project.objects.get(pk=project.id).status, 'En validación técnica')
+
+    def test_ready_transition_rejects_non_l3_wrong_scope_and_wrong_origin_without_writes(self):
+        project, _task, _validation_event, _evaluation = self.create_validated_project()
+        auth = self.create_delivery_authorization(project)
+        self.assertEqual(auth.status_code, 201, auth.text)
+        for level in ('L1', 'L2', 'L4', 'L5'):
+            self.assertEqual(self.api.post(
+                f'/api/projects/{project.id}/ready-for-delivery', headers=self.tokens[level],
+                json={'delivery_authorization_id': auth.json()['id'], 'reason': 'Cierre'},
+            ).status_code, 403)
+        self.assertEqual(self.api.post(
+            f'/api/projects/{project.id}/ready-for-delivery', headers=self.tokens['L3'],
+            json={'delivery_authorization_id': 999999, 'reason': 'Cierre'},
+        ).status_code, 409)
+        ProjectCoordination.objects.filter(project=project).update(is_active=False)
+        self.assertEqual(self.api.post(
+            f'/api/projects/{project.id}/ready-for-delivery', headers=self.tokens['L3'],
+            json={'delivery_authorization_id': auth.json()['id'], 'reason': 'Cierre'},
+        ).status_code, 404)
+        self.assertFalse(ProjectEvent.objects.filter(project=project, event_type='listo_para_entrega').exists())
+        self.assertEqual(Project.objects.get(pk=project.id).status, 'En validación técnica')
+
+    def test_ready_rejects_foreign_future_withdrawn_replaced_and_expired_authorizations(self):
+        project, _task, _validation_event, _evaluation = self.create_validated_project()
+        foreign_project = Project.objects.create(
+            client=self.client_record, name='Otro proyecto', scope=project.scope,
+        )
+        foreign = self.create_delivery_authorization(foreign_project)
+        self.assertEqual(foreign.status_code, 201, foreign.text)
+        valid = self.create_delivery_authorization(project)
+        self.assertEqual(valid.status_code, 201, valid.text)
+        ProjectDeliveryAuthorization.objects.filter(pk=foreign.json()['id']).update(
+            effective_at=timezone.now() - timedelta(seconds=1),
+        )
+        payload = {'delivery_authorization_id': valid.json()['id'], 'reason': 'Cierre'}
+        self.assertEqual(self.api.post(
+            f'/api/projects/{project.id}/ready-for-delivery', headers=self.tokens['L3'],
+            json={'delivery_authorization_id': foreign.json()['id'], 'reason': 'Cierre'},
+        ).status_code, 409)
+        self.assertEqual(self.api.post(
+            f'/api/projects/{project.id}/ready-for-delivery', headers=self.tokens['L3'], json=payload,
+        ).status_code, 409)  # Aún no efectiva.
+        auth_id = valid.json()['id']
+        ProjectDeliveryAuthorization.objects.filter(pk=auth_id).update(
+            effective_at=timezone.now() - timedelta(seconds=1),
+        )
+        self.assertEqual(self.api.post(
+            f'/api/projects/{project.id}/delivery-authorizations/{auth_id}/withdrawal',
+            headers=self.tokens['L2'], json={'reason': 'Condición comercial retirada'},
+        ).status_code, 200)
+        self.assertEqual(self.api.post(
+            f'/api/projects/{project.id}/ready-for-delivery', headers=self.tokens['L3'], json=payload,
+        ).status_code, 409)
+        self.assertEqual(Project.objects.get(pk=project.id).status, 'En validación técnica')
+
+        replaced_project, _task, _validation_event, _evaluation = self.create_validated_project()
+        original = self.create_delivery_authorization(replaced_project)
+        replacement = self.create_delivery_authorization(
+            replaced_project, replaces_authorization_id=original.json()['id'],
+            replacement_reason='La habilitación se sustituyó por una nueva decisión L2',
+        )
+        ProjectDeliveryAuthorization.objects.filter(pk=replacement.json()['id']).update(
+            effective_at=timezone.now() - timedelta(seconds=1),
+        )
+        old_response = self.api.post(
+            f'/api/projects/{replaced_project.id}/ready-for-delivery', headers=self.tokens['L3'],
+            json={'delivery_authorization_id': original.json()['id'], 'reason': 'Cierre'},
+        )
+        new_response = self.api.post(
+            f'/api/projects/{replaced_project.id}/ready-for-delivery', headers=self.tokens['L3'],
+            json={'delivery_authorization_id': replacement.json()['id'], 'reason': 'Cierre'},
+        )
+        self.assertEqual(old_response.status_code, 409, old_response.text)
+        self.assertEqual(new_response.status_code, 200, new_response.text)
+
+        expired_project, _task, _validation_event, _evaluation = self.create_validated_project()
+        expired = self.create_delivery_authorization(
+            expired_project,
+            effective_at=(timezone.now() + timedelta(minutes=4)).isoformat(),
+            expires_at=(timezone.now() + timedelta(minutes=6)).isoformat(),
+        )
+        ProjectDeliveryAuthorization.objects.filter(pk=expired.json()['id']).update(
+            effective_at=timezone.now() - timedelta(days=2),
+            expires_at=timezone.now() - timedelta(days=1),
+        )
+        expired_response = self.api.post(
+            f'/api/projects/{expired_project.id}/ready-for-delivery', headers=self.tokens['L3'],
+            json={'delivery_authorization_id': expired.json()['id'], 'reason': 'Cierre'},
+        )
+        self.assertEqual(expired_response.status_code, 409, expired_response.text)
+
+    def test_delivery_authorization_requires_l2_effective_conditions_and_matching_scope(self):
+        project, _task, _validation_event, _evaluation = self.create_validated_project()
+        for level in ('L1', 'L3', 'L4', 'L5'):
+            response = self.api.post(
+                f'/api/projects/{project.id}/delivery-authorizations', headers=self.tokens[level],
+                json=self.delivery_authorization_payload(project.scope),
+            )
+            self.assertEqual(response.status_code, 403)
+        missing_conditions = self.create_delivery_authorization(project, conditions_accredited=False)
+        mismatch = self.create_delivery_authorization(project, authorized_scope='Otro alcance')
+        self.assertEqual(missing_conditions.status_code, 409)
+        self.assertEqual(mismatch.status_code, 409)
+        self.assertEqual(ProjectDeliveryAuthorization.objects.filter(project=project).count(), 0)
+
+    def test_replaced_delivery_authorization_preserves_history(self):
+        project, _task, _validation_event, _evaluation = self.create_validated_project()
+        original = self.create_delivery_authorization(project)
+        self.assertEqual(original.status_code, 201, original.text)
+        replacement = self.create_delivery_authorization(
+            project, replaces_authorization_id=original.json()['id'], replacement_reason='Se actualizó la autorización',
+        )
+        self.assertEqual(replacement.status_code, 201, replacement.text)
+        prior = ProjectDeliveryAuthorizationEvent.objects.get(authorization_id=original.json()['id'])
+        self.assertEqual(prior.event_type, 'sustituida')
+        self.assertEqual(prior.replacement_id, replacement.json()['id'])
+        self.assertEqual(ProjectDeliveryAuthorization.objects.filter(project=project).count(), 2)
+
+    def test_technical_evaluation_invalidates_after_task_or_scope_changes(self):
+        project, task, _validation_event, evaluation = self.create_validated_project()
+        self.assertEqual(evaluation.status_code, 200, evaluation.text)
+        auth = self.create_delivery_authorization(project)
+        self.assertEqual(auth.status_code, 201, auth.text)
+        TaskEvent.objects.create(
+            task=task, event_type='reapertura_autorizada', actor=Collaborator.objects.get(username='project-api-L3'),
+            previous_status='Finalizada', new_status='Observada', reason='Reapertura de prueba',
+        )
+        task.status = 'Observada'
+        task.save(update_fields=['status'])
+        response = self.api.post(
+            f'/api/projects/{project.id}/ready-for-delivery', headers=self.tokens['L3'],
+            json={'delivery_authorization_id': auth.json()['id'], 'reason': 'Cierre'},
+        )
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(Project.objects.get(pk=project.id).status, 'En validación técnica')
+
+    def test_ready_transition_rolls_back_project_and_event_together(self):
+        project, _task, _validation_event, evaluation = self.create_validated_project()
+        auth = self.create_delivery_authorization(project)
+        self.assertEqual(auth.status_code, 201, auth.text)
+        ProjectDeliveryAuthorization.objects.filter(pk=auth.json()['id']).update(
+            effective_at=timezone.now() - timedelta(seconds=1),
+        )
+        with patch('api.routers.projects.ProjectEvent.objects.create', side_effect=IntegrityError):
+            response = self.api.post(
+                f'/api/projects/{project.id}/ready-for-delivery', headers=self.tokens['L3'],
+                json={'delivery_authorization_id': auth.json()['id'], 'reason': 'Cierre'},
+            )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(Project.objects.get(pk=project.id).status, 'En validación técnica')
+        self.assertFalse(ProjectEvent.objects.filter(project=project, event_type='listo_para_entrega').exists())
+        self.assertTrue(ProjectTechnicalEvaluation.objects.filter(project=project).exists())

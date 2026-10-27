@@ -30,3 +30,12 @@ test("B4-09 commercial habilitation belongs to L2 and project start to L3", () =
     assert.equal(can(user(role), "projects", "startProject"), role === "L3");
   }
 });
+
+test("B4-10 task classification, technical evaluation and delivery authorization stay within approved levels", () => {
+  for (const role of ["L1", "L2", "L3", "L4", "L5"]) {
+    assert.equal(can(user(role), "projects", "classifyProjectTasks"), role === "L3");
+    assert.equal(can(user(role), "projects", "evaluateProjectClosure"), role === "L3");
+    assert.equal(can(user(role), "projects", "markProjectReadyForDelivery"), role === "L3");
+    assert.equal(can(user(role), "projects", "authorizeProjectDelivery"), role === "L2");
+  }
+});

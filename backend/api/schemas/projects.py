@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from api.schemas.safe_input import SafeInputModel
 
@@ -41,6 +41,8 @@ class ProjectEventResponse(BaseModel):
     evidence: str
     occurred_at: datetime
     commercial_authorization_id: int | None = None
+    technical_evaluation_id: int | None = None
+    delivery_authorization_id: int | None = None
 
 
 class ProjectListItem(ProjectResponse):
@@ -78,6 +80,107 @@ class ProjectExecutionReturn(SafeInputModel):
     def reject_blank_return_details(cls, value):
         if not value.strip():
             raise ValueError('La evidencia y el motivo no pueden estar vacíos')
+        return value
+
+
+class ProjectTaskClassificationInput(SafeInputModel):
+    is_mandatory: bool
+    reason: str = Field(min_length=1)
+
+    @field_validator('reason')
+    @classmethod
+    def reject_blank_classification_reason(cls, value):
+        if not value.strip():
+            raise ValueError('La justificación no puede estar vacía')
+        return value
+
+
+class OptionalTaskAssessment(SafeInputModel):
+    task_id: int = Field(gt=0)
+    impact_assessment: str = Field(min_length=1)
+    evidence: str = Field(min_length=1)
+
+    @field_validator('impact_assessment', 'evidence')
+    @classmethod
+    def reject_blank_optional_assessment(cls, value):
+        if not value.strip():
+            raise ValueError('La evaluación y evidencia de tarea opcional no pueden estar vacías')
+        return value
+
+
+class ProjectTechnicalEvaluationInput(SafeInputModel):
+    satisfactory: bool
+    technical_enablement_status: Literal['Vigente', 'En revisión', 'No vigente']
+    ordinary_close_valid: bool
+    obligations_compatible: bool
+    result_summary: str = Field(min_length=1)
+    evidence: str = Field(min_length=1)
+    ordinary_close_evidence: str = Field(min_length=1)
+    obligations_assessment: str = Field(min_length=1)
+    optional_task_assessments: list[OptionalTaskAssessment] = Field(default_factory=list)
+
+    @field_validator('result_summary', 'evidence', 'ordinary_close_evidence', 'obligations_assessment')
+    @classmethod
+    def reject_blank_evaluation_details(cls, value):
+        if not value.strip():
+            raise ValueError('Los detalles de evaluación no pueden estar vacíos')
+        return value
+
+    @model_validator(mode='after')
+    def reject_duplicate_optional_tasks(self):
+        task_ids = [item.task_id for item in self.optional_task_assessments]
+        if len(task_ids) != len(set(task_ids)):
+            raise ValueError('Una tarea opcional no puede evaluarse más de una vez')
+        return self
+
+    @model_validator(mode='after')
+    def enforce_consistent_technical_close(self):
+        if self.ordinary_close_valid and (not self.satisfactory or not self.obligations_compatible):
+            raise ValueError('El cierre ordinario no puede ser válido con resultado insatisfactorio u obligaciones incompatibles')
+        return self
+
+
+class ProjectDeliveryAuthorizationCreate(SafeInputModel):
+    authorized_scope: str = Field(min_length=1)
+    effectivity_conditions: str = Field(min_length=1)
+    conditions_accredited: bool
+    evidence_reference: str = Field(min_length=1, max_length=300)
+    effective_at: datetime
+    expires_at: datetime | None = None
+    replaces_authorization_id: int | None = Field(default=None, gt=0)
+    replacement_reason: str | None = None
+
+    @field_validator('authorized_scope', 'effectivity_conditions', 'evidence_reference')
+    @classmethod
+    def reject_blank_delivery_authorization_details(cls, value):
+        if not value.strip():
+            raise ValueError('Los datos de habilitación de entrega no pueden estar vacíos')
+        return value
+
+    @field_validator('effective_at', 'expires_at')
+    @classmethod
+    def require_aware_delivery_dates(cls, value):
+        if value is not None and value.utcoffset() is None:
+            raise ValueError('La fecha debe incluir zona horaria')
+        return value
+
+    @field_validator('replacement_reason')
+    @classmethod
+    def reject_blank_delivery_replacement_reason(cls, value):
+        if value is not None and not value.strip():
+            raise ValueError('El motivo de sustitución no puede estar vacío')
+        return value
+
+
+class ProjectReadyForDeliveryInput(SafeInputModel):
+    delivery_authorization_id: int = Field(gt=0)
+    reason: str = Field(min_length=1)
+
+    @field_validator('reason')
+    @classmethod
+    def reject_blank_ready_reason(cls, value):
+        if not value.strip():
+            raise ValueError('El motivo no puede estar vacío')
         return value
 
 

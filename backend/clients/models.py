@@ -473,6 +473,14 @@ class ProjectEvent(models.Model):
         ProjectCommercialAuthorization, on_delete=models.PROTECT, null=True, blank=True,
         related_name='project_transitions',
     )
+    technical_evaluation = models.ForeignKey(
+        'ProjectTechnicalEvaluation', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='project_transitions',
+    )
+    delivery_authorization = models.ForeignKey(
+        'ProjectDeliveryAuthorization', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='project_transitions',
+    )
     previous_status = models.CharField(max_length=24)
     new_status = models.CharField(max_length=24)
     reason = models.TextField()
@@ -482,6 +490,117 @@ class ProjectEvent(models.Model):
     class Meta:
         db_table = 'project_events'
         ordering = ['occurred_at', 'id']
+
+
+class ProjectTaskClassification(models.Model):
+    """Immutable audit revisions for L3's delivery-scope classification of tasks."""
+
+    project = models.ForeignKey(Project, on_delete=models.PROTECT, related_name='task_classifications')
+    task = models.ForeignKey('Task', on_delete=models.PROTECT, related_name='project_classifications')
+    actor = models.ForeignKey(Collaborator, on_delete=models.PROTECT, related_name='task_classifications_made')
+    is_mandatory = models.BooleanField()
+    scope_snapshot = models.TextField()
+    reason = models.TextField()
+    is_current = models.BooleanField(default=True)
+    occurred_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'project_task_classifications'
+        ordering = ['occurred_at', 'id']
+        constraints = [models.UniqueConstraint(
+            fields=['task'], condition=models.Q(is_current=True),
+            name='project_task_classification_current_unique',
+        )]
+
+
+class ProjectTechnicalEvaluation(models.Model):
+    """Historical L3 technical close evaluation for one validation cycle."""
+
+    project = models.ForeignKey(Project, on_delete=models.PROTECT, related_name='technical_evaluations')
+    validation_event = models.ForeignKey(
+        ProjectEvent, on_delete=models.PROTECT, related_name='technical_evaluations',
+    )
+    actor = models.ForeignKey(Collaborator, on_delete=models.PROTECT, related_name='project_technical_evaluations')
+    scope_snapshot = models.TextField()
+    satisfactory = models.BooleanField()
+    technical_enablement_status = models.CharField(max_length=16, choices=[
+        ('Vigente', 'Vigente'), ('En revisión', 'En revisión'), ('No vigente', 'No vigente'),
+    ])
+    ordinary_close_valid = models.BooleanField()
+    obligations_compatible = models.BooleanField()
+    result_summary = models.TextField()
+    evidence = models.TextField()
+    ordinary_close_evidence = models.TextField()
+    obligations_assessment = models.TextField()
+    optional_task_assessments = models.JSONField(default=list)
+    task_snapshot = models.JSONField(default=list)
+    evaluated_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'project_technical_evaluations'
+        ordering = ['evaluated_at', 'id']
+        constraints = [models.CheckConstraint(
+            condition=models.Q(technical_enablement_status__in=['Vigente', 'En revisión', 'No vigente']),
+            name='project_technical_enablement_status_valid',
+        )]
+
+
+class ProjectDeliveryAuthorization(models.Model):
+    """L2 authorization for preparing delivery, distinct from project start authorization."""
+
+    project = models.ForeignKey(Project, on_delete=models.PROTECT, related_name='delivery_authorizations')
+    authorized_by = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='project_delivery_authorizations',
+    )
+    authorized_at = models.DateTimeField(auto_now_add=True)
+    effective_at = models.DateTimeField()
+    expires_at = models.DateTimeField(null=True, blank=True)
+    authorized_scope = models.TextField()
+    scope_snapshot = models.TextField()
+    effectivity_conditions = models.TextField()
+    conditions_accredited = models.BooleanField(default=False)
+    evidence_reference = models.CharField(max_length=300)
+
+    class Meta:
+        db_table = 'project_delivery_authorizations'
+        ordering = ['-authorized_at', '-id']
+        constraints = [models.CheckConstraint(
+            condition=(
+                models.Q(expires_at__isnull=True)
+                | models.Q(expires_at__gt=models.F('effective_at'))
+            ),
+            name='project_delivery_auth_expiry_after_effective',
+        )]
+
+
+class ProjectDeliveryAuthorizationEvent(models.Model):
+    EVENT_CHOICES = [
+        ('retirada', 'Retirada'),
+        ('sustituida', 'Sustituida'),
+    ]
+
+    authorization = models.ForeignKey(
+        ProjectDeliveryAuthorization, on_delete=models.PROTECT, related_name='events',
+    )
+    event_type = models.CharField(max_length=12, choices=EVENT_CHOICES)
+    actor = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='delivery_authorization_events',
+    )
+    reason = models.TextField()
+    replacement = models.ForeignKey(
+        ProjectDeliveryAuthorization, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='replaced_authorizations',
+    )
+    occurred_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'project_delivery_authorization_events'
+        ordering = ['occurred_at', 'id']
+        constraints = [models.UniqueConstraint(
+            fields=['authorization'],
+            condition=models.Q(event_type__in=['retirada', 'sustituida']),
+            name='project_delivery_auth_single_close_event',
+        )]
 
 
 class TeamMembership(models.Model):

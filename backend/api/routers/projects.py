@@ -1,5 +1,5 @@
 from django.db import IntegrityError, transaction
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 from fastapi import Depends, HTTPException, status
 
@@ -7,12 +7,16 @@ from api.dependencies import get_current_user
 from api.router import APIRouter
 from api.schemas.projects import (
     ProjectCommercialAuthorizationCreate, ProjectCommercialAuthorizationWithdrawal,
-    ProjectCreate, ProjectExecutionReturn, ProjectResponse, ProjectStartReadiness,
+    ProjectCreate, ProjectDeliveryAuthorizationCreate, ProjectExecutionReturn,
+    ProjectReadyForDeliveryInput, ProjectResponse, ProjectStartReadiness,
+    ProjectTaskClassificationInput, ProjectTechnicalEvaluationInput,
     ProjectValidationReadiness,
 )
 from clients.models import (
     Client, Collaborator, Project, ProjectCommercialAuthorization,
-    ProjectCommercialAuthorizationEvent, ProjectCoordination, ProjectEvent,
+    ProjectCommercialAuthorizationEvent, ProjectCoordination, ProjectDeliveryAuthorization,
+    ProjectDeliveryAuthorizationEvent, ProjectEvent, ProjectTaskClassification,
+    ProjectTechnicalEvaluation, Task, TaskEvent,
 )
 
 router = APIRouter()
@@ -26,6 +30,121 @@ def require_project_reader(user: dict) -> None:
 def require_project_creator(user: dict) -> None:
     if user.get('role') != 'L2':
         raise HTTPException(status_code=403, detail='No tienes permiso para crear proyectos')
+
+
+def active_l3_actor(user: dict) -> Collaborator:
+    if user.get('role') != 'L3':
+        raise HTTPException(status_code=403, detail='La operación corresponde a L3')
+    actor = Collaborator.objects.filter(
+        pk=user['collaborator_id'], is_active=True, role__level='L3',
+    ).first()
+    if actor is None:
+        raise HTTPException(status_code=403, detail='El colaborador L3 no está activo')
+    return actor
+
+
+def active_l2_actor(user: dict) -> Collaborator:
+    if user.get('role') != 'L2':
+        raise HTTPException(status_code=403, detail='La operación comercial corresponde a L2')
+    actor = Collaborator.objects.filter(
+        pk=user['collaborator_id'], is_active=True, role__level='L2',
+    ).first()
+    if actor is None:
+        raise HTTPException(status_code=403, detail='El colaborador L2 no está activo')
+    return actor
+
+
+def lock_coordinated_project(project_id: int, actor: Collaborator) -> Project:
+    project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
+    if project is None:
+        raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+    coordination = ProjectCoordination.objects.select_for_update(of=('self',)).filter(
+        project_id=project_id, coordinator=actor, is_active=True,
+        coordinator__is_active=True, coordinator__role__level='L3',
+    ).order_by('id').first()
+    if coordination is None:
+        raise HTTPException(status_code=404, detail='Proyecto fuera de tu coordinación vigente')
+    return project
+
+
+def normalized_scope(value: str) -> str:
+    return ' '.join(value.split()).casefold()
+
+
+def project_scope_snapshot(project: Project) -> str:
+    if project.scope and project.scope.strip():
+        return project.scope.strip()
+    start_event = ProjectEvent.objects.filter(
+        project=project, event_type='inicio_ejecucion',
+    ).select_related('commercial_authorization').order_by('-occurred_at', '-id').first()
+    if start_event and start_event.commercial_authorization_id:
+        return start_event.commercial_authorization.authorized_scope.strip()
+    raise HTTPException(status_code=409, detail='No se puede acreditar el alcance vigente del proyecto')
+
+
+def current_task_snapshot(project_id: int, *, lock: bool = False) -> tuple[list[dict], dict[int, Task]]:
+    queryset = Task.objects.filter(project_id=project_id).order_by('id')
+    if lock:
+        queryset = queryset.select_for_update(of=('self',))
+    tasks = list(queryset)
+    classifications = {
+        item.task_id: item
+        for item in ProjectTaskClassification.objects.filter(
+            project_id=project_id, is_current=True,
+        )
+    }
+    snapshot = []
+    task_by_id = {task.id: task for task in tasks}
+    for task in tasks:
+        last_event = TaskEvent.objects.filter(task_id=task.id).order_by('-occurred_at', '-id').first()
+        classification = classifications.get(task.id)
+        snapshot.append({
+            'task_id': task.id,
+            'classification_id': classification.id if classification else None,
+            'is_mandatory': classification.is_mandatory if classification else None,
+            'status': task.status,
+            'is_blocked': task.is_blocked,
+            'last_event_id': last_event.id if last_event else None,
+            'last_event_type': last_event.event_type if last_event else None,
+            'last_event_status': last_event.new_status if last_event else None,
+        })
+    return snapshot, task_by_id
+
+
+def task_close_issues(snapshot: list[dict], optional_assessments: list[dict]) -> list[str]:
+    issues = []
+    assessment_ids = {item.get('task_id') for item in optional_assessments}
+    for row in snapshot:
+        task_id = row['task_id']
+        if row['classification_id'] is None:
+            issues.append(f'La tarea #{task_id} no tiene clasificación vigente')
+            continue
+        if row['is_mandatory']:
+            if row['status'] != 'Finalizada' or row['is_blocked']:
+                issues.append(f'La tarea obligatoria #{task_id} no está aprobada y sin bloqueo vigente')
+            elif row['last_event_type'] != 'aprobada_revision' or row['last_event_status'] != 'Finalizada':
+                issues.append(f'La tarea obligatoria #{task_id} no conserva aprobación vigente')
+        elif row['status'] != 'Finalizada' and task_id not in assessment_ids:
+            issues.append(f'La tarea opcional pendiente #{task_id} no fue evaluada expresamente por L3')
+    expected_optional_ids = {
+        row['task_id'] for row in snapshot
+        if row['classification_id'] is not None and not row['is_mandatory'] and row['status'] != 'Finalizada'
+    }
+    if assessment_ids != expected_optional_ids:
+        issues.append('La evaluación debe corresponder exactamente a las tareas opcionales pendientes actuales')
+    return issues
+
+
+def active_delivery_authorizations(project_id: int, now=None):
+    now = now or timezone.now()
+    closed_events = ProjectDeliveryAuthorizationEvent.objects.filter(
+        authorization_id=OuterRef('pk'), event_type__in=['retirada', 'sustituida'],
+    )
+    return ProjectDeliveryAuthorization.objects.filter(
+        project_id=project_id, effective_at__lte=now, conditions_accredited=True,
+    ).filter(
+        Q(expires_at__isnull=True) | Q(expires_at__gt=now),
+    ).annotate(is_closed=Exists(closed_events)).filter(is_closed=False)
 
 
 def to_response(project: Project) -> dict:
@@ -48,6 +167,8 @@ def to_response(project: Project) -> dict:
                 'evidence': event.evidence,
                 'occurred_at': event.occurred_at.isoformat(),
                 'commercial_authorization_id': event.commercial_authorization_id,
+                'technical_evaluation_id': event.technical_evaluation_id,
+                'delivery_authorization_id': event.delivery_authorization_id,
             }
             for event in project.events.select_related('actor').all()
         ],
@@ -349,6 +470,369 @@ def list_project_commercial_authorizations(project_id: int, user: dict = Depends
         commercial_authorization_response(item, include_private=include_private)
         for item in queryset
     ]
+
+
+def delivery_authorization_response(authorization: ProjectDeliveryAuthorization) -> dict:
+    return {
+        'id': authorization.id,
+        'project_id': authorization.project_id,
+        'authorized_by_id': authorization.authorized_by_id,
+        'authorized_by_name': f'{authorization.authorized_by.first_name} {authorization.authorized_by.last_name}',
+        'authorized_at': authorization.authorized_at.isoformat(),
+        'authorized_scope': authorization.authorized_scope,
+        'scope_snapshot': authorization.scope_snapshot,
+        'effectivity_conditions': authorization.effectivity_conditions,
+        'conditions_accredited': authorization.conditions_accredited,
+        'evidence_reference': authorization.evidence_reference,
+        'effective_at': authorization.effective_at.isoformat(),
+        'expires_at': authorization.expires_at.isoformat() if authorization.expires_at else None,
+        'events': [
+            {
+                'event_type': event.event_type,
+                'actor_id': event.actor_id,
+                'actor_name': f'{event.actor.first_name} {event.actor.last_name}',
+                'reason': event.reason,
+                'replacement_id': event.replacement_id,
+                'occurred_at': event.occurred_at.isoformat(),
+            }
+            for event in authorization.events.select_related('actor').all()
+        ],
+    }
+
+
+@router.get('/{project_id}/delivery-context')
+def delivery_context(project_id: int, user: dict = Depends(get_current_user)):
+    actor = active_l3_actor(user)
+    project = Project.objects.filter(pk=project_id).first()
+    if project is None:
+        raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+    if not ProjectCoordination.objects.filter(
+        project=project, coordinator=actor, is_active=True,
+        coordinator__is_active=True, coordinator__role__level='L3',
+    ).exists():
+        raise HTTPException(status_code=404, detail='Proyecto fuera de tu coordinación vigente')
+    snapshot, tasks = current_task_snapshot(project_id)
+    classifications = {
+        item.task_id: item
+        for item in ProjectTaskClassification.objects.filter(project_id=project_id).select_related('actor')
+    }
+    task_rows = []
+    for row in snapshot:
+        classification = classifications.get(row['task_id'])
+        task_rows.append({
+            **row,
+            'title': tasks[row['task_id']].title,
+            'description': tasks[row['task_id']].description,
+            'classification_history': [
+                {
+                    'is_mandatory': revision.is_mandatory,
+                    'scope_snapshot': revision.scope_snapshot,
+                    'reason': revision.reason,
+                    'actor_id': revision.actor_id,
+                    'actor_name': f'{revision.actor.first_name} {revision.actor.last_name}',
+                    'occurred_at': revision.occurred_at.isoformat(),
+                    'is_current': revision.is_current,
+                }
+                for revision in ProjectTaskClassification.objects.filter(
+                    project_id=project_id, task_id=row['task_id'],
+                ).select_related('actor')
+            ],
+        })
+    validation_event = ProjectEvent.objects.filter(
+        project=project, event_type='ingreso_validacion_tecnica',
+    ).order_by('-occurred_at', '-id').first()
+    evaluations = ProjectTechnicalEvaluation.objects.filter(
+        project=project,
+    ).select_related('actor', 'validation_event')
+    try:
+        scope_snapshot = project_scope_snapshot(project) if project.status != 'Planificado' else ''
+    except HTTPException:
+        scope_snapshot = ''
+    return {
+        'project_id': project.id,
+        'status': project.status,
+        'scope_snapshot': scope_snapshot,
+        'tasks': task_rows,
+        'current_validation_event_id': validation_event.id if validation_event else None,
+        'technical_evaluations': [
+            {
+                'id': item.id,
+                'validation_event_id': item.validation_event_id,
+                'actor_id': item.actor_id,
+                'actor_name': f'{item.actor.first_name} {item.actor.last_name}',
+                'scope_snapshot': item.scope_snapshot,
+                'satisfactory': item.satisfactory,
+                'technical_enablement_status': item.technical_enablement_status,
+                'ordinary_close_valid': item.ordinary_close_valid,
+                'result_summary': item.result_summary,
+                'evidence': item.evidence,
+                'obligations_assessment': item.obligations_assessment,
+                'optional_task_assessments': item.optional_task_assessments,
+                'evaluated_at': item.evaluated_at.isoformat(),
+            }
+            for item in evaluations
+        ],
+    }
+
+
+@router.post('/{project_id}/tasks/{task_id}/delivery-classification')
+def classify_project_task(
+    project_id: int, task_id: int, payload: ProjectTaskClassificationInput,
+    user: dict = Depends(get_current_user),
+):
+    actor = active_l3_actor(user)
+    try:
+        with transaction.atomic():
+            project = lock_coordinated_project(project_id, actor)
+            if project.status not in {'En ejecución', 'En validación técnica'}:
+                raise HTTPException(status_code=409, detail='La clasificación solo puede realizarse antes del cierre del proyecto')
+            scope_snapshot = project_scope_snapshot(project)
+            task = Task.objects.select_for_update(of=('self',)).filter(
+                pk=task_id, project=project,
+            ).first()
+            if task is None:
+                raise HTTPException(status_code=404, detail='Tarea no encontrada en el proyecto')
+            current = ProjectTaskClassification.objects.select_for_update(of=('self',)).filter(
+                task=task, is_current=True,
+            ).first()
+            if (
+                current
+                and current.is_mandatory == payload.is_mandatory
+                and normalized_scope(current.scope_snapshot) == normalized_scope(scope_snapshot)
+                and current.reason == payload.reason.strip()
+            ):
+                return {'classification_id': current.id, 'created': False, 'is_mandatory': current.is_mandatory}
+            if current:
+                current.is_current = False
+                current.save(update_fields=['is_current'])
+            classification = ProjectTaskClassification.objects.create(
+                project=project, task=task, actor=actor,
+                is_mandatory=payload.is_mandatory, scope_snapshot=scope_snapshot,
+                reason=payload.reason.strip(),
+            )
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail='La clasificación cambió concurrentemente')
+    return {
+        'classification_id': classification.id,
+        'created': True,
+        'is_mandatory': classification.is_mandatory,
+        'scope_snapshot': classification.scope_snapshot,
+        'reason': classification.reason,
+        'occurred_at': classification.occurred_at.isoformat(),
+    }
+
+
+@router.post('/{project_id}/technical-evaluations')
+def record_project_technical_evaluation(
+    project_id: int, payload: ProjectTechnicalEvaluationInput,
+    user: dict = Depends(get_current_user),
+):
+    actor = active_l3_actor(user)
+    try:
+        with transaction.atomic():
+            project = lock_coordinated_project(project_id, actor)
+            if project.status != 'En validación técnica':
+                raise HTTPException(status_code=409, detail='El proyecto debe estar En validación técnica')
+            validation_event = ProjectEvent.objects.filter(
+                project=project, event_type='ingreso_validacion_tecnica',
+            ).order_by('-occurred_at', '-id').first()
+            if validation_event is None:
+                raise HTTPException(status_code=409, detail='Falta el ingreso vigente a validación técnica')
+            scope_snapshot = project_scope_snapshot(project)
+            task_snapshot, _tasks = current_task_snapshot(project.id, lock=True)
+            if payload.ordinary_close_valid:
+                issues = task_close_issues(
+                    task_snapshot, [item.model_dump() for item in payload.optional_task_assessments],
+                )
+                if issues:
+                    raise HTTPException(status_code=409, detail='; '.join(issues))
+            evaluation = ProjectTechnicalEvaluation.objects.create(
+                project=project, validation_event=validation_event, actor=actor,
+                scope_snapshot=scope_snapshot, satisfactory=payload.satisfactory,
+                technical_enablement_status=payload.technical_enablement_status,
+                ordinary_close_valid=payload.ordinary_close_valid,
+                obligations_compatible=payload.obligations_compatible,
+                result_summary=payload.result_summary.strip(), evidence=payload.evidence.strip(),
+                ordinary_close_evidence=payload.ordinary_close_evidence.strip(),
+                obligations_assessment=payload.obligations_assessment.strip(),
+                optional_task_assessments=[item.model_dump() for item in payload.optional_task_assessments],
+                task_snapshot=task_snapshot,
+            )
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail='No se pudo guardar la evaluación técnica')
+    return {
+        'id': evaluation.id,
+        'project_id': project_id,
+        'validation_event_id': evaluation.validation_event_id,
+        'satisfactory': evaluation.satisfactory,
+        'technical_enablement_status': evaluation.technical_enablement_status,
+        'ordinary_close_valid': evaluation.ordinary_close_valid,
+        'evaluated_at': evaluation.evaluated_at.isoformat(),
+    }
+
+
+@router.get('/{project_id}/delivery-authorizations')
+def list_delivery_authorizations(project_id: int, user: dict = Depends(get_current_user)):
+    role = user.get('role')
+    if role not in {'L2', 'L3'}:
+        raise HTTPException(status_code=403, detail='No tienes permiso para consultar habilitaciones de entrega')
+    project = Project.objects.filter(pk=project_id).first()
+    if project is None:
+        raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+    if role == 'L3' and not ProjectCoordination.objects.filter(
+        project=project, coordinator_id=user['collaborator_id'], is_active=True,
+        coordinator__is_active=True, coordinator__role__level='L3',
+    ).exists():
+        raise HTTPException(status_code=404, detail='Proyecto fuera de tu coordinación vigente')
+    return [
+        delivery_authorization_response(item)
+        for item in ProjectDeliveryAuthorization.objects.filter(project=project)
+        .select_related('authorized_by').prefetch_related('events__actor')
+    ]
+
+
+@router.post('/{project_id}/delivery-authorizations', status_code=status.HTTP_201_CREATED)
+def create_delivery_authorization(
+    project_id: int, payload: ProjectDeliveryAuthorizationCreate,
+    user: dict = Depends(get_current_user),
+):
+    actor = active_l2_actor(user)
+    if not payload.conditions_accredited:
+        raise HTTPException(status_code=409, detail='L2 debe acreditar las condiciones de efectividad')
+    if payload.expires_at is not None and payload.expires_at <= payload.effective_at:
+        raise HTTPException(status_code=422, detail='El vencimiento debe ser posterior a la efectividad')
+    if payload.replaces_authorization_id is not None and not payload.replacement_reason:
+        raise HTTPException(status_code=422, detail='La sustitución requiere motivo')
+    try:
+        with transaction.atomic():
+            project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
+            if project is None:
+                raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+            if payload.effective_at < timezone.now():
+                raise HTTPException(status_code=422, detail='No se admiten habilitaciones de entrega retroactivas')
+            scope_snapshot = project_scope_snapshot(project)
+            if normalized_scope(payload.authorized_scope) != normalized_scope(scope_snapshot):
+                raise HTTPException(status_code=409, detail='La habilitación debe corresponder al alcance vigente del proyecto')
+            replaced = None
+            if payload.replaces_authorization_id is not None:
+                replaced = ProjectDeliveryAuthorization.objects.select_for_update(of=('self',)).filter(
+                    pk=payload.replaces_authorization_id, project=project,
+                ).first()
+                if replaced is None:
+                    raise HTTPException(status_code=404, detail='La habilitación a sustituir no pertenece al proyecto')
+                if replaced.events.filter(event_type__in=['retirada', 'sustituida']).exists():
+                    raise HTTPException(status_code=409, detail='La habilitación ya fue retirada o sustituida')
+            authorization = ProjectDeliveryAuthorization.objects.create(
+                project=project, authorized_by=actor,
+                authorized_scope=payload.authorized_scope.strip(), scope_snapshot=scope_snapshot,
+                effectivity_conditions=payload.effectivity_conditions.strip(),
+                conditions_accredited=payload.conditions_accredited,
+                evidence_reference=payload.evidence_reference.strip(),
+                effective_at=payload.effective_at, expires_at=payload.expires_at,
+            )
+            if replaced is not None:
+                ProjectDeliveryAuthorizationEvent.objects.create(
+                    authorization=replaced, event_type='sustituida', actor=actor,
+                    reason=payload.replacement_reason.strip(), replacement=authorization,
+                )
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail='La habilitación fue modificada concurrentemente')
+    authorization = ProjectDeliveryAuthorization.objects.select_related('authorized_by').get(pk=authorization.pk)
+    return delivery_authorization_response(authorization)
+
+
+@router.post('/{project_id}/delivery-authorizations/{authorization_id}/withdrawal')
+def withdraw_delivery_authorization(
+    project_id: int, authorization_id: int, payload: ProjectCommercialAuthorizationWithdrawal,
+    user: dict = Depends(get_current_user),
+):
+    actor = active_l2_actor(user)
+    try:
+        with transaction.atomic():
+            project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
+            if project is None:
+                raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+            authorization = ProjectDeliveryAuthorization.objects.select_for_update(of=('self',)).filter(
+                pk=authorization_id, project=project,
+            ).first()
+            if authorization is None:
+                raise HTTPException(status_code=404, detail='Habilitación no encontrada en el proyecto')
+            if authorization.events.filter(event_type__in=['retirada', 'sustituida']).exists():
+                raise HTTPException(status_code=409, detail='La habilitación ya fue retirada o sustituida')
+            ProjectDeliveryAuthorizationEvent.objects.create(
+                authorization=authorization, event_type='retirada', actor=actor,
+                reason=payload.reason.strip(),
+            )
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail='La habilitación fue modificada concurrentemente')
+    return {'authorization_id': authorization_id, 'withdrawn': True}
+
+
+@router.post('/{project_id}/ready-for-delivery', response_model=ProjectResponse)
+def mark_project_ready_for_delivery(
+    project_id: int, payload: ProjectReadyForDeliveryInput,
+    user: dict = Depends(get_current_user),
+):
+    actor = active_l3_actor(user)
+    try:
+        with transaction.atomic():
+            project = lock_coordinated_project(project_id, actor)
+            if project.status != 'En validación técnica':
+                raise HTTPException(status_code=409, detail='El proyecto debe estar En validación técnica')
+            scope_snapshot = project_scope_snapshot(project)
+            validation_event = ProjectEvent.objects.filter(
+                project=project, event_type='ingreso_validacion_tecnica',
+            ).order_by('-occurred_at', '-id').first()
+            if validation_event is None:
+                raise HTTPException(status_code=409, detail='Falta el ingreso vigente a validación técnica')
+            evaluation = ProjectTechnicalEvaluation.objects.select_for_update(of=('self',)).filter(
+                project=project, validation_event=validation_event,
+            ).order_by('-evaluated_at', '-id').first()
+            if evaluation is None:
+                raise HTTPException(status_code=409, detail='Falta la evaluación técnica integral del ciclo vigente')
+            if normalized_scope(evaluation.scope_snapshot) != normalized_scope(scope_snapshot):
+                raise HTTPException(status_code=409, detail='La evaluación técnica no corresponde al alcance vigente')
+            if not evaluation.satisfactory:
+                raise HTTPException(status_code=409, detail='La evaluación técnica integral no es satisfactoria')
+            if evaluation.technical_enablement_status != 'Vigente':
+                raise HTTPException(status_code=409, detail='La habilitación técnica no está vigente')
+            if not evaluation.ordinary_close_valid or not evaluation.obligations_compatible:
+                raise HTTPException(status_code=409, detail='El cierre técnico ordinario u obligaciones no son compatibles')
+            task_snapshot, _tasks = current_task_snapshot(project.id, lock=True)
+            if task_snapshot != evaluation.task_snapshot:
+                raise HTTPException(status_code=409, detail='Las tareas o clasificaciones cambiaron después de la evaluación; se requiere evaluar de nuevo')
+            issues = task_close_issues(task_snapshot, evaluation.optional_task_assessments)
+            if issues:
+                raise HTTPException(status_code=409, detail='; '.join(issues))
+            authorization = active_delivery_authorizations(project.id, timezone.now()).select_for_update(of=('self',)).filter(
+                pk=payload.delivery_authorization_id,
+            ).first()
+            if authorization is None:
+                raise HTTPException(status_code=409, detail='La habilitación comercial seleccionada no está vigente y aplicable')
+            if normalized_scope(authorization.scope_snapshot) != normalized_scope(scope_snapshot) or normalized_scope(authorization.authorized_scope) != normalized_scope(scope_snapshot):
+                raise HTTPException(status_code=409, detail='La habilitación comercial no corresponde al alcance vigente')
+            previous_status = project.status
+            project.status = 'Listo para entrega'
+            project.save(update_fields=['status'])
+            ProjectEvent.objects.create(
+                event_type='listo_para_entrega', project=project, actor=actor,
+                technical_evaluation=evaluation, delivery_authorization=authorization,
+                previous_status=previous_status, new_status=project.status,
+                reason=payload.reason.strip(),
+                evidence=(
+                    f'Alcance evaluado: {scope_snapshot}\n'
+                    f'Evaluación técnica integral #{evaluation.id}: {evaluation.result_summary.strip()}\n'
+                    f'Evidencia técnica: {evaluation.evidence.strip()}\n'
+                    f'Cierre técnico ordinario acreditado: {evaluation.ordinary_close_evidence.strip()}\n'
+                    f'Obligaciones: {evaluation.obligations_assessment.strip()}\n'
+                    f'Habilitación comercial L2 #{authorization.id}: {authorization.evidence_reference}\n'
+                    f'Condiciones de efectividad: {authorization.effectivity_conditions.strip()}\n'
+                    f'Tareas y clasificaciones verificadas: {len(task_snapshot)}'
+                ),
+            )
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail='No se pudo registrar la transición por un cambio concurrente')
+    return to_response(Project.objects.select_related('client').get(pk=project_id))
 
 
 @router.post('/{project_id}/start', response_model=ProjectResponse)

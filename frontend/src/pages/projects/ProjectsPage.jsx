@@ -2,9 +2,11 @@ import { useEffect, useState } from "react";
 import { getClients } from "../../api/clients";
 import { designateCoordinator, getTaskContext, removeCoordinator } from "../../api/tasks";
 import {
-  createCommercialAuthorization, createProject, enterTechnicalValidation,
-  getCommercialAuthorizations, getProjects, returnProjectToExecution, startProject,
-  withdrawCommercialAuthorization,
+  classifyProjectTask, createCommercialAuthorization, createDeliveryAuthorization,
+  createProject, enterTechnicalValidation, getCommercialAuthorizations,
+  getDeliveryAuthorizations, getDeliveryContext, getProjects,
+  markProjectReadyForDelivery, recordTechnicalEvaluation, returnProjectToExecution,
+  startProject, withdrawCommercialAuthorization, withdrawDeliveryAuthorization,
 } from "../../api/projects";
 import { useAuth } from "../../hooks/useAuth";
 import { can } from "../../utils/permissions";
@@ -18,6 +20,10 @@ export default function ProjectsPage() {
   const canReturnToExecution = can(user, "projects", "returnProjectToExecution");
   const canAuthorizeStart = can(user, "projects", "authorizeProjectStart");
   const canStartProject = can(user, "projects", "startProject");
+  const canClassifyTasks = can(user, "projects", "classifyProjectTasks");
+  const canEvaluateClosure = can(user, "projects", "evaluateProjectClosure");
+  const canMarkReady = can(user, "projects", "markProjectReadyForDelivery");
+  const canAuthorizeDelivery = can(user, "projects", "authorizeProjectDelivery");
   const [projects, setProjects] = useState([]);
   const [clients, setClients] = useState([]);
   const [commercialAuthorizations, setCommercialAuthorizations] = useState({});
@@ -27,6 +33,12 @@ export default function ProjectsPage() {
   const [returnInputs, setReturnInputs] = useState({});
   const [authorizationInputs, setAuthorizationInputs] = useState({});
   const [startInputs, setStartInputs] = useState({});
+  const [deliveryContexts, setDeliveryContexts] = useState({});
+  const [deliveryAuthorizations, setDeliveryAuthorizations] = useState({});
+  const [classificationInputs, setClassificationInputs] = useState({});
+  const [evaluationInputs, setEvaluationInputs] = useState({});
+  const [deliveryAuthorizationInputs, setDeliveryAuthorizationInputs] = useState({});
+  const [readyInputs, setReadyInputs] = useState({});
   const [form, setForm] = useState({ client_id: "", name: "", objective: "", scope: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -53,6 +65,17 @@ export default function ProjectsPage() {
         ]),
       );
       setCommercialAuthorizations(Object.fromEntries(authorizationRows));
+      const deliveryProjectIds = user?.role === "L3"
+        ? [...authorizationProjectIds]
+        : user?.role === "L2" ? projectRows.map((project) => project.id) : [];
+      const deliveryRows = await Promise.all(deliveryProjectIds.map(async (projectId) => [
+        projectId, await getDeliveryAuthorizations(projectId),
+      ]));
+      setDeliveryAuthorizations(Object.fromEntries(deliveryRows));
+      const deliveryContextRows = user?.role === "L3"
+        ? await Promise.all(deliveryProjectIds.map(async (projectId) => [projectId, await getDeliveryContext(projectId)]))
+        : [];
+      setDeliveryContexts(Object.fromEntries(deliveryContextRows));
     } catch (err) {
       setError(err.response?.data?.detail || "No se pudieron cargar los proyectos.");
     } finally { setLoading(false); }
@@ -112,6 +135,83 @@ export default function ProjectsPage() {
       setReturnInputs((items) => ({ ...items, [projectId]: {} }));
     } catch (err) {
       setError(err.userMessage || err.response?.data?.detail || "No se pudo registrar la devolución a ejecución.");
+    }
+  }
+
+  async function saveTaskClassification(projectId, taskId) {
+    setError("");
+    try {
+      await classifyProjectTask(projectId, taskId, classificationInputs[taskId] || {});
+      await refresh();
+      setClassificationInputs((items) => ({ ...items, [taskId]: {} }));
+    } catch (err) {
+      setError(err.userMessage || err.response?.data?.detail || "No se pudo registrar la clasificación de la tarea.");
+    }
+  }
+
+  async function saveTechnicalEvaluation(projectId) {
+    setError("");
+    try {
+      const input = evaluationInputs[projectId] || {};
+      const context = deliveryContexts[projectId];
+      const optionalTaskAssessments = (context?.tasks || [])
+        .filter((task) => task.is_mandatory === false && task.status !== "Finalizada")
+        .map((task) => ({ task_id: task.task_id, ...(input.optionalTasks?.[task.task_id] || {}) }));
+      await recordTechnicalEvaluation(projectId, {
+        ...input,
+        optional_task_assessments: optionalTaskAssessments,
+      });
+      await refresh();
+      setEvaluationInputs((items) => ({ ...items, [projectId]: {} }));
+    } catch (err) {
+      setError(err.userMessage || err.response?.data?.detail || "No se pudo registrar la evaluación técnica.");
+    }
+  }
+
+  async function saveDeliveryAuthorization(projectId) {
+    setError("");
+    try {
+      const input = deliveryAuthorizationInputs[projectId] || {};
+      const effectiveAt = input.effective_at || localDateTime();
+      await createDeliveryAuthorization(projectId, {
+        ...input,
+        effective_at: new Date(effectiveAt).toISOString(),
+        expires_at: input.expires_at ? new Date(input.expires_at).toISOString() : null,
+        replaces_authorization_id: input.replaces_authorization_id ? Number(input.replaces_authorization_id) : null,
+        replacement_reason: input.replaces_authorization_id ? input.replacement_reason : null,
+      });
+      await refresh();
+      setDeliveryAuthorizationInputs((items) => ({ ...items, [projectId]: {} }));
+    } catch (err) {
+      setError(err.userMessage || err.response?.data?.detail || "No se pudo registrar la habilitación de entrega.");
+    }
+  }
+
+  async function withdrawDelivery(projectId, authorizationId) {
+    const reason = window.prompt("Motivo para retirar la habilitación para preparar entrega:");
+    if (!reason?.trim()) return;
+    setError("");
+    try {
+      await withdrawDeliveryAuthorization(projectId, authorizationId, reason.trim());
+      await refresh();
+    } catch (err) {
+      setError(err.userMessage || err.response?.data?.detail || "No se pudo retirar la habilitación de entrega.");
+    }
+  }
+
+  async function submitReadyForDelivery(projectId) {
+    setError("");
+    try {
+      const input = readyInputs[projectId] || {};
+      const updated = await markProjectReadyForDelivery(projectId, {
+        delivery_authorization_id: Number(input.delivery_authorization_id),
+        reason: input.reason,
+      });
+      setProjects((items) => items.map((item) => item.id === projectId ? updated : item));
+      setReadyInputs((items) => ({ ...items, [projectId]: {} }));
+      await refresh();
+    } catch (err) {
+      setError(err.userMessage || err.response?.data?.detail || "No se pudo registrar Listo para entrega.");
     }
   }
 
@@ -195,6 +295,30 @@ export default function ProjectsPage() {
   function updateReturn(projectId, field, value) {
     setReturnInputs((items) => ({ ...items, [projectId]: { ...items[projectId], [field]: value } }));
   }
+  function updateClassification(taskId, field, value) {
+    setClassificationInputs((items) => ({ ...items, [taskId]: { ...items[taskId], [field]: value } }));
+  }
+  function updateEvaluation(projectId, field, value) {
+    setEvaluationInputs((items) => ({ ...items, [projectId]: { ...items[projectId], [field]: value } }));
+  }
+  function updateOptionalAssessment(projectId, taskId, field, value) {
+    setEvaluationInputs((items) => ({
+      ...items,
+      [projectId]: {
+        ...items[projectId],
+        optionalTasks: {
+          ...items[projectId]?.optionalTasks,
+          [taskId]: { ...items[projectId]?.optionalTasks?.[taskId], [field]: value },
+        },
+      },
+    }));
+  }
+  function updateDeliveryAuthorization(projectId, field, value) {
+    setDeliveryAuthorizationInputs((items) => ({ ...items, [projectId]: { ...items[projectId], [field]: value } }));
+  }
+  function updateReady(projectId, field, value) {
+    setReadyInputs((items) => ({ ...items, [projectId]: { ...items[projectId], [field]: value } }));
+  }
 
   return <section style={{ color: "white", maxWidth: 1050, margin: "0 auto" }}>
     <h1>Proyectos</h1>
@@ -218,10 +342,10 @@ export default function ProjectsPage() {
         <div style={{ display: "flex", gap: 6 }}><select aria-label={`Coordinación de ${project.name}`} value={coordinatorSelection[project.id] || ""} onChange={(event) => setCoordinatorSelection({ ...coordinatorSelection, [project.id]: event.target.value })} style={fieldStyle}><option value="">Seleccionar L3</option>{taskContext.coordinators?.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" disabled={!coordinatorSelection[project.id]} onClick={() => assignCoordinator(project.id)} style={{ ...fieldStyle, cursor: "pointer" }}>Designar</button></div>
       </td>}</tr>;
     })}</tbody></table></div>}
-    {canStartValidation && projects.some((project) => project.status === "En ejecución") && <section style={{ marginTop: 28 }}>
+    {canStartValidation && projects.some((project) => project.status === "En ejecución" && scopedProjects.has(project.id)) && <section style={{ marginTop: 28 }}>
       <h2>Ingreso a validación técnica</h2>
       <p style={{ color: "#aab2c5" }}>L3 evalúa preparación suficiente para comenzar una validación significativa. Este acto no declara resultados aprobados ni finaliza el proyecto.</p>
-      {projects.filter((project) => project.status === "En ejecución").map((project) => <article key={project.id} style={{ border: "1px solid #34394a", borderRadius: 8, padding: 16, margin: "12px 0" }}>
+      {projects.filter((project) => project.status === "En ejecución" && scopedProjects.has(project.id)).map((project) => <article key={project.id} style={{ border: "1px solid #34394a", borderRadius: 8, padding: 16, margin: "12px 0" }}>
         <h3>{project.name}</h3>
         <div style={{ display: "grid", gap: 8, maxWidth: 700 }}>{validationFields.map(([field, label]) => field === "evidence" || field === "reason" ? <label key={field} style={{ display: "grid", gap: 4 }}>{label}<textarea required value={validationInputs[project.id]?.[field] || ""} onChange={(event) => updateValidation(project.id, field, event.target.value)} style={fieldStyle} /></label> : <label key={field} style={{ display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={validationInputs[project.id]?.[field] || false} onChange={(event) => updateValidation(project.id, field, event.target.checked)} />{label}</label>)}
           <button type="button" onClick={() => submitValidation(project.id)} disabled={validationFields.some(([field]) => !validationInputs[project.id]?.[field]?.trim())} style={{ ...fieldStyle, cursor: "pointer" }}>Registrar ingreso a validación técnica</button>
@@ -229,10 +353,10 @@ export default function ProjectsPage() {
         {(project.events || []).map((event, index) => <p key={`${event.event_type}-${index}`} style={{ color: "#aab2c5" }}>Historial: {event.previous_status} → {event.new_status} · {event.actor_name} · {new Date(event.occurred_at).toLocaleString()} · {event.reason}</p>)}
       </article>)}
     </section>}
-    {canReturnToExecution && projects.some((project) => project.status === "En validación técnica") && <section style={{ marginTop: 28 }}>
+    {canReturnToExecution && projects.some((project) => project.status === "En validación técnica" && scopedProjects.has(project.id)) && <section style={{ marginTop: 28 }}>
       <h2>Devolución a ejecución</h2>
       <p style={{ color: "#aab2c5" }}>L3 puede devolver el proyecto cuando el trabajo adicional sea necesario para la suficiencia o continuidad de la validación y permanezca dentro del compromiso vigente.</p>
-      {projects.filter((project) => project.status === "En validación técnica").map((project) => <article key={project.id} style={{ border: "1px solid #34394a", borderRadius: 8, padding: 16, margin: "12px 0" }}>
+      {projects.filter((project) => project.status === "En validación técnica" && scopedProjects.has(project.id)).map((project) => <article key={project.id} style={{ border: "1px solid #34394a", borderRadius: 8, padding: 16, margin: "12px 0" }}>
         <h3>{project.name}</h3>
         <div style={{ display: "grid", gap: 8, maxWidth: 700 }}>
           {[["additional_execution_required", "Se requiere trabajo adicional"], ["materially_affects_validation", "Afecta materialmente la suficiencia o continuidad de la validación"], ["within_current_commitment", "El trabajo permanece dentro del compromiso vigente"]].map(([field, label]) => <label key={field} style={{ display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={returnInputs[project.id]?.[field] || false} onChange={(event) => updateReturn(project.id, field, event.target.checked)} />{label}</label>)}
@@ -242,6 +366,100 @@ export default function ProjectsPage() {
         </div>
         {(project.events || []).map((event, index) => <p key={`${event.event_type}-${index}`} style={{ color: "#aab2c5" }}>Historial: {event.previous_status} → {event.new_status} · {event.actor_name} · {new Date(event.occurred_at).toLocaleString()} · {event.reason}</p>)}
       </article>)}
+    </section>}
+    {canClassifyTasks && <section style={{ marginTop: 28 }}>
+      <h2>Clasificación de tareas para el cierre ordinario</h2>
+      <p style={{ color: "#aab2c5" }}>L3 clasifica expresamente cada tarea dentro del alcance vigente. Las modificaciones conservan sus antecedentes.</p>
+      {projects.filter((project) => ["En ejecución", "En validación técnica"].includes(project.status) && scopedProjects.has(project.id)).map((project) => {
+        const context = deliveryContexts[project.id];
+        return <article key={project.id} style={{ border: "1px solid #34394a", borderRadius: 8, padding: 16, margin: "12px 0" }}>
+          <h3>{project.name}</h3>
+          {!context ? <p>Cargando tareas y clasificaciones…</p> : context.tasks.length === 0 ? <p>El proyecto no tiene tareas registradas.</p> : context.tasks.map((task) => {
+            const input = classificationInputs[task.task_id] || {};
+            const current = task.classification_history?.find((item) => item.is_current);
+            return <div key={task.task_id} style={{ borderTop: "1px solid #34394a", padding: "10px 0" }}>
+              <strong>{task.title}</strong> · {task.status}{task.is_blocked ? " · Bloqueada" : ""}
+              {task.classification_history?.map((item, index) => <p key={index} style={{ color: "#aab2c5", margin: "4px 0" }}>{item.is_current ? "Vigente" : "Antecedente"}: {item.is_mandatory ? "Obligatoria" : "Opcional"} · {item.actor_name} · {new Date(item.occurred_at).toLocaleString()} · {item.reason} · Alcance: {item.scope_snapshot}</p>)}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "end" }}>
+                <label>Clasificación<select value={input.is_mandatory === undefined ? "" : String(input.is_mandatory)} onChange={(event) => updateClassification(task.task_id, "is_mandatory", event.target.value === "" ? undefined : event.target.value === "true")} style={fieldStyle}><option value="">Selecciona</option><option value="true">Obligatoria</option><option value="false">Opcional</option></select></label>
+                <label>Justificación<input value={input.reason || ""} onChange={(event) => updateClassification(task.task_id, "reason", event.target.value)} style={fieldStyle} /></label>
+                <button type="button" disabled={input.is_mandatory === undefined || !input.reason?.trim()} onClick={() => saveTaskClassification(project.id, task.task_id)} style={fieldStyle}>{current ? "Registrar modificación" : "Registrar clasificación"}</button>
+              </div>
+            </div>;
+          })}
+        </article>;
+      })}
+    </section>}
+    {canEvaluateClosure && projects.some((project) => project.status === "En validación técnica" && scopedProjects.has(project.id)) && <section style={{ marginTop: 28 }}>
+      <h2>Evaluación técnica integral</h2>
+      <p style={{ color: "#aab2c5" }}>L3 evalúa el alcance completo, el cierre ordinario, las tareas y las obligaciones aplicables. Registrar la evaluación no cambia el estado del proyecto.</p>
+      {projects.filter((project) => project.status === "En validación técnica" && scopedProjects.has(project.id)).map((project) => {
+        const input = evaluationInputs[project.id] || {};
+        const context = deliveryContexts[project.id];
+        const pendingOptional = (context?.tasks || []).filter((task) => task.is_mandatory === false && task.status !== "Finalizada");
+        return <article key={project.id} style={{ border: "1px solid #34394a", borderRadius: 8, padding: 16, margin: "12px 0" }}>
+          <h3>{project.name}</h3><p>Alcance evaluado: {context?.scope_snapshot || project.scope || "No disponible"}</p>
+          <div style={{ display: "grid", gap: 8, maxWidth: 760 }}>
+            <label style={{ display: "flex", gap: 8 }}><input type="checkbox" checked={input.satisfactory || false} onChange={(event) => updateEvaluation(project.id, "satisfactory", event.target.checked)} />La validación integral es satisfactoria con evidencia suficiente</label>
+            <label>Estado de habilitación técnica<select value={input.technical_enablement_status || "En revisión"} onChange={(event) => updateEvaluation(project.id, "technical_enablement_status", event.target.value)} style={fieldStyle}><option>Vigente</option><option>En revisión</option><option>No vigente</option></select></label>
+            <label style={{ display: "flex", gap: 8 }}><input type="checkbox" checked={input.ordinary_close_valid || false} onChange={(event) => updateEvaluation(project.id, "ordinary_close_valid", event.target.checked)} />El cierre técnico ordinario es válido</label>
+            <label style={{ display: "flex", gap: 8 }}><input type="checkbox" checked={input.obligations_compatible || false} onChange={(event) => updateEvaluation(project.id, "obligations_compatible", event.target.checked)} />Las obligaciones evaluadas son compatibles con el cierre y la habilitación</label>
+            {[["result_summary", "Resultado y requisitos evaluados"], ["evidence", "Evidencia de validación integral"], ["ordinary_close_evidence", "Fundamento del cierre ordinario"], ["obligations_assessment", "Obligaciones pendientes y seguimiento"]].map(([field, label]) => <label key={field} style={{ display: "grid", gap: 4 }}>{label}<textarea required value={input[field] || ""} onChange={(event) => updateEvaluation(project.id, field, event.target.value)} style={fieldStyle} /></label>)}
+            {pendingOptional.map((task) => <div key={task.task_id} style={{ borderTop: "1px solid #34394a", paddingTop: 8 }}><strong>Tarea opcional pendiente: {task.title}</strong>
+              <label style={{ display: "grid", gap: 4 }}>Evaluación de impacto<textarea required value={input.optionalTasks?.[task.task_id]?.impact_assessment || ""} onChange={(event) => updateOptionalAssessment(project.id, task.task_id, "impact_assessment", event.target.value)} style={fieldStyle} /></label>
+              <label style={{ display: "grid", gap: 4 }}>Evidencia<textarea required value={input.optionalTasks?.[task.task_id]?.evidence || ""} onChange={(event) => updateOptionalAssessment(project.id, task.task_id, "evidence", event.target.value)} style={fieldStyle} /></label>
+            </div>)}
+            <button type="button" onClick={() => saveTechnicalEvaluation(project.id)} disabled={["result_summary", "evidence", "ordinary_close_evidence", "obligations_assessment"].some((field) => !input[field]?.trim()) || pendingOptional.some((task) => !input.optionalTasks?.[task.task_id]?.impact_assessment?.trim() || !input.optionalTasks?.[task.task_id]?.evidence?.trim())} style={fieldStyle}>Registrar evaluación técnica</button>
+          </div>
+          {(context?.technical_evaluations || []).filter((item) => item.validation_event_id === context.current_validation_event_id).map((item) => <p key={item.id} style={{ color: "#aab2c5" }}>Evaluación #{item.id} · {item.satisfactory ? "satisfactoria" : "no satisfactoria"} · habilitación técnica {item.technical_enablement_status} · cierre ordinario {item.ordinary_close_valid ? "válido" : "no acreditado"} · {item.actor_name} · {new Date(item.evaluated_at).toLocaleString()}</p>)}
+        </article>;
+      })}
+    </section>}
+    {canMarkReady && projects.some((project) => project.status === "En validación técnica" && scopedProjects.has(project.id)) && <section style={{ marginTop: 28 }}>
+      <h2>Preparación para entrega</h2>
+      <p style={{ color: "#aab2c5" }}>L3 autoriza el cierre ordinario si la evaluación técnica, las tareas y la habilitación comercial específica están vigentes y corresponden al alcance.</p>
+      {projects.filter((project) => project.status === "En validación técnica" && scopedProjects.has(project.id)).map((project) => {
+        const input = readyInputs[project.id] || {};
+        const context = deliveryContexts[project.id];
+        const now = Date.now();
+        const candidates = (deliveryAuthorizations[project.id] || []).filter((item) => !item.events?.length && item.conditions_accredited && new Date(item.effective_at).getTime() <= now && (!item.expires_at || new Date(item.expires_at).getTime() > now));
+        return <article key={project.id} style={{ border: "1px solid #34394a", borderRadius: 8, padding: 16, margin: "12px 0" }}><h3>{project.name}</h3>
+          <label>Habilitación L2<select required value={input.delivery_authorization_id || ""} onChange={(event) => updateReady(project.id, "delivery_authorization_id", event.target.value)} style={fieldStyle}><option value="">Seleccionar</option>{candidates.map((item) => <option key={item.id} value={item.id}>#{item.id} · {item.authorized_scope} · {item.evidence_reference}</option>)}</select></label>
+          {candidates.length === 0 && <p>No hay habilitación de entrega vigente disponible.</p>}
+          <label>Motivo de cierre ordinario<textarea required value={input.reason || ""} onChange={(event) => updateReady(project.id, "reason", event.target.value)} style={fieldStyle} /></label>
+          <button type="button" disabled={!input.delivery_authorization_id || !input.reason?.trim()} onClick={() => submitReadyForDelivery(project.id)} style={fieldStyle}>Registrar Listo para entrega</button>
+        </article>;
+      })}
+    </section>}
+    {canAuthorizeDelivery && <section style={{ marginTop: 28 }}>
+      <h2>Habilitación comercial para preparar la entrega</h2>
+      <p style={{ color: "#aab2c5" }}>L2 registra la autorización específica y su alcance. No cambia el estado del proyecto ni formaliza la entrega.</p>
+      {projects.map((project) => {
+        const rows = deliveryAuthorizations[project.id] || [];
+        const startRows = commercialAuthorizations[project.id] || [];
+        const input = deliveryAuthorizationInputs[project.id] || {};
+        const replaceable = rows.filter((item) => !item.events?.length);
+        return <article key={project.id} style={{ border: "1px solid #34394a", borderRadius: 8, padding: 16, margin: "12px 0" }}>
+          <h3>{project.name}</h3>
+          {rows.map((item) => <div key={item.id} style={{ color: "#aab2c5", marginBottom: 8 }}>
+            <p>#{item.id} · {item.authorized_scope} · L2 {item.authorized_by_name} · efectiva {new Date(item.effective_at).toLocaleString()}{item.expires_at ? ` · vence ${new Date(item.expires_at).toLocaleString()}` : " · sin vencimiento específico"}</p>
+            <p>Condiciones: {item.effectivity_conditions} · acreditadas: {item.conditions_accredited ? "sí" : "no"} · evidencia: {item.evidence_reference}</p>
+            {item.events?.map((event, index) => <p key={index}>{event.event_type} por {event.actor_name} · {event.reason}</p>)}
+            {!item.events?.length && <button type="button" onClick={() => withdrawDelivery(project.id, item.id)} style={fieldStyle}>Retirar habilitación de entrega</button>}
+          </div>)}
+          <form onSubmit={(event) => { event.preventDefault(); saveDeliveryAuthorization(project.id); }} style={{ display: "grid", gap: 8, maxWidth: 700 }}>
+            <label>Alcance autorizado<input required value={input.authorized_scope ?? project.scope ?? startRows[0]?.authorized_scope ?? ""} onChange={(event) => updateDeliveryAuthorization(project.id, "authorized_scope", event.target.value)} style={fieldStyle} /></label>
+            <label>Condiciones de efectividad<textarea required value={input.effectivity_conditions || ""} onChange={(event) => updateDeliveryAuthorization(project.id, "effectivity_conditions", event.target.value)} style={fieldStyle} /></label>
+            <label style={{ display: "flex", gap: 8 }}><input type="checkbox" checked={input.conditions_accredited || false} onChange={(event) => updateDeliveryAuthorization(project.id, "conditions_accredited", event.target.checked)} />Acredito las condiciones de efectividad de esta habilitación</label>
+            <label>Referencia comercial o documental<input required value={input.evidence_reference || ""} onChange={(event) => updateDeliveryAuthorization(project.id, "evidence_reference", event.target.value)} style={fieldStyle} /></label>
+            <label>Efectiva desde<input type="datetime-local" required value={input.effective_at || localDateTime()} onChange={(event) => updateDeliveryAuthorization(project.id, "effective_at", event.target.value)} style={fieldStyle} /></label>
+            <label>Vencimiento específico documentado (opcional)<input type="datetime-local" value={input.expires_at || ""} onChange={(event) => updateDeliveryAuthorization(project.id, "expires_at", event.target.value)} style={fieldStyle} /></label>
+            {replaceable.length > 0 && <label>Sustituir habilitación<select value={input.replaces_authorization_id || ""} onChange={(event) => updateDeliveryAuthorization(project.id, "replaces_authorization_id", event.target.value)} style={fieldStyle}><option value="">Nueva habilitación independiente</option>{replaceable.map((item) => <option key={item.id} value={item.id}>#{item.id} · {item.authorized_scope}</option>)}</select></label>}
+            {input.replaces_authorization_id && <label>Motivo de sustitución<input required value={input.replacement_reason || ""} onChange={(event) => updateDeliveryAuthorization(project.id, "replacement_reason", event.target.value)} style={fieldStyle} /></label>}
+            <button type="submit" disabled={!input.conditions_accredited} style={fieldStyle}>Registrar habilitación de entrega</button>
+          </form>
+        </article>;
+      })}
     </section>}
     {canAuthorizeStart && <section style={{ marginTop: 28 }}>
       <h2>Habilitación comercial para iniciar</h2>
