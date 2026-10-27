@@ -441,7 +441,7 @@ class Task(models.Model):
     STATUS_CHOICES = [
         ('Pendiente', 'Pendiente'), ('Asignada', 'Asignada'),
         ('En proceso', 'En proceso'), ('En revisión', 'En revisión'),
-        ('Observada', 'Observada'), ('Finalizada', 'Finalizada'),
+        ('Observada', 'Observada'), ('Finalizada', 'Finalizada'), ('Cancelada', 'Cancelada'),
     ]
 
     project = models.ForeignKey(Project, on_delete=models.PROTECT, related_name='tasks')
@@ -469,13 +469,14 @@ class Task(models.Model):
         constraints = [
             models.CheckConstraint(
                 condition=models.Q(status__in=[
-                    'Pendiente', 'Asignada', 'En proceso', 'En revisión', 'Observada', 'Finalizada',
+                    'Pendiente', 'Asignada', 'En proceso', 'En revisión', 'Observada', 'Finalizada', 'Cancelada',
                 ]),
                 name='task_status_valid',
             ),
             models.CheckConstraint(
                 condition=(
-                    models.Q(status='Pendiente', assignee__isnull=True, assigned_at__isnull=True)
+                    models.Q(status__in=['Pendiente', 'Cancelada'], assignee__isnull=True, assigned_at__isnull=True)
+                    | models.Q(status='Cancelada', assignee__isnull=False, assigned_at__isnull=False)
                     | models.Q(
                         status__in=['Asignada', 'En proceso', 'En revisión', 'Observada', 'Finalizada'],
                         assignee__isnull=False, assigned_at__isnull=False,
@@ -505,6 +506,13 @@ class TaskEvent(models.Model):
         ('bloqueo_levantado', 'Bloqueo levantado'),
         ('incidencia_comunicada', 'Incidencia comunicada'),
         ('reapertura_autorizada', 'Reapertura autorizada'),
+        ('cancelacion_propuesta', 'Cancelación propuesta'),
+        ('cancelacion_pendiente', 'Evaluación de cancelación pendiente'),
+        ('cancelacion_autorizada', 'Cancelación autorizada'),
+        ('cancelacion_denegada', 'Cancelación denegada'),
+        ('revision_comercial_pend', 'Revisión comercial pendiente'),
+        ('revision_comercial_resuelta', 'Revisión comercial resuelta'),
+        ('cancelacion_aplicada', 'Cancelación aplicada'),
     ]
 
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='events')

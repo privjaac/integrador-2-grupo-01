@@ -35,6 +35,26 @@ export async function reopenTask(id, reason, result_text) {
   return data;
 }
 
+export async function proposeTaskCancellation(id, payload) {
+  const { data } = await axiosInstance.post(`/api/tasks/${id}/cancellation/proposal`, payload);
+  return data;
+}
+
+export async function evaluateTaskCancellation(id, payload) {
+  const { data } = await axiosInstance.post(`/api/tasks/${id}/cancellation/evaluation`, payload);
+  return data;
+}
+
+export async function reviewTaskCancellationCommercially(id, payload) {
+  const { data } = await axiosInstance.post(`/api/tasks/${id}/cancellation/commercial-review`, payload);
+  return data;
+}
+
+export async function applyTaskCancellation(id) {
+  const { data } = await axiosInstance.post(`/api/tasks/${id}/cancellation/apply`);
+  return data;
+}
+
 export async function reassignTask(id, { assignee_id, responsible_id, reason }) {
   const { data } = await axiosInstance.post(`/api/tasks/${id}/reassignment`, {
     assignee_id, responsible_id, reason,

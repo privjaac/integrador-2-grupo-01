@@ -2,17 +2,29 @@ from django.db import IntegrityError, transaction
 from django.db.models import OuterRef, Q, Subquery
 from django.utils import timezone
 from fastapi import Depends, HTTPException, status
+import json
 
 from api.dependencies import get_current_user
 from api.router import APIRouter
 from api.schemas.tasks import (
-    Designation, TaskAssign, TaskBlockInput, TaskCreate, TaskExecutorRemoval,
+    Designation, TaskAssign, TaskBlockInput, TaskCancellationCommercialReview,
+    TaskCancellationEvaluation, TaskCancellationProposal, TaskCreate, TaskExecutorRemoval,
     TaskIncidentInput, TaskReassignment, TaskReview, TaskReopen, TaskSubmission,
 )
 from clients.models import (
     Collaborator, Project, ProjectCoordination, ProjectLeadership, Task,
     TaskEvent, TeamMembership,
 )
+
+CANCELABLE_TASK_STATUSES = {'Pendiente', 'Asignada', 'En proceso', 'En revisión', 'Observada'}
+CANCELLATION_EVALUATION_EVENTS = {
+    'cancelacion_pendiente', 'cancelacion_autorizada', 'cancelacion_denegada',
+}
+CANCELLATION_COMMERCIAL_EVENTS = {'revision_comercial_pend', 'revision_comercial_resuelta'}
+CANCELLATION_EVENT_TYPES = {
+    'cancelacion_propuesta', *CANCELLATION_EVALUATION_EVENTS,
+    *CANCELLATION_COMMERCIAL_EVENTS, 'cancelacion_aplicada',
+}
 
 router = APIRouter()
 
@@ -77,9 +89,101 @@ def active_team_membership(task: Task, developer_id: int | None = None):
     )
 
 
-def task_action_permissions(task: Task, user: dict) -> dict:
+def cancellation_event_data(event: TaskEvent) -> dict:
+    try:
+        value = json.loads(event.result_text or '{}')
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def cancellation_workflow(task: Task, events: list[TaskEvent]) -> dict:
+    proposals = [event for event in events if event.event_type == 'cancelacion_propuesta']
+    if not proposals:
+        return {'proposal': None, 'evaluation': None, 'commercial': None, 'stale': False}
+    proposal = proposals[-1]
+    stale = (
+        task.status != proposal.new_status
+        or any(
+            event.pk > proposal.pk and event.previous_status and event.new_status
+            and event.previous_status != event.new_status
+            for event in events
+        )
+    )
+    proposal_data = cancellation_event_data(proposal)
+    proposal_id = proposal_data.get('proposal_event_id', proposal.pk)
+    evaluations = [
+        event for event in events
+        if event.event_type in CANCELLATION_EVALUATION_EVENTS
+        and cancellation_event_data(event).get('proposal_event_id') == proposal_id
+    ]
+    evaluation = evaluations[-1] if evaluations else None
+    commercial = None
+    if evaluation:
+        commercial = next((
+            event for event in reversed(events)
+            if event.event_type in CANCELLATION_COMMERCIAL_EVENTS
+            and cancellation_event_data(event).get('evaluation_event_id') == evaluation.pk
+        ), None)
+    return {
+        'proposal': proposal, 'proposal_data': proposal_data,
+        'evaluation': evaluation,
+        'evaluation_data': cancellation_event_data(evaluation) if evaluation else {},
+        'commercial': commercial,
+        'commercial_data': cancellation_event_data(commercial) if commercial else {},
+        'stale': stale,
+    }
+
+
+def l2_can_review_cancellation(task: Task, user: dict, workflow: dict) -> bool:
+    evaluation = workflow.get('evaluation')
+    data = workflow.get('evaluation_data') or {}
+    commercial = workflow.get('commercial')
+    commercial_data = workflow.get('commercial_data') or {}
+    if (
+        user.get('role') != 'L2' or not evaluation or workflow.get('stale')
+        or evaluation.event_type != 'cancelacion_autorizada'
+        or data.get('commercial_impact') != 'new_or_uncertain'
+        or (commercial and commercial.event_type == 'revision_comercial_resuelta')
+    ):
+        return False
+    if commercial and commercial.event_type != 'revision_comercial_pend':
+        return False
+    return ProjectCoordination.objects.filter(
+        project_id=task.project_id, coordinator_id=evaluation.actor_id,
+        assigned_by_id=user.get('collaborator_id'), is_active=True,
+        assigned_by__is_active=True, assigned_by__role__level='L2',
+        coordinator__is_active=True, coordinator__role__level='L3',
+    ).exists()
+
+
+def task_action_permissions(task: Task, user: dict, events: list[TaskEvent] | None = None) -> dict:
     role = user.get('role')
     collaborator_id = user.get('collaborator_id')
+    events = events if events is not None else list(task.events.all())
+    workflow = cancellation_workflow(task, events)
+    has_current_proposal = bool(
+        workflow.get('proposal') and not workflow.get('stale')
+        and task.status in CANCELABLE_TASK_STATUSES
+    )
+    evaluation = workflow.get('evaluation')
+    evaluation_data = workflow.get('evaluation_data') or {}
+    can_evaluate_cancellation = (
+        has_current_proposal and (
+            evaluation is None or evaluation.event_type == 'cancelacion_pendiente'
+        )
+    )
+    commercial = workflow.get('commercial')
+    needs_commercial_review = evaluation_data.get('commercial_impact') == 'new_or_uncertain'
+    commercial_review_complete = bool(
+        commercial and commercial.event_type == 'revision_comercial_resuelta'
+        and (workflow.get('commercial_data') or {}).get('decision') == 'resuelta'
+    )
+    can_apply_cancellation = bool(
+        has_current_proposal and evaluation and evaluation.event_type == 'cancelacion_autorizada'
+        and evaluation_data.get('obligation_disposition') != 'unresolved'
+        and (not needs_commercial_review or commercial_review_complete)
+    )
     if role == 'L5':
         member = (
             task.assignee_id == collaborator_id
@@ -93,8 +197,10 @@ def task_action_permissions(task: Task, user: dict) -> dict:
             'can_remove_executor': False,
             'can_block': False,
             'can_unblock': False,
-            'can_report_incident': member,
+            'can_report_incident': member and task.status != 'Cancelada',
             'can_reopen': False,
+            'can_propose_cancellation': False, 'can_evaluate_cancellation': False,
+            'can_review_cancellation_commercial': False, 'can_apply_cancellation': False,
         }
     if role == 'L4':
         in_scope = task_queryset(user).filter(pk=task.pk).exists()
@@ -123,15 +229,22 @@ def task_action_permissions(task: Task, user: dict) -> dict:
             ),
             'can_block': (
                 in_scope and task.responsible_id == collaborator_id and responsible_leadership
-                and task.status != 'Finalizada' and not task.is_blocked
+                and task.status not in {'Finalizada', 'Cancelada'} and not task.is_blocked
                 and (task.assignee_id is None or member)
             ),
             'can_unblock': (
                 in_scope and task.responsible_id == collaborator_id and responsible_leadership
-                and task.is_blocked and (task.assignee_id is None or member)
+                and task.status != 'Cancelada' and task.is_blocked
+                and (task.assignee_id is None or member)
             ),
             'can_report_incident': False,
             'can_reopen': False,
+            'can_propose_cancellation': (
+                in_scope and task.responsible_id == collaborator_id and responsible_leadership
+                and task.status in CANCELABLE_TASK_STATUSES
+            ),
+            'can_evaluate_cancellation': False,
+            'can_review_cancellation_commercial': False, 'can_apply_cancellation': False,
         }
     if role == 'L3':
         in_scope = task_queryset(user).filter(pk=task.pk).exists()
@@ -141,20 +254,38 @@ def task_action_permissions(task: Task, user: dict) -> dict:
             'can_review': False,
             'can_reassign': in_scope and task.status in {'En proceso', 'Observada'},
             'can_remove_executor': in_scope and task.status in {'Asignada', 'En proceso'},
-            'can_block': in_scope and task.status != 'Finalizada' and not task.is_blocked,
-            'can_unblock': in_scope and task.is_blocked,
+            'can_block': in_scope and task.status not in {'Finalizada', 'Cancelada'} and not task.is_blocked,
+            'can_unblock': in_scope and task.status != 'Cancelada' and task.is_blocked,
             'can_report_incident': False,
             'can_reopen': in_scope and task.status == 'Finalizada',
+            'can_propose_cancellation': False,
+            'can_evaluate_cancellation': in_scope and can_evaluate_cancellation,
+            'can_review_cancellation_commercial': False,
+            'can_apply_cancellation': in_scope and can_apply_cancellation,
+        }
+    if role == 'L2':
+        return {
+            'can_start': False, 'can_submit_result': False, 'can_review': False,
+            'can_reassign': False, 'can_remove_executor': False, 'can_block': False,
+            'can_unblock': False, 'can_report_incident': False, 'can_reopen': False,
+            'can_propose_cancellation': False, 'can_evaluate_cancellation': False,
+            'can_review_cancellation_commercial': l2_can_review_cancellation(task, user, workflow),
+            'can_apply_cancellation': False,
         }
     return {
         'can_start': False, 'can_submit_result': False, 'can_review': False,
         'can_reassign': False, 'can_remove_executor': False,
         'can_block': False, 'can_unblock': False, 'can_report_incident': False,
         'can_reopen': False,
+        'can_propose_cancellation': False, 'can_evaluate_cancellation': False,
+        'can_review_cancellation_commercial': False, 'can_apply_cancellation': False,
     }
 
 
 def task_response(task: Task, user: dict) -> dict:
+    events = list(task.events.select_related(
+        'actor', 'assignee', 'previous_assignee', 'responsible', 'previous_responsible',
+    ).all())
     return {
         'id': task.id,
         'project_id': task.project_id,
@@ -207,13 +338,13 @@ def task_response(task: Task, user: dict) -> dict:
                 'evidence': event.evidence,
                 'result_text': event.result_text,
                 'reason': event.reason,
+                'cancellation_data': cancellation_event_data(event)
+                if event.event_type in CANCELLATION_EVENT_TYPES else None,
                 'occurred_at': event.occurred_at.isoformat(),
             }
-            for event in task.events.select_related(
-                'actor', 'assignee', 'previous_assignee', 'responsible', 'previous_responsible',
-            ).all()
+            for event in events
         ],
-        'actions': task_action_permissions(task, user),
+        'actions': task_action_permissions(task, user, events),
     }
 
 
@@ -461,13 +592,86 @@ def lock_task_for_l3_reopen(task_id: int, coordinator_id: int) -> Task:
     return task
 
 
+def lock_task_for_cancellation(task_id: int, actor_id: int, actor_role: str) -> Task:
+    candidate = Task.objects.filter(pk=task_id).values(
+        'project_id', 'responsible_id', 'assignee_id', 'status',
+    ).first()
+    if candidate is None:
+        raise HTTPException(404, 'Tarea no encontrada en tu ámbito')
+    coordinations = lock_project_coordinations(candidate['project_id'])
+    if actor_role == 'L3':
+        if not any(item.coordinator_id == actor_id for item in coordinations):
+            raise HTTPException(404, 'Tarea fuera de tu coordinación vigente')
+    elif actor_role == 'L4':
+        _coordinations, leaderships = lock_l4_leaderships(candidate['project_id'], actor_id)
+        if candidate['responsible_id'] != actor_id or not leaderships:
+            raise HTTPException(404, 'Tarea fuera de tu responsabilidad vigente')
+    else:
+        raise HTTPException(403, 'Nivel sin autorización para esta operación de cancelación')
+    task = Task.objects.select_for_update().filter(pk=task_id).first()
+    if task is None or any((
+        task.project_id != candidate['project_id'],
+        task.responsible_id != candidate['responsible_id'],
+        task.assignee_id != candidate['assignee_id'],
+        task.status != candidate['status'],
+    )):
+        raise HTTPException(409, 'La tarea cambió durante la operación')
+    return task
+
+
+def cancellation_event(task, event_type, current_actor, reason, data, evidence=''):
+    event = TaskEvent.objects.create(
+        task=task, event_type=event_type, actor=current_actor,
+        previous_status=task.status, new_status=task.status,
+        assignee_id=task.assignee_id, responsible_id=task.responsible_id,
+        is_blocked_before=task.is_blocked, is_blocked_after=task.is_blocked,
+        reason=reason, evidence=evidence or '', result_text=json.dumps(data, ensure_ascii=False),
+    )
+    return event
+
+
+def valid_cancellation_proposal(task, events):
+    workflow = cancellation_workflow(task, events)
+    proposal = workflow.get('proposal')
+    if not proposal or workflow.get('stale') or task.status not in CANCELABLE_TASK_STATUSES:
+        return workflow, None
+    return workflow, proposal
+
+
+def commercial_cancellation_summary(task: Task, user: dict) -> dict | None:
+    events = list(task.events.select_related('actor').all())
+    workflow = cancellation_workflow(task, events)
+    if not l2_can_review_cancellation(task, user, workflow):
+        return None
+    proposal = workflow['proposal']
+    evaluation = workflow['evaluation']
+    return {
+        'task_id': task.id, 'project_id': task.project_id,
+        'project_name': task.project.name, 'task_title': task.title,
+        'status': task.status,
+        'proposal': {
+            'event_id': proposal.id, 'actor_name': f'{proposal.actor.first_name} {proposal.actor.last_name}',
+            'occurred_at': proposal.occurred_at.isoformat(), 'reason': proposal.reason,
+            'effects': workflow['proposal_data'].get('effects', ''), 'evidence': proposal.evidence,
+        },
+        'evaluation': {
+            'event_id': evaluation.id, 'actor_name': f'{evaluation.actor.first_name} {evaluation.actor.last_name}',
+            'occurred_at': evaluation.occurred_at.isoformat(), 'reason': evaluation.reason,
+            'data': workflow['evaluation_data'], 'evidence': evaluation.evidence,
+        },
+    }
+
+
 @router.get('/context')
 def get_task_context(user: dict = Depends(get_current_user)):
     role = user.get('role')
     if role not in {'L2', 'L3', 'L4', 'L5'}:
         raise HTTPException(403, 'No tienes acceso al contexto de tareas')
     collaborator_id = user['collaborator_id']
-    result = {'role': role, 'projects': [], 'coordinators': [], 'leaders': [], 'developers': [], 'tasks': []}
+    result = {
+        'role': role, 'projects': [], 'coordinators': [], 'leaders': [],
+        'developers': [], 'tasks': [], 'commercial_cancellations': [],
+    }
 
     if role == 'L2':
         result['projects'] = [project_context(p) for p in Project.objects.order_by('id')]
@@ -483,6 +687,17 @@ def get_task_context(user: dict = Depends(get_current_user)):
             {'id': c.id, 'name': f'{c.first_name} {c.last_name}'}
             for c in active_role_collaborators('L3')
         ]
+        project_ids = ProjectCoordination.objects.filter(
+            assigned_by_id=collaborator_id, is_active=True,
+            assigned_by__is_active=True, assigned_by__role__level='L2',
+            coordinator__is_active=True, coordinator__role__level='L3',
+        ).values_list('project_id', flat=True)
+        for task in Task.objects.filter(
+            project_id__in=project_ids, status__in=CANCELABLE_TASK_STATUSES,
+        ).select_related('project').distinct():
+            summary = commercial_cancellation_summary(task, user)
+            if summary:
+                result['commercial_cancellations'].append(summary)
     elif role == 'L3':
         coordinations = ProjectCoordination.objects.filter(
             coordinator_id=collaborator_id, coordinator__is_active=True,
@@ -942,6 +1157,8 @@ def block_task(task_id: int, payload: TaskBlockInput, user: dict = Depends(get_c
     try:
         with transaction.atomic():
             task = lock_task_for_block_action(task_id, user['collaborator_id'], role)
+            if task.status == 'Cancelada':
+                raise HTTPException(409, 'Una tarea Cancelada no admite nuevas condiciones de bloqueo')
             if task.is_blocked:
                 raise HTTPException(409, 'La tarea ya está bloqueada')
             if task.status == 'Finalizada':
@@ -977,6 +1194,8 @@ def unblock_task(task_id: int, payload: TaskBlockInput, user: dict = Depends(get
     try:
         with transaction.atomic():
             task = lock_task_for_block_action(task_id, user['collaborator_id'], role)
+            if task.status == 'Cancelada':
+                raise HTTPException(409, 'Una tarea Cancelada conserva su historial de bloqueo sin nuevas operaciones')
             if not task.is_blocked:
                 raise HTTPException(409, 'La tarea no tiene un bloqueo vigente')
             previous_blocked = task.is_blocked
@@ -1142,4 +1361,207 @@ def reopen_task(task_id: int, payload: TaskReopen, user: dict = Depends(get_curr
             )
     except IntegrityError:
         raise HTTPException(409, 'No se pudo registrar la reapertura de la tarea')
+    return task_response(Task.objects.select_related('project', 'assignee').get(pk=task_id), user)
+
+
+@router.post('/{task_id}/cancellation/proposal')
+def propose_task_cancellation(
+    task_id: int, payload: TaskCancellationProposal, user: dict = Depends(get_current_user),
+):
+    if user.get('role') != 'L4':
+        raise HTTPException(403, 'Solo L4 responsable puede proponer cancelar la tarea')
+    reason, effects, evidence = payload.reason.strip(), payload.effects.strip(), (payload.evidence or '').strip()
+    if not reason or not effects:
+        raise HTTPException(422, 'La propuesta debe incluir motivo y efectos previstos')
+    current_actor = Collaborator.objects.filter(
+        pk=user['collaborator_id'], is_active=True, role__level='L4',
+    ).first()
+    if current_actor is None:
+        raise HTTPException(403, 'El actor ya no tiene una cuenta L4 activa')
+    try:
+        with transaction.atomic():
+            task = lock_task_for_cancellation(task_id, current_actor.id, 'L4')
+            if task.status not in CANCELABLE_TASK_STATUSES:
+                raise HTTPException(409, 'T-07 no permite proponer la cancelación desde este estado')
+            event = cancellation_event(
+                task, 'cancelacion_propuesta', current_actor, reason,
+                {'effects': effects}, evidence,
+            )
+            event.result_text = json.dumps(
+                {'proposal_event_id': event.id, 'effects': effects}, ensure_ascii=False,
+            )
+            event.save(update_fields=['result_text'])
+    except IntegrityError:
+        raise HTTPException(409, 'No se pudo registrar la propuesta de cancelación')
+    return task_response(Task.objects.select_related('project', 'assignee').get(pk=task_id), user)
+
+
+@router.post('/{task_id}/cancellation/evaluation')
+def evaluate_task_cancellation(
+    task_id: int, payload: TaskCancellationEvaluation, user: dict = Depends(get_current_user),
+):
+    if user.get('role') != 'L3':
+        raise HTTPException(403, 'Solo L3 coordinador puede evaluar la cancelación')
+    current_actor = Collaborator.objects.filter(
+        pk=user['collaborator_id'], is_active=True, role__level='L3',
+    ).first()
+    if current_actor is None:
+        raise HTTPException(403, 'El actor ya no tiene una cuenta L3 activa')
+    reason = payload.reason.strip()
+    follow_up = (payload.obligation_follow_up or '').strip()
+    evidence = (payload.evidence or '').strip()
+    if not reason or not all((
+        payload.work_assessment.strip(), payload.evidence_assessment.strip(),
+        payload.dependency_assessment.strip(), payload.obligation_assessment.strip(),
+        payload.commercial_assessment.strip(),
+    )):
+        raise HTTPException(422, 'La evaluación debe cubrir trabajo, evidencia, dependencias, obligaciones e impacto comercial')
+    if payload.obligation_disposition == 'follow_up' and not follow_up:
+        raise HTTPException(422, 'Identifica el seguimiento de la obligación pendiente')
+    if payload.decision == 'autorizar' and payload.obligation_disposition == 'unresolved':
+        raise HTTPException(409, 'La cancelación queda pendiente hasta resolver el tratamiento necesario de las obligaciones')
+    if payload.decision == 'autorizar' and payload.commercial_impact == 'existing_authorization' and not evidence:
+        raise HTTPException(422, 'Referencia la autorización comercial vigente que cubre esta cancelación')
+    try:
+        with transaction.atomic():
+            task = lock_task_for_cancellation(task_id, current_actor.id, 'L3')
+            if task.status not in CANCELABLE_TASK_STATUSES:
+                raise HTTPException(409, 'T-07 no permite cancelar una tarea desde este estado')
+            events = list(task.events.all())
+            workflow, proposal = valid_cancellation_proposal(task, events)
+            if not proposal:
+                raise HTTPException(409, 'No existe una propuesta vigente de L4 para evaluar')
+            if workflow.get('evaluation') and workflow['evaluation'].event_type != 'cancelacion_pendiente':
+                raise HTTPException(409, 'La propuesta ya fue autorizada o denegada; L4 debe presentar una propuesta nueva')
+            event_type = {
+                'pendiente': 'cancelacion_pendiente',
+                'autorizar': 'cancelacion_autorizada',
+                'denegar': 'cancelacion_denegada',
+            }[payload.decision]
+            data = {
+                'proposal_event_id': proposal.id, 'decision': payload.decision,
+                'work_assessment': payload.work_assessment.strip(),
+                'evidence_assessment': payload.evidence_assessment.strip(),
+                'dependency_assessment': payload.dependency_assessment.strip(),
+                'obligation_disposition': payload.obligation_disposition,
+                'obligation_assessment': payload.obligation_assessment.strip(),
+                'obligation_follow_up': follow_up,
+                'commercial_impact': payload.commercial_impact,
+                'commercial_assessment': payload.commercial_assessment.strip(),
+            }
+            cancellation_event(task, event_type, current_actor, reason, data, evidence)
+    except IntegrityError:
+        raise HTTPException(409, 'No se pudo registrar la evaluación de cancelación')
+    return task_response(Task.objects.select_related('project', 'assignee').get(pk=task_id), user)
+
+
+@router.post('/{task_id}/cancellation/commercial-review')
+def review_task_cancellation_commercially(
+    task_id: int, payload: TaskCancellationCommercialReview,
+    user: dict = Depends(get_current_user),
+):
+    if user.get('role') != 'L2':
+        raise HTTPException(403, 'Solo L2 competente puede intervenir en las consecuencias comerciales')
+    reason, evidence = payload.reason.strip(), payload.evidence.strip()
+    if not reason or not evidence:
+        raise HTTPException(422, 'La intervención comercial requiere resultado y referencia de respaldo')
+    current_actor = Collaborator.objects.filter(
+        pk=user['collaborator_id'], is_active=True, role__level='L2',
+    ).first()
+    if current_actor is None:
+        raise HTTPException(403, 'El actor ya no tiene una cuenta L2 activa')
+    candidate = Task.objects.filter(pk=task_id).values('project_id').first()
+    if candidate is None:
+        raise HTTPException(404, 'Tarea no encontrada para revisión comercial')
+    try:
+        with transaction.atomic():
+            coordinations = lock_project_coordinations(candidate['project_id'])
+            task = Task.objects.select_for_update().filter(pk=task_id).first()
+            if task is None or task.project_id != candidate['project_id']:
+                raise HTTPException(409, 'La tarea cambió durante la revisión')
+            events = list(task.events.all())
+            workflow = cancellation_workflow(task, events)
+            evaluation = workflow.get('evaluation')
+            if not evaluation or evaluation.event_type != 'cancelacion_autorizada' or workflow.get('stale'):
+                raise HTTPException(409, 'No hay una autorización técnica vigente para revisar')
+            if (workflow.get('evaluation_data') or {}).get('commercial_impact') != 'new_or_uncertain':
+                raise HTTPException(409, 'La evaluación no requiere intervención comercial nueva')
+            coordination = next((
+                item for item in coordinations
+                if item.coordinator_id == evaluation.actor_id
+                and item.assigned_by_id == current_actor.id
+            ), None)
+            if coordination is None:
+                raise HTTPException(404, 'No eres el L2 designador de la coordinación que autorizó la evaluación')
+            if workflow.get('commercial') and workflow['commercial'].event_type == 'revision_comercial_resuelta':
+                raise HTTPException(409, 'La intervención comercial de esta evaluación ya fue registrada')
+            event_type = (
+                'revision_comercial_resuelta' if payload.decision == 'resuelta'
+                else 'revision_comercial_pend'
+            )
+            cancellation_event(
+                task, event_type, current_actor, reason,
+                {
+                    'proposal_event_id': workflow['proposal'].id,
+                    'evaluation_event_id': evaluation.id,
+                    'decision': payload.decision,
+                }, evidence,
+            )
+    except IntegrityError:
+        raise HTTPException(409, 'No se pudo registrar la intervención comercial')
+    return {'task_id': task_id, 'decision': payload.decision, 'status': 'pendiente' if payload.decision == 'pendiente' else 'resuelta'}
+
+
+@router.post('/{task_id}/cancellation/apply')
+def apply_task_cancellation(task_id: int, user: dict = Depends(get_current_user)):
+    if user.get('role') != 'L3':
+        raise HTTPException(403, 'Solo L3 coordinador puede aplicar la cancelación autorizada')
+    current_actor = Collaborator.objects.filter(
+        pk=user['collaborator_id'], is_active=True, role__level='L3',
+    ).first()
+    if current_actor is None:
+        raise HTTPException(403, 'El actor ya no tiene una cuenta L3 activa')
+    try:
+        with transaction.atomic():
+            task = lock_task_for_cancellation(task_id, current_actor.id, 'L3')
+            if task.status not in CANCELABLE_TASK_STATUSES:
+                raise HTTPException(409, 'La tarea ya no se encuentra en un estado cancelable')
+            events = list(task.events.all())
+            workflow, proposal = valid_cancellation_proposal(task, events)
+            evaluation = workflow.get('evaluation')
+            evaluation_data = workflow.get('evaluation_data') or {}
+            if not proposal or not evaluation or evaluation.event_type != 'cancelacion_autorizada':
+                raise HTTPException(409, 'La cancelación requiere autorización técnica vigente')
+            if evaluation.actor_id != current_actor.id:
+                raise HTTPException(403, 'La aplicación debe realizarla el L3 que autorizó la propuesta vigente')
+            if evaluation_data.get('obligation_disposition') == 'unresolved':
+                raise HTTPException(409, 'El tratamiento necesario de obligaciones sigue sin resolver')
+            commercial = workflow.get('commercial')
+            commercial_id = None
+            if evaluation_data.get('commercial_impact') == 'new_or_uncertain':
+                if not commercial or commercial.event_type != 'revision_comercial_resuelta':
+                    raise HTTPException(409, 'La intervención comercial de L2 sigue pendiente')
+                commercial_id = commercial.id
+            previous_status = task.status
+            task.status = 'Cancelada'
+            task.save(update_fields=['status'])
+            TaskEvent.objects.create(
+                task=task, event_type='cancelacion_aplicada', actor=current_actor,
+                previous_status=previous_status, new_status='Cancelada',
+                assignee_id=task.assignee_id, responsible_id=task.responsible_id,
+                is_blocked_before=task.is_blocked, is_blocked_after=task.is_blocked,
+                reason=evaluation.reason, evidence=json.dumps({
+                    'proposal_event_id': proposal.id,
+                    'evaluation_event_id': evaluation.id,
+                    'commercial_event_id': commercial_id,
+                }),
+                result_text=json.dumps({
+                    'proposal_event_id': proposal.id,
+                    'evaluation_event_id': evaluation.id,
+                    'commercial_event_id': commercial_id,
+                    'note': 'Cancelación aplicada; antecedentes, trabajo y obligaciones se conservan.',
+                }, ensure_ascii=False),
+            )
+    except IntegrityError:
+        raise HTTPException(409, 'No se pudo aplicar la cancelación de la tarea')
     return task_response(Task.objects.select_related('project', 'assignee').get(pk=task_id), user)

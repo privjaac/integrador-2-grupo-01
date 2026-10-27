@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { addTeamMember, assignTask, blockTask, createTask, designateCoordinator, designateLeader, getTaskContext, removeCoordinator, removeLeader, removeTaskExecutor, removeTeamMember, reassignTask, reportTaskIncident, reopenTask, reviewTask, startTask, submitTaskReview, unblockTask } from "../../api/tasks";
+import { addTeamMember, applyTaskCancellation, assignTask, blockTask, createTask, designateCoordinator, designateLeader, evaluateTaskCancellation, getTaskContext, proposeTaskCancellation, removeCoordinator, removeLeader, removeTaskExecutor, removeTeamMember, reassignTask, reportTaskIncident, reopenTask, reviewTaskCancellationCommercially, reviewTask, startTask, submitTaskReview, unblockTask } from "../../api/tasks";
 import Button from "../../components/ui/Button";
 import Input from "../../components/ui/Input";
 import Table from "../../components/ui/Table";
@@ -21,6 +21,20 @@ const eventLabels = {
   bloqueo_levantado: "Bloqueo levantado",
   incidencia_comunicada: "Incidencia comunicada",
   reapertura_autorizada: "Reapertura autorizada por L3",
+  cancelacion_propuesta: "Cancelación propuesta por L4",
+  cancelacion_pendiente: "Evaluación de cancelación pendiente",
+  cancelacion_autorizada: "Cancelación autorizada por L3",
+  cancelacion_denegada: "Cancelación denegada por L3",
+  revision_comercial_pend: "Intervención comercial pendiente",
+  revision_comercial_resuelta: "Intervención comercial de L2 registrada",
+  cancelacion_aplicada: "Cancelación aplicada",
+};
+const cancellationDataLabels = {
+  effects: "Efectos previstos", decision: "Decisión", work_assessment: "Evaluación del trabajo",
+  evidence_assessment: "Evaluación de evidencias", dependency_assessment: "Dependencias",
+  obligation_disposition: "Tratamiento de obligaciones", obligation_assessment: "Evaluación de obligaciones",
+  obligation_follow_up: "Seguimiento pendiente", commercial_impact: "Impacto comercial",
+  commercial_assessment: "Evaluación comercial", note: "Resultado",
 };
 
 export default function TasksPage() {
@@ -36,6 +50,9 @@ export default function TasksPage() {
   const [blockInputs, setBlockInputs] = useState({});
   const [incidentInputs, setIncidentInputs] = useState({});
   const [reopenInputs, setReopenInputs] = useState({});
+  const [cancellationProposals, setCancellationProposals] = useState({});
+  const [cancellationEvaluations, setCancellationEvaluations] = useState({});
+  const [commercialReviewInputs, setCommercialReviewInputs] = useState({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
@@ -201,6 +218,56 @@ export default function TasksPage() {
     }
   }
 
+  async function submitCancellationProposal(taskId) {
+    const values = cancellationProposals[taskId] || {};
+    setError("");
+    try {
+      await proposeTaskCancellation(taskId, values);
+      setCancellationProposals((items) => ({ ...items, [taskId]: {} }));
+      setNotice("Propuesta de cancelación registrada; la tarea conserva su estado.");
+      await refresh();
+    } catch (err) {
+      setError(err.userMessage || "No se pudo proponer la cancelación.");
+    }
+  }
+
+  async function submitCancellationEvaluation(taskId) {
+    const values = cancellationEvaluations[taskId] || {};
+    setError("");
+    try {
+      await evaluateTaskCancellation(taskId, values);
+      setCancellationEvaluations((items) => ({ ...items, [taskId]: {} }));
+      setNotice(values.decision === "denegar" ? "Cancelación denegada; el estado permanece." : values.decision === "pendiente" ? "Evaluación pendiente; el estado permanece." : "Cancelación autorizada; se aplicará sólo tras resolver las intervenciones requeridas.");
+      await refresh();
+    } catch (err) {
+      setError(err.userMessage || "No se pudo registrar la evaluación de cancelación.");
+    }
+  }
+
+  async function submitCommercialCancellationReview(item) {
+    const values = commercialReviewInputs[item.task_id] || {};
+    setError("");
+    try {
+      await reviewTaskCancellationCommercially(item.task_id, values);
+      setCommercialReviewInputs((items) => ({ ...items, [item.task_id]: {} }));
+      setNotice(values.decision === "resuelta" ? "Intervención comercial registrada." : "La intervención comercial permanece pendiente.");
+      await refresh();
+    } catch (err) {
+      setError(err.userMessage || "No se pudo registrar la intervención comercial.");
+    }
+  }
+
+  async function submitApplyCancellation(taskId) {
+    setError("");
+    try {
+      await applyTaskCancellation(taskId);
+      setNotice("Tarea cancelada; sus obligaciones, trabajo e historial se conservan.");
+      await refresh();
+    } catch (err) {
+      setError(err.userMessage || "No se pudo aplicar la cancelación.");
+    }
+  }
+
   async function submitReassignment(task) {
     const values = reassignments[task.id] || {};
     setError("");
@@ -291,6 +358,20 @@ export default function TasksPage() {
       </section>;
     })}
 
+    {can(user, "tasks", "reviewCancellationCommercial") && <section style={{ margin: "24px 0", padding: 16, background: "#111427", border: "1px solid rgba(63,229,229,0.12)", borderRadius: 8 }}>
+      <h2>Intervenciones comerciales pendientes</h2>
+      {!context.commercial_cancellations?.length && <p style={{ color: "#8892a4" }}>No tienes intervenciones comerciales pendientes.</p>}
+      {context.commercial_cancellations?.map((item) => <article key={item.task_id} style={{ padding: "12px 0", borderTop: "1px solid rgba(63,229,229,0.12)" }}>
+        <h3>{item.project_name} · {item.task_title}</h3>
+        <p>Estado actual: {item.status}<br />Propuesta L4: {item.proposal.reason}<br />Efectos previstos: {item.proposal.effects}<br />Evidencia de la propuesta: {item.proposal.evidence || "—"}</p>
+        <p>Evaluación L3: {item.evaluation.reason}<br />Impacto: {item.evaluation.data.commercial_assessment}<br />Evidencia de evaluación: {item.evaluation.evidence || "—"}</p>
+        <Input label="Resultado de intervención comercial" name={`commercial-reason-${item.task_id}`} type="textarea" value={commercialReviewInputs[item.task_id]?.reason || ""} onChange={(e) => setCommercialReviewInputs({ ...commercialReviewInputs, [item.task_id]: { ...commercialReviewInputs[item.task_id], reason: e.target.value } })} />
+        <Input label="Referencia de autorización o tratamiento" name={`commercial-evidence-${item.task_id}`} value={commercialReviewInputs[item.task_id]?.evidence || ""} onChange={(e) => setCommercialReviewInputs({ ...commercialReviewInputs, [item.task_id]: { ...commercialReviewInputs[item.task_id], evidence: e.target.value } })} />
+        <Input label="Resultado" name={`commercial-decision-${item.task_id}`} type="select" value={commercialReviewInputs[item.task_id]?.decision || "pendiente"} onChange={(e) => setCommercialReviewInputs({ ...commercialReviewInputs, [item.task_id]: { ...commercialReviewInputs[item.task_id], decision: e.target.value } })} options={[{ value: "pendiente", label: "Pendiente" }, { value: "resuelta", label: "Intervención resuelta" }]} />
+        <Button size="sm" disabled={!commercialReviewInputs[item.task_id]?.reason?.trim() || !commercialReviewInputs[item.task_id]?.evidence?.trim()} onClick={() => submitCommercialCancellationReview(item)}>Registrar intervención</Button>
+      </article>)}
+    </section>}
+
     {(user?.role === "L3" || user?.role === "L4") && context.projects.map((project) => {
       const projectDevelopers = context.developers.filter((person) => person.project_id === project.id);
       return <section key={project.id} style={{ margin: "24px 0", padding: 16, background: "#111427", border: "1px solid rgba(63,229,229,0.12)", borderRadius: 8 }}>
@@ -318,13 +399,29 @@ export default function TasksPage() {
         const targetResponsibleId = user?.role === "L3" ? Number(reassignment.responsible_id) : task.responsible_id;
         const replacementOptions = options.filter((person) => Number(person.responsible_id) === Number(targetResponsibleId));
         return <Table.Row key={task.id} index={index}>
-          <Table.Cell>{task.project_name}</Table.Cell><Table.Cell><strong>{task.title}</strong>{task.description && <div style={{ color: "#8892a4", marginTop: 4 }}>{task.description}</div>}{task.is_blocked && <div style={{ color: "#f3c969", marginTop: 4 }}>Bloqueada: {task.block_reason}</div>}<details style={{ color: "#8892a4", fontSize: 12, marginTop: 6 }}><summary style={{ cursor: "pointer" }}>Responsables e historial</summary><p>Responsable actual: {task.responsible_name || "—"}<br />Creada por: {task.created_by_name || "—"}<br />Registro: {new Date(task.created_at).toLocaleString()}</p>{task.assigned_at && <p>Asignada: {new Date(task.assigned_at).toLocaleString()}</p>}{task.events?.map((event, eventIndex) => <div key={`${event.event_type}-${eventIndex}`} style={{ padding: "4px 0" }}><p>{eventLabels[event.event_type] || event.event_type} por {event.actor_name} · {new Date(event.occurred_at).toLocaleString()}{event.previous_status && event.new_status ? ` · ${event.previous_status} → ${event.new_status}` : ""}</p>{(event.previous_assignee_name || event.assignee_name) && <p>Ejecutor: {event.previous_assignee_name || "Sin asignar"} → {event.assignee_name || "Sin asignar"}</p>}{(event.previous_responsible_name || event.responsible_name) && <p>Responsable: {event.previous_responsible_name || "Sin asignar"} → {event.responsible_name || "Sin asignar"}</p>}{event.is_blocked_before !== event.is_blocked_after && <p>Condición: {event.is_blocked_before ? "Bloqueada" : "Sin bloqueo"} → {event.is_blocked_after ? "Bloqueada" : "Sin bloqueo"}</p>}{event.result_text && <p>{event.event_type === "reapertura_autorizada" ? "Resultado de la reapertura" : "Resultado presentado"}: {event.result_text}</p>}{event.reason && <p>{event.event_type === "reapertura_autorizada" ? "Motivo de reapertura" : "Motivo/resultado"}: {event.reason}</p>}{event.evidence && <p>Evidencia: {event.evidence}</p>}</div>)}</details></Table.Cell><Table.Cell>{task.status}{task.is_blocked && <div style={{ color: "#f3c969", fontSize: 12 }}>Bloqueada</div>}</Table.Cell><Table.Cell>{task.assignee_name || "Sin asignar"}</Table.Cell>
+          <Table.Cell>{task.project_name}</Table.Cell><Table.Cell><strong>{task.title}</strong>{task.description && <div style={{ color: "#8892a4", marginTop: 4 }}>{task.description}</div>}{task.is_blocked && <div style={{ color: "#f3c969", marginTop: 4 }}>Bloqueada: {task.block_reason}</div>}<details style={{ color: "#8892a4", fontSize: 12, marginTop: 6 }}><summary style={{ cursor: "pointer" }}>Responsables e historial</summary><p>Responsable actual: {task.responsible_name || "—"}<br />Creada por: {task.created_by_name || "—"}<br />Registro: {new Date(task.created_at).toLocaleString()}</p>{task.assigned_at && <p>Asignada: {new Date(task.assigned_at).toLocaleString()}</p>}{task.events?.map((event, eventIndex) => <div key={`${event.event_type}-${eventIndex}`} style={{ padding: "4px 0" }}><p>{eventLabels[event.event_type] || event.event_type} por {event.actor_name} · {new Date(event.occurred_at).toLocaleString()}{event.previous_status && event.new_status && event.previous_status !== event.new_status ? ` · ${event.previous_status} → ${event.new_status}` : ""}</p>{(event.previous_assignee_name || event.assignee_name) && <p>Ejecutor: {event.previous_assignee_name || "Sin asignar"} → {event.assignee_name || "Sin asignar"}</p>}{(event.previous_responsible_name || event.responsible_name) && <p>Responsable: {event.previous_responsible_name || "Sin asignar"} → {event.responsible_name || "Sin asignar"}</p>}{event.is_blocked_before !== event.is_blocked_after && <p>Condición: {event.is_blocked_before ? "Bloqueada" : "Sin bloqueo"} → {event.is_blocked_after ? "Bloqueada" : "Sin bloqueo"}</p>}{event.result_text && !event.cancellation_data && <p>{event.event_type === "reapertura_autorizada" ? "Resultado de la reapertura" : "Resultado presentado"}: {event.result_text}</p>}{event.cancellation_data && <div>{Object.entries(event.cancellation_data).filter(([key, value]) => cancellationDataLabels[key] && value !== "").map(([key, value]) => <p key={key}>{cancellationDataLabels[key]}: {String(value)}</p>)}</div>}{event.reason && <p>{event.event_type === "reapertura_autorizada" ? "Motivo de reapertura" : event.event_type?.startsWith("cancelacion_") ? "Motivo / decisión" : "Motivo/resultado"}: {event.reason}</p>}{event.evidence && <p>Evidencia: {event.evidence}</p>}</div>)}</details></Table.Cell><Table.Cell>{task.status}{task.is_blocked && <div style={{ color: "#f3c969", fontSize: 12 }}>Bloqueada</div>}</Table.Cell><Table.Cell>{task.assignee_name || "Sin asignar"}</Table.Cell>
           <Table.Cell>
             {user?.role === "L4" && task.status === "Pendiente" && <div style={{ display: "flex", gap: 8 }}><select aria-label={`Ejecutor para ${task.title}`} style={selectStyle} value={assignment[task.id] || ""} onChange={(e) => setAssignment({ ...assignment, [task.id]: e.target.value })}><option value="">Selecciona L5</option>{options.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select><Button size="sm" disabled={!assignment[task.id]} onClick={() => submitAssignment(task.id)}>Asignar</Button></div>}
             {can(user, "tasks", "start") && task.actions?.can_start && <Button size="sm" onClick={() => startTaskAction(task)}>{task.status === "Observada" ? "Iniciar corrección" : "Iniciar tarea"}</Button>}
             {can(user, "tasks", "submitReview") && task.actions?.can_submit_result && <div style={{ display: "grid", gap: 8, minWidth: 220 }}><Input label="Resultado presentado" name={`result-${task.id}`} type="textarea" value={results[task.id] || ""} onChange={(e) => setResults({ ...results, [task.id]: e.target.value })} required /><Button size="sm" disabled={!results[task.id]?.trim()} onClick={() => submitResult(task.id)}>Enviar a revisión</Button></div>}
             {can(user, "tasks", "review") && task.actions?.can_review && <div style={{ display: "grid", gap: 8, minWidth: 220 }}><Input label="Motivo de observación" name={`reason-${task.id}`} type="textarea" value={reviewReasons[task.id] || ""} onChange={(e) => setReviewReasons({ ...reviewReasons, [task.id]: e.target.value })} /><Button size="sm" variant="ghost" disabled={!reviewReasons[task.id]?.trim()} onClick={() => resolveReview(task.id, "Observada")}>Devolver con observaciones</Button><Button size="sm" onClick={() => resolveReview(task.id, "Finalizada")}>Aprobar resultado</Button></div>}
             {can(user, "tasks", "reopen") && task.actions?.can_reopen && <div style={{ display: "grid", gap: 8, minWidth: 220 }}><Input label="Motivo de reapertura" name={`reopen-reason-${task.id}`} type="textarea" value={reopenInputs[task.id]?.reason || ""} onChange={(e) => setReopenInputs({ ...reopenInputs, [task.id]: { ...reopenInputs[task.id], reason: e.target.value } })} /><Input label="Resultado de la evaluación / corrección requerida" name={`reopen-result-${task.id}`} type="textarea" value={reopenInputs[task.id]?.result_text || ""} onChange={(e) => setReopenInputs({ ...reopenInputs, [task.id]: { ...reopenInputs[task.id], result_text: e.target.value } })} /><Button size="sm" variant="ghost" disabled={!reopenInputs[task.id]?.reason?.trim() || !reopenInputs[task.id]?.result_text?.trim()} onClick={() => reopenCompletedTask(task.id)}>Reabrir como Observada</Button></div>}
+            {can(user, "tasks", "proposeCancellation") && task.actions?.can_propose_cancellation && <div style={{ display: "grid", gap: 8, minWidth: 220 }}><Input label="Motivo de propuesta de cancelación" name={`cancel-proposal-reason-${task.id}`} type="textarea" value={cancellationProposals[task.id]?.reason || ""} onChange={(e) => setCancellationProposals({ ...cancellationProposals, [task.id]: { ...cancellationProposals[task.id], reason: e.target.value } })} /><Input label="Efectos previstos y trabajo realizado" name={`cancel-proposal-effects-${task.id}`} type="textarea" value={cancellationProposals[task.id]?.effects || ""} onChange={(e) => setCancellationProposals({ ...cancellationProposals, [task.id]: { ...cancellationProposals[task.id], effects: e.target.value } })} /><Input label="Evidencia (opcional)" name={`cancel-proposal-evidence-${task.id}`} value={cancellationProposals[task.id]?.evidence || ""} onChange={(e) => setCancellationProposals({ ...cancellationProposals, [task.id]: { ...cancellationProposals[task.id], evidence: e.target.value } })} /><Button size="sm" variant="ghost" disabled={!cancellationProposals[task.id]?.reason?.trim() || !cancellationProposals[task.id]?.effects?.trim()} onClick={() => submitCancellationProposal(task.id)}>Proponer cancelación</Button></div>}
+            {can(user, "tasks", "evaluateCancellation") && task.actions?.can_evaluate_cancellation && <div style={{ display: "grid", gap: 8, minWidth: 240 }}>
+              <Input label="Decisión técnica" name={`cancel-decision-${task.id}`} type="select" value={cancellationEvaluations[task.id]?.decision || "pendiente"} onChange={(e) => setCancellationEvaluations({ ...cancellationEvaluations, [task.id]: { ...cancellationEvaluations[task.id], decision: e.target.value } })} options={[{ value: "pendiente", label: "Dejar pendiente" }, { value: "autorizar", label: "Autorizar" }, { value: "denegar", label: "Denegar" }]} />
+              <Input label="Motivo de la decisión" name={`cancel-eval-reason-${task.id}`} type="textarea" value={cancellationEvaluations[task.id]?.reason || ""} onChange={(e) => setCancellationEvaluations({ ...cancellationEvaluations, [task.id]: { ...cancellationEvaluations[task.id], reason: e.target.value } })} />
+              <Input label="Evaluación del trabajo realizado" name={`cancel-work-${task.id}`} type="textarea" value={cancellationEvaluations[task.id]?.work_assessment || ""} onChange={(e) => setCancellationEvaluations({ ...cancellationEvaluations, [task.id]: { ...cancellationEvaluations[task.id], work_assessment: e.target.value } })} />
+              <Input label="Evaluación de evidencias" name={`cancel-evidence-assessment-${task.id}`} type="textarea" value={cancellationEvaluations[task.id]?.evidence_assessment || ""} onChange={(e) => setCancellationEvaluations({ ...cancellationEvaluations, [task.id]: { ...cancellationEvaluations[task.id], evidence_assessment: e.target.value } })} />
+              <Input label="Dependencias y su tratamiento" name={`cancel-dependencies-${task.id}`} type="textarea" value={cancellationEvaluations[task.id]?.dependency_assessment || ""} onChange={(e) => setCancellationEvaluations({ ...cancellationEvaluations, [task.id]: { ...cancellationEvaluations[task.id], dependency_assessment: e.target.value } })} />
+              <Input label="Tratamiento de obligaciones" name={`cancel-obligation-disposition-${task.id}`} type="select" value={cancellationEvaluations[task.id]?.obligation_disposition || "unresolved"} onChange={(e) => setCancellationEvaluations({ ...cancellationEvaluations, [task.id]: { ...cancellationEvaluations[task.id], obligation_disposition: e.target.value } })} options={[{ value: "none", label: "No hay obligación identificada" }, { value: "follow_up", label: "Obligación pendiente con seguimiento" }, { value: "resolved", label: "Tratamiento resuelto" }, { value: "unresolved", label: "Tratamiento necesario sin resolver" }]} />
+              <Input label="Evaluación de obligaciones" name={`cancel-obligation-assessment-${task.id}`} type="textarea" value={cancellationEvaluations[task.id]?.obligation_assessment || ""} onChange={(e) => setCancellationEvaluations({ ...cancellationEvaluations, [task.id]: { ...cancellationEvaluations[task.id], obligation_assessment: e.target.value } })} />
+              {cancellationEvaluations[task.id]?.obligation_disposition === "follow_up" && <Input label="Identificación y seguimiento de obligación" name={`cancel-obligation-followup-${task.id}`} type="textarea" value={cancellationEvaluations[task.id]?.obligation_follow_up || ""} onChange={(e) => setCancellationEvaluations({ ...cancellationEvaluations, [task.id]: { ...cancellationEvaluations[task.id], obligation_follow_up: e.target.value } })} />}
+              <Input label="Impacto comercial" name={`cancel-commercial-impact-${task.id}`} type="select" value={cancellationEvaluations[task.id]?.commercial_impact || "new_or_uncertain"} onChange={(e) => setCancellationEvaluations({ ...cancellationEvaluations, [task.id]: { ...cancellationEvaluations[task.id], commercial_impact: e.target.value } })} options={[{ value: "none", label: "Sin nuevas consecuencias comerciales" }, { value: "existing_authorization", label: "Cubierto por autorización vigente" }, { value: "new_or_uncertain", label: "Consecuencia nueva o incierta: requiere L2" }]} />
+              <Input label="Evaluación comercial" name={`cancel-commercial-assessment-${task.id}`} type="textarea" value={cancellationEvaluations[task.id]?.commercial_assessment || ""} onChange={(e) => setCancellationEvaluations({ ...cancellationEvaluations, [task.id]: { ...cancellationEvaluations[task.id], commercial_assessment: e.target.value } })} />
+              <Input label="Referencia de evidencia (opcional)" name={`cancel-evaluation-reference-${task.id}`} value={cancellationEvaluations[task.id]?.evidence || ""} onChange={(e) => setCancellationEvaluations({ ...cancellationEvaluations, [task.id]: { ...cancellationEvaluations[task.id], evidence: e.target.value } })} />
+              <Button size="sm" disabled={!cancellationEvaluations[task.id]?.reason?.trim() || !cancellationEvaluations[task.id]?.work_assessment?.trim() || !cancellationEvaluations[task.id]?.evidence_assessment?.trim() || !cancellationEvaluations[task.id]?.dependency_assessment?.trim() || !cancellationEvaluations[task.id]?.obligation_assessment?.trim() || !cancellationEvaluations[task.id]?.commercial_assessment?.trim() || (cancellationEvaluations[task.id]?.obligation_disposition === "follow_up" && !cancellationEvaluations[task.id]?.obligation_follow_up?.trim())} onClick={() => submitCancellationEvaluation(task.id)}>Registrar evaluación</Button>
+            </div>}
+            {can(user, "tasks", "applyCancellation") && task.actions?.can_apply_cancellation && <Button size="sm" variant="ghost" onClick={() => submitApplyCancellation(task.id)}>Aplicar cancelación autorizada</Button>}
             {can(user, "tasks", "reassign") && task.actions?.can_reassign && <div style={{ display: "grid", gap: 8, minWidth: 220 }}>
               {user?.role === "L3" && <Input label="Nuevo responsable L4" name={`responsible-${task.id}`} type="select" value={reassignment.responsible_id || ""} onChange={(e) => setReassignments({ ...reassignments, [task.id]: { ...reassignment, responsible_id: e.target.value, assignee_id: "" } })} options={(context.leadership_assignments || []).filter((item) => item.project_id === task.project_id).map((item) => ({ value: item.leader_id, label: item.leader_name }))} />}
               <Input label="Nuevo ejecutor L5" name={`reassignee-${task.id}`} type="select" value={reassignment.assignee_id || ""} onChange={(e) => setReassignments({ ...reassignments, [task.id]: { ...reassignment, assignee_id: e.target.value } })} options={replacementOptions.map((person) => ({ value: person.id, label: person.name }))} />

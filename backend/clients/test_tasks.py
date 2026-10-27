@@ -1013,3 +1013,218 @@ class TaskWorkflowApiTests(TransactionTestCase):
         task.refresh_from_db()
         self.assertEqual(task.status, 'Finalizada')
         self.assertEqual(TaskEvent.objects.filter(task=task).count(), before_events)
+
+    def create_cancelable_task(self, *, project=None):
+        response = self.create('L4', project=project, status='Asignada', assignee=self.people['L5'])
+        self.assertEqual(response.status_code, 201, response.text)
+        return Task.objects.get(pk=response.json()['id'])
+
+    @staticmethod
+    def cancellation_evaluation(**overrides):
+        payload = {
+            'decision': 'autorizar', 'reason': 'La actividad ya no es técnicamente necesaria',
+            'work_assessment': 'Se revisó el trabajo ejecutado y se conserva el avance reportado',
+            'evidence_assessment': 'Se revisaron las evidencias históricas disponibles',
+            'dependency_assessment': 'Se identificaron dependencias y se conserva su seguimiento',
+            'obligation_disposition': 'follow_up',
+            'obligation_assessment': 'La obligación sigue pendiente y no se considera cumplida',
+            'obligation_follow_up': 'L3 mantiene el seguimiento hasta su resolución autorizada',
+            'commercial_impact': 'none',
+            'commercial_assessment': 'No se identifican consecuencias comerciales nuevas',
+            'evidence': 'Informe técnico T-07',
+        }
+        return {**payload, **overrides}
+
+    def propose_cancellation(self, task, *, level='L4'):
+        return self.api.post(
+            f'/api/tasks/{task.id}/cancellation/proposal', headers=self.headers[level],
+            json={'reason': 'Se propone retirar esta actividad',
+                  'effects': 'Conservar trabajo y mantener seguimiento de la obligación',
+                  'evidence': 'Informe de alcance vigente'},
+        )
+
+    def test_cancellation_proposal_evaluation_and_application_preserve_task_history_and_project(self):
+        task = self.create_cancelable_task()
+        dependency = self.create_cancelable_task()
+        blocked = self.api.post(
+            f'/api/tasks/{task.id}/block', headers=self.headers['L4'],
+            json={'reason': 'Impedimento previo'},
+        )
+        self.assertEqual(blocked.status_code, 200, blocked.text)
+        project_status = self.project.status
+        dependency_status = dependency.status
+        initial_assignee = task.assignee_id
+        prior_events = list(TaskEvent.objects.filter(task=task).values_list('event_type', flat=True))
+
+        proposal = self.propose_cancellation(task)
+        self.assertEqual(proposal.status_code, 200, proposal.text)
+        self.assertEqual(proposal.json()['status'], 'Asignada')
+        self.assertTrue(proposal.json()['actions']['can_propose_cancellation'])
+        l3_view = self.api.get(f'/api/tasks/{task.id}', headers=self.headers['L3'])
+        self.assertTrue(l3_view.json()['actions']['can_evaluate_cancellation'])
+        self.assertEqual(list(TaskEvent.objects.filter(task=task).values_list('event_type', flat=True))[:-1], prior_events)
+        proposal_event = TaskEvent.objects.filter(task=task, event_type='cancelacion_propuesta').get()
+        self.assertEqual(proposal_event.reason, 'Se propone retirar esta actividad')
+        self.assertIn('seguimiento de la obligación', proposal_event.result_text)
+
+        evaluation = self.api.post(
+            f'/api/tasks/{task.id}/cancellation/evaluation', headers=self.headers['L3'],
+            json=self.cancellation_evaluation(),
+        )
+        self.assertEqual(evaluation.status_code, 200, evaluation.text)
+        self.assertEqual(evaluation.json()['status'], 'Asignada')
+        self.assertTrue(evaluation.json()['actions']['can_apply_cancellation'])
+        eval_event = TaskEvent.objects.filter(task=task, event_type='cancelacion_autorizada').get()
+        self.assertIn('L3 mantiene el seguimiento', eval_event.result_text)
+
+        applied = self.api.post(
+            f'/api/tasks/{task.id}/cancellation/apply', headers=self.headers['L3'],
+        )
+        self.assertEqual(applied.status_code, 200, applied.text)
+        task.refresh_from_db()
+        dependency.refresh_from_db()
+        self.assertEqual(task.status, 'Cancelada')
+        self.assertEqual(task.assignee_id, initial_assignee)
+        self.assertTrue(task.is_blocked)
+        self.assertEqual(dependency.status, dependency_status)
+        self.assertEqual([event.event_type for event in TaskEvent.objects.filter(task=task)][:len(prior_events)], prior_events)
+        applied_event = TaskEvent.objects.filter(task=task, event_type='cancelacion_aplicada').get()
+        self.assertEqual(applied_event.previous_status, 'Asignada')
+        self.assertEqual(applied_event.new_status, 'Cancelada')
+        l4_detail = self.api.get(f'/api/tasks/{task.id}', headers=self.headers['L4'])
+        self.assertFalse(l4_detail.json()['actions']['can_propose_cancellation'])
+        self.assertFalse(l4_detail.json()['actions']['can_unblock'])
+        l5_detail = self.api.get(f'/api/tasks/{task.id}', headers=self.headers['L5'])
+        self.assertFalse(l5_detail.json()['actions']['can_start'])
+        after_apply = TaskEvent.objects.filter(task=task).count()
+        self.assertEqual(self.api.post(
+            f'/api/tasks/{task.id}/start', headers=self.headers['L5'],
+        ).status_code, 409)
+        self.assertEqual(self.api.post(
+            f'/api/tasks/{task.id}/unblock', headers=self.headers['L4'],
+            json={'reason': 'Levantar bloqueo'},
+        ).status_code, 409)
+        self.assertEqual(TaskEvent.objects.filter(task=task).count(), after_apply)
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.status, project_status)
+
+    def test_cancellation_denials_pending_obligations_and_finalized_state_do_not_apply(self):
+        task = self.create_cancelable_task()
+        self.assertEqual(self.propose_cancellation(task).status_code, 200)
+        before_events = TaskEvent.objects.filter(task=task).count()
+        pending = self.cancellation_evaluation(
+            decision='pendiente', obligation_disposition='unresolved', obligation_follow_up='',
+        )
+        response = self.api.post(
+            f'/api/tasks/{task.id}/cancellation/evaluation', headers=self.headers['L3'], json=pending,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['status'], 'Asignada')
+        self.assertTrue(response.json()['actions']['can_evaluate_cancellation'])
+        unresolved_authorization = self.api.post(
+            f'/api/tasks/{task.id}/cancellation/evaluation', headers=self.headers['L3'],
+            json=self.cancellation_evaluation(obligation_disposition='unresolved', obligation_follow_up=''),
+        )
+        self.assertEqual(unresolved_authorization.status_code, 409)
+        denied = self.api.post(
+            f'/api/tasks/{task.id}/cancellation/evaluation', headers=self.headers['L3'],
+            json=self.cancellation_evaluation(decision='denegar'),
+        )
+        self.assertEqual(denied.status_code, 200, denied.text)
+        self.assertEqual(denied.json()['status'], 'Asignada')
+        self.assertFalse(denied.json()['actions']['can_apply_cancellation'])
+        apply_denied = self.api.post(
+            f'/api/tasks/{task.id}/cancellation/apply', headers=self.headers['L3'],
+        )
+        self.assertEqual(apply_denied.status_code, 409)
+        task.refresh_from_db()
+        self.assertEqual(task.status, 'Asignada')
+        self.assertEqual(TaskEvent.objects.filter(task=task).count(), before_events + 2)
+
+        finalized, _approval = self.make_finalized_task()
+        finalized_proposal = self.propose_cancellation(finalized)
+        self.assertEqual(finalized_proposal.status_code, 409)
+        finalized.refresh_from_db()
+        self.assertEqual(finalized.status, 'Finalizada')
+        self.assertFalse(TaskEvent.objects.filter(task=finalized, event_type='cancelacion_propuesta').exists())
+
+    def test_cancellation_scope_and_actor_levels_are_checked_by_api(self):
+        task = self.create_cancelable_task()
+        for level in ('L1', 'L2', 'L3', 'L5'):
+            denied = self.propose_cancellation(task, level=level)
+            self.assertEqual(denied.status_code, 403, f'{level}: {denied.text}')
+        foreign_l4 = self.propose_cancellation(task, level='L4B')
+        self.assertEqual(foreign_l4.status_code, 404)
+        self.assertEqual(self.propose_cancellation(task).status_code, 200)
+        for level in ('L1', 'L2', 'L4', 'L5'):
+            denied = self.api.post(
+                f'/api/tasks/{task.id}/cancellation/evaluation', headers=self.headers[level],
+                json=self.cancellation_evaluation(),
+            )
+            self.assertEqual(denied.status_code, 403, f'{level}: {denied.text}')
+        foreign_l3 = self.api.post(
+            f'/api/tasks/{task.id}/cancellation/evaluation', headers=self.headers['L3B'],
+            json=self.cancellation_evaluation(),
+        )
+        self.assertEqual(foreign_l3.status_code, 404)
+        self.assertEqual(TaskEvent.objects.filter(task=task, event_type='cancelacion_autorizada').count(), 0)
+
+    def test_new_commercial_consequences_require_l2_intervention_before_application(self):
+        task = self.create_cancelable_task()
+        self.assertEqual(self.propose_cancellation(task).status_code, 200)
+        evaluation = self.api.post(
+            f'/api/tasks/{task.id}/cancellation/evaluation', headers=self.headers['L3'],
+            json=self.cancellation_evaluation(commercial_impact='new_or_uncertain'),
+        )
+        self.assertEqual(evaluation.status_code, 200, evaluation.text)
+        self.assertFalse(evaluation.json()['actions']['can_apply_cancellation'])
+        context = self.api.get('/api/tasks/context', headers=self.headers['L2'])
+        self.assertEqual(context.status_code, 200, context.text)
+        self.assertEqual([item['task_id'] for item in context.json()['commercial_cancellations']], [task.id])
+        premature = self.api.post(
+            f'/api/tasks/{task.id}/cancellation/apply', headers=self.headers['L3'],
+        )
+        self.assertEqual(premature.status_code, 409)
+        invalid_l2 = self.api.post(
+            f'/api/tasks/{task.id}/cancellation/commercial-review', headers=self.headers['L2B'],
+            json={'decision': 'resuelta', 'reason': 'Revisión', 'evidence': 'Referencia'},
+        )
+        self.assertEqual(invalid_l2.status_code, 404)
+        pending = self.api.post(
+            f'/api/tasks/{task.id}/cancellation/commercial-review', headers=self.headers['L2'],
+            json={'decision': 'pendiente', 'reason': 'Falta confirmar el ajuste', 'evidence': 'Contrato vigente'},
+        )
+        self.assertEqual(pending.status_code, 200, pending.text)
+        self.assertEqual(self.api.post(
+            f'/api/tasks/{task.id}/cancellation/apply', headers=self.headers['L3'],
+        ).status_code, 409)
+        resolved = self.api.post(
+            f'/api/tasks/{task.id}/cancellation/commercial-review', headers=self.headers['L2'],
+            json={'decision': 'resuelta', 'reason': 'Condición comercial atendida', 'evidence': 'Autorización comercial C-14'},
+        )
+        self.assertEqual(resolved.status_code, 200, resolved.text)
+        self.assertEqual(self.api.get('/api/tasks/context', headers=self.headers['L2']).json()['commercial_cancellations'], [])
+        applied = self.api.post(
+            f'/api/tasks/{task.id}/cancellation/apply', headers=self.headers['L3'],
+        )
+        self.assertEqual(applied.status_code, 200, applied.text)
+        self.assertEqual(applied.json()['status'], 'Cancelada')
+        event = TaskEvent.objects.get(task=task, event_type='revision_comercial_resuelta')
+        self.assertEqual(event.actor_id, self.people['L2'].id)
+
+    def test_failed_cancellation_application_rolls_back_state_and_history(self):
+        task = self.create_cancelable_task()
+        self.assertEqual(self.propose_cancellation(task).status_code, 200)
+        self.assertEqual(self.api.post(
+            f'/api/tasks/{task.id}/cancellation/evaluation', headers=self.headers['L3'],
+            json=self.cancellation_evaluation(obligation_disposition='none', obligation_follow_up=''),
+        ).status_code, 200)
+        before_events = TaskEvent.objects.filter(task=task).count()
+        with patch('api.routers.tasks.TaskEvent.objects.create', side_effect=IntegrityError):
+            failed = self.api.post(
+                f'/api/tasks/{task.id}/cancellation/apply', headers=self.headers['L3'],
+            )
+        self.assertEqual(failed.status_code, 409)
+        task.refresh_from_db()
+        self.assertEqual(task.status, 'Asignada')
+        self.assertEqual(TaskEvent.objects.filter(task=task).count(), before_events)
