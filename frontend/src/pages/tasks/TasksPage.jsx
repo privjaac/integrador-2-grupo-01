@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { addTeamMember, assignTask, createTask, designateCoordinator, designateLeader, getTaskContext, removeCoordinator, removeLeader, removeTeamMember, removeTaskExecutor, reassignTask, reviewTask, startTask, submitTaskReview } from "../../api/tasks";
+import { addTeamMember, assignTask, blockTask, createTask, designateCoordinator, designateLeader, getTaskContext, removeCoordinator, removeLeader, removeTaskExecutor, removeTeamMember, reassignTask, reportTaskIncident, reviewTask, startTask, submitTaskReview, unblockTask } from "../../api/tasks";
 import Button from "../../components/ui/Button";
 import Input from "../../components/ui/Input";
 import Table from "../../components/ui/Table";
@@ -17,6 +17,9 @@ const eventLabels = {
   correccion_iniciada: "Corrección iniciada",
   ejecutor_reasignado: "Ejecutor reasignado",
   ejecutor_retirado: "Ejecutor retirado",
+  bloqueo_declarado: "Bloqueo declarado",
+  bloqueo_levantado: "Bloqueo levantado",
+  incidencia_comunicada: "Incidencia comunicada",
 };
 
 export default function TasksPage() {
@@ -29,6 +32,8 @@ export default function TasksPage() {
   const [reviewReasons, setReviewReasons] = useState({});
   const [reassignments, setReassignments] = useState({});
   const [removalReasons, setRemovalReasons] = useState({});
+  const [blockInputs, setBlockInputs] = useState({});
+  const [incidentInputs, setIncidentInputs] = useState({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
@@ -210,6 +215,33 @@ export default function TasksPage() {
     }
   }
 
+  async function changeBlock(task, shouldBlock) {
+    const input = blockInputs[task.id] || {};
+    setError("");
+    try {
+      if (shouldBlock) await blockTask(task.id, input.reason, input.evidence);
+      else await unblockTask(task.id, input.reason, input.evidence);
+      setBlockInputs((items) => ({ ...items, [task.id]: {} }));
+      setNotice(shouldBlock ? "Impedimento registrado." : "Bloqueo levantado con resultado registrado.");
+      await refresh();
+    } catch (err) {
+      setError(err.userMessage || (shouldBlock ? "No se pudo bloquear la tarea." : "No se pudo levantar el bloqueo."));
+    }
+  }
+
+  async function reportIncident(taskId) {
+    const input = incidentInputs[taskId] || {};
+    setError("");
+    try {
+      await reportTaskIncident(taskId, input.reason, input.evidence);
+      setIncidentInputs((items) => ({ ...items, [taskId]: {} }));
+      setNotice("Incidencia comunicada al ámbito responsable.");
+      await refresh();
+    } catch (err) {
+      setError(err.userMessage || "No se pudo comunicar la incidencia.");
+    }
+  }
+
   const selectStyle = { background: "#1a1d30", color: "white", border: "1px solid rgba(63,229,229,0.2)", borderRadius: 4, padding: "8px 10px", width: "100%" };
   const optionsFor = (items) => items.map((item) => ({ value: item.id, label: item.name }));
 
@@ -271,7 +303,7 @@ export default function TasksPage() {
         const targetResponsibleId = user?.role === "L3" ? Number(reassignment.responsible_id) : task.responsible_id;
         const replacementOptions = options.filter((person) => Number(person.responsible_id) === Number(targetResponsibleId));
         return <Table.Row key={task.id} index={index}>
-          <Table.Cell>{task.project_name}</Table.Cell><Table.Cell><strong>{task.title}</strong>{task.description && <div style={{ color: "#8892a4", marginTop: 4 }}>{task.description}</div>}<details style={{ color: "#8892a4", fontSize: 12, marginTop: 6 }}><summary style={{ cursor: "pointer" }}>Responsables e historial</summary><p>Responsable actual: {task.responsible_name || "—"}<br />Creada por: {task.created_by_name || "—"}<br />Registro: {new Date(task.created_at).toLocaleString()}</p>{task.assigned_at && <p>Asignada: {new Date(task.assigned_at).toLocaleString()}</p>}{task.events?.map((event, eventIndex) => <div key={`${event.event_type}-${eventIndex}`} style={{ padding: "4px 0" }}><p>{eventLabels[event.event_type] || event.event_type} por {event.actor_name} · {new Date(event.occurred_at).toLocaleString()}{event.previous_status && event.new_status ? ` · ${event.previous_status} → ${event.new_status}` : ""}</p>{(event.previous_assignee_name || event.assignee_name) && <p>Ejecutor: {event.previous_assignee_name || "Sin asignar"} → {event.assignee_name || "Sin asignar"}</p>}{(event.previous_responsible_name || event.responsible_name) && <p>Responsable: {event.previous_responsible_name || "Sin asignar"} → {event.responsible_name || "Sin asignar"}</p>}{event.result_text && <p>Resultado presentado: {event.result_text}</p>}{event.reason && <p>Motivo: {event.reason}</p>}</div>)}</details></Table.Cell><Table.Cell>{task.status}</Table.Cell><Table.Cell>{task.assignee_name || "Sin asignar"}</Table.Cell>
+          <Table.Cell>{task.project_name}</Table.Cell><Table.Cell><strong>{task.title}</strong>{task.description && <div style={{ color: "#8892a4", marginTop: 4 }}>{task.description}</div>}{task.is_blocked && <div style={{ color: "#f3c969", marginTop: 4 }}>Bloqueada: {task.block_reason}</div>}<details style={{ color: "#8892a4", fontSize: 12, marginTop: 6 }}><summary style={{ cursor: "pointer" }}>Responsables e historial</summary><p>Responsable actual: {task.responsible_name || "—"}<br />Creada por: {task.created_by_name || "—"}<br />Registro: {new Date(task.created_at).toLocaleString()}</p>{task.assigned_at && <p>Asignada: {new Date(task.assigned_at).toLocaleString()}</p>}{task.events?.map((event, eventIndex) => <div key={`${event.event_type}-${eventIndex}`} style={{ padding: "4px 0" }}><p>{eventLabels[event.event_type] || event.event_type} por {event.actor_name} · {new Date(event.occurred_at).toLocaleString()}{event.previous_status && event.new_status ? ` · ${event.previous_status} → ${event.new_status}` : ""}</p>{(event.previous_assignee_name || event.assignee_name) && <p>Ejecutor: {event.previous_assignee_name || "Sin asignar"} → {event.assignee_name || "Sin asignar"}</p>}{(event.previous_responsible_name || event.responsible_name) && <p>Responsable: {event.previous_responsible_name || "Sin asignar"} → {event.responsible_name || "Sin asignar"}</p>}{event.is_blocked_before !== event.is_blocked_after && <p>Condición: {event.is_blocked_before ? "Bloqueada" : "Sin bloqueo"} → {event.is_blocked_after ? "Bloqueada" : "Sin bloqueo"}</p>}{event.result_text && <p>Resultado presentado: {event.result_text}</p>}{event.reason && <p>Motivo/resultado: {event.reason}</p>}{event.evidence && <p>Evidencia: {event.evidence}</p>}</div>)}</details></Table.Cell><Table.Cell>{task.status}{task.is_blocked && <div style={{ color: "#f3c969", fontSize: 12 }}>Bloqueada</div>}</Table.Cell><Table.Cell>{task.assignee_name || "Sin asignar"}</Table.Cell>
           <Table.Cell>
             {user?.role === "L4" && task.status === "Pendiente" && <div style={{ display: "flex", gap: 8 }}><select aria-label={`Ejecutor para ${task.title}`} style={selectStyle} value={assignment[task.id] || ""} onChange={(e) => setAssignment({ ...assignment, [task.id]: e.target.value })}><option value="">Selecciona L5</option>{options.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select><Button size="sm" disabled={!assignment[task.id]} onClick={() => submitAssignment(task.id)}>Asignar</Button></div>}
             {can(user, "tasks", "start") && task.actions?.can_start && <Button size="sm" onClick={() => startTaskAction(task)}>{task.status === "Observada" ? "Iniciar corrección" : "Iniciar tarea"}</Button>}
@@ -284,6 +316,9 @@ export default function TasksPage() {
               <Button size="sm" disabled={!reassignment.assignee_id || !reassignment.reason?.trim() || (user?.role === "L3" && !reassignment.responsible_id)} onClick={() => submitReassignment(task)}>Reasignar</Button>
             </div>}
             {can(user, "tasks", "removeExecutor") && task.actions?.can_remove_executor && <div style={{ display: "grid", gap: 8, minWidth: 220 }}><Input label="Motivo para retirar al ejecutor" name={`remove-reason-${task.id}`} type="textarea" value={removalReasons[task.id] || ""} onChange={(e) => setRemovalReasons({ ...removalReasons, [task.id]: e.target.value })} /><Button size="sm" variant="ghost" disabled={!removalReasons[task.id]?.trim()} onClick={() => submitExecutorRemoval(task.id)}>Retirar ejecutor y dejar pendiente</Button></div>}
+            {can(user, "tasks", "blockTask") && task.actions?.can_block && <div style={{ display: "grid", gap: 8, minWidth: 220 }}><Input label="Impedimento" name={`block-reason-${task.id}`} type="textarea" value={blockInputs[task.id]?.reason || ""} onChange={(e) => setBlockInputs({ ...blockInputs, [task.id]: { ...blockInputs[task.id], reason: e.target.value } })} /><Input label="Evidencia (opcional)" name={`block-evidence-${task.id}`} value={blockInputs[task.id]?.evidence || ""} onChange={(e) => setBlockInputs({ ...blockInputs, [task.id]: { ...blockInputs[task.id], evidence: e.target.value } })} /><Button size="sm" variant="ghost" disabled={!blockInputs[task.id]?.reason?.trim()} onClick={() => changeBlock(task, true)}>Registrar bloqueo</Button></div>}
+            {can(user, "tasks", "unblockTask") && task.actions?.can_unblock && <div style={{ display: "grid", gap: 8, minWidth: 220 }}><Input label="Resultado del levantamiento" name={`unblock-reason-${task.id}`} type="textarea" value={blockInputs[task.id]?.reason || ""} onChange={(e) => setBlockInputs({ ...blockInputs, [task.id]: { ...blockInputs[task.id], reason: e.target.value } })} /><Input label="Evidencia (opcional)" name={`unblock-evidence-${task.id}`} value={blockInputs[task.id]?.evidence || ""} onChange={(e) => setBlockInputs({ ...blockInputs, [task.id]: { ...blockInputs[task.id], evidence: e.target.value } })} /><Button size="sm" disabled={!blockInputs[task.id]?.reason?.trim()} onClick={() => changeBlock(task, false)}>Levantar bloqueo</Button></div>}
+            {can(user, "tasks", "reportIncident") && task.actions?.can_report_incident && <div style={{ display: "grid", gap: 8, minWidth: 220 }}><Input label="Incidencia / solicitud de intervención" name={`incident-${task.id}`} type="textarea" value={incidentInputs[task.id]?.reason || ""} onChange={(e) => setIncidentInputs({ ...incidentInputs, [task.id]: { ...incidentInputs[task.id], reason: e.target.value } })} /><Input label="Evidencia (opcional)" name={`incident-evidence-${task.id}`} value={incidentInputs[task.id]?.evidence || ""} onChange={(e) => setIncidentInputs({ ...incidentInputs, [task.id]: { ...incidentInputs[task.id], evidence: e.target.value } })} /><Button size="sm" variant="ghost" disabled={!incidentInputs[task.id]?.reason?.trim()} onClick={() => reportIncident(task.id)}>Comunicar incidencia</Button></div>}
           </Table.Cell>
         </Table.Row>;
       })}</Table.Body>

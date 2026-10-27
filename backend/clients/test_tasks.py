@@ -719,3 +719,193 @@ class TaskWorkflowApiTests(TransactionTestCase):
         task = Task.objects.get(pk=task_id)
         self.assertEqual((task.status, task.assignee_id), ('Finalizada', self.people['L5'].id))
         self.assertEqual(TaskEvent.objects.filter(task_id=task_id).count(), event_count)
+        block_finalized = self.api.post(
+            f'/api/tasks/{task_id}/block', headers=self.headers['L4'],
+            json={'reason': 'No hay una ejecución abierta'},
+        )
+        self.assertEqual(block_finalized.status_code, 409)
+        self.assertFalse(Task.objects.get(pk=task_id).is_blocked)
+        self.assertEqual(TaskEvent.objects.filter(task_id=task_id).count(), event_count)
+
+    def test_l4_and_l3_block_and_unblock_with_history_without_changing_ordinary_status(self):
+        created = self.create('L4', status='Asignada', assignee=self.people['L5'])
+        task_id = created.json()['id']
+        project_status = self.project.status
+        initial_events = TaskEvent.objects.filter(task_id=task_id).count()
+        missing_reason = self.api.post(
+            f'/api/tasks/{task_id}/block', headers=self.headers['L4'],
+            json={'reason': '   '},
+        )
+        self.assertEqual(missing_reason.status_code, 422)
+        with patch('api.routers.tasks.TaskEvent.objects.create', side_effect=IntegrityError):
+            failed_block = self.api.post(
+                f'/api/tasks/{task_id}/block', headers=self.headers['L4'],
+                json={'reason': 'No dejar cambio sin evento'},
+            )
+        self.assertEqual(failed_block.status_code, 409)
+        self.assertFalse(Task.objects.get(pk=task_id).is_blocked)
+        self.assertEqual(TaskEvent.objects.filter(task_id=task_id).count(), initial_events)
+
+        blocked = self.api.post(
+            f'/api/tasks/{task_id}/block', headers=self.headers['L4'],
+            json={'reason': 'Dependencia externa detenida', 'evidence': 'Ticket INC-204'},
+        )
+        self.assertEqual(blocked.status_code, 200, blocked.text)
+        self.assertEqual(blocked.json()['status'], 'Asignada')
+        self.assertTrue(blocked.json()['is_blocked'])
+        self.assertEqual(blocked.json()['block_reason'], 'Dependencia externa detenida')
+        self.assertEqual(blocked.json()['block_evidence'], 'Ticket INC-204')
+        declared = blocked.json()['events'][-1]
+        self.assertEqual(declared['event_type'], 'bloqueo_declarado')
+        self.assertFalse(declared['is_blocked_before'])
+        self.assertTrue(declared['is_blocked_after'])
+        self.assertEqual(declared['previous_status'], 'Asignada')
+        self.assertEqual(declared['new_status'], 'Asignada')
+        event_count = TaskEvent.objects.filter(task_id=task_id).count()
+
+        repeated = self.api.post(
+            f'/api/tasks/{task_id}/block', headers=self.headers['L3'],
+            json={'reason': 'Segundo bloqueo'},
+        )
+        self.assertEqual(repeated.status_code, 409)
+        with patch('api.routers.tasks.TaskEvent.objects.create', side_effect=IntegrityError):
+            failed_unblock = self.api.post(
+                f'/api/tasks/{task_id}/unblock', headers=self.headers['L3'],
+                json={'reason': 'No levantar sin evento'},
+            )
+        self.assertEqual(failed_unblock.status_code, 409)
+        still_blocked = Task.objects.get(pk=task_id)
+        self.assertTrue(still_blocked.is_blocked)
+        self.assertEqual(still_blocked.block_reason, 'Dependencia externa detenida')
+        self.assertEqual(TaskEvent.objects.filter(task_id=task_id).count(), event_count)
+        unblocked = self.api.post(
+            f'/api/tasks/{task_id}/unblock', headers=self.headers['L3'],
+            json={'reason': 'Dependencia resuelta', 'evidence': 'Ticket cerrado'},
+        )
+        self.assertEqual(unblocked.status_code, 200, unblocked.text)
+        self.assertEqual(unblocked.json()['status'], 'Asignada')
+        self.assertFalse(unblocked.json()['is_blocked'])
+        self.assertEqual(unblocked.json()['block_reason'], '')
+        self.assertEqual(unblocked.json()['events'][-1]['event_type'], 'bloqueo_levantado')
+        self.assertTrue(unblocked.json()['events'][-1]['is_blocked_before'])
+        self.assertFalse(unblocked.json()['events'][-1]['is_blocked_after'])
+        self.assertEqual(unblocked.json()['events'][-1]['reason'], 'Dependencia resuelta')
+        self.assertEqual(unblocked.json()['events'][-1]['evidence'], 'Ticket cerrado')
+        no_current_block = self.api.post(
+            f'/api/tasks/{task_id}/unblock', headers=self.headers['L4'],
+            json={'reason': 'Levantamiento repetido'},
+        )
+        self.assertEqual(no_current_block.status_code, 409)
+        l3_blocked = self.api.post(
+            f'/api/tasks/{task_id}/block', headers=self.headers['L3'],
+            json={'reason': 'Impedimento dentro de coordinación'},
+        )
+        self.assertEqual(l3_blocked.status_code, 200, l3_blocked.text)
+        self.assertEqual(l3_blocked.json()['events'][-1]['actor_id'], self.people['L3'].id)
+        l4_unblocked = self.api.post(
+            f'/api/tasks/{task_id}/unblock', headers=self.headers['L4'],
+            json={'reason': 'Recurso restablecido'},
+        )
+        self.assertEqual(l4_unblocked.status_code, 200, l4_unblocked.text)
+        self.assertEqual(l4_unblocked.json()['events'][-1]['actor_id'], self.people['L4'].id)
+        task = Task.objects.get(pk=task_id)
+        self.assertEqual((task.status, task.is_blocked), ('Asignada', False))
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.status, project_status)
+
+    def test_block_permissions_reject_out_of_scope_roles_and_withdrawn_l4_relation(self):
+        created = self.create('L4B', status='Asignada', assignee=self.people['L5B'], project=self.other_project)
+        task_id = created.json()['id']
+        denied = self.api.post(
+            f'/api/tasks/{task_id}/block', headers=self.headers['L3'],
+            json={'reason': 'Fuera de coordinación'},
+        )
+        self.assertEqual(denied.status_code, 404)
+        for level in ('L1', 'L2', 'L5'):
+            response = self.api.post(
+                f'/api/tasks/{task_id}/block', headers=self.headers[level],
+                json={'reason': 'No autorizado'},
+            )
+            self.assertEqual(response.status_code, 403)
+
+        self.api.delete(
+            f'/api/tasks/projects/{self.other_project.id}/leadership/{self.people["L4B"].id}',
+            headers=self.headers['L3B'],
+        )
+        withdrawn_l4 = self.api.post(
+            f'/api/tasks/{task_id}/block', headers=self.headers['L4B'],
+            json={'reason': 'Relación retirada'},
+        )
+        self.assertEqual(withdrawn_l4.status_code, 404)
+        self.assertFalse(Task.objects.get(pk=task_id).is_blocked)
+        self.assertEqual(TaskEvent.objects.filter(task_id=task_id).count(), 1)
+
+    def test_l5_reports_incident_without_setting_or_clearing_block_condition(self):
+        created = self.create('L4', status='Asignada', assignee=self.people['L5'])
+        task_id = created.json()['id']
+        self.assertEqual(self.api.post(
+            f'/api/tasks/{task_id}/block', headers=self.headers['L5'],
+            json={'reason': 'Unilateral'},
+        ).status_code, 403)
+        reported = self.api.post(
+            f'/api/tasks/{task_id}/incident', headers=self.headers['L5'],
+            json={'reason': 'No hay acceso al entorno', 'evidence': 'Captura adjunta por referencia'},
+        )
+        self.assertEqual(reported.status_code, 200, reported.text)
+        self.assertFalse(reported.json()['is_blocked'])
+        self.assertEqual(reported.json()['status'], 'Asignada')
+        event = reported.json()['events'][-1]
+        self.assertEqual(event['event_type'], 'incidencia_comunicada')
+        self.assertEqual(event['actor_id'], self.people['L5'].id)
+        self.assertFalse(event['is_blocked_before'])
+        self.assertFalse(event['is_blocked_after'])
+        self.assertEqual(event['reason'], 'No hay acceso al entorno')
+        self.assertEqual(event['evidence'], 'Captura adjunta por referencia')
+        self.assertEqual(self.api.post(
+            f'/api/tasks/{task_id}/unblock', headers=self.headers['L5'],
+            json={'reason': 'Unilateral'},
+        ).status_code, 403)
+
+    def test_b4_04_and_b4_05_flows_preserve_block_condition_and_history(self):
+        self.api.post(
+            f'/api/tasks/projects/{self.project.id}/team', headers=self.headers['L4'],
+            json={'collaborator_id': self.people['L5C'].id},
+        )
+        created = self.create('L4', status='Asignada', assignee=self.people['L5'])
+        task_id = created.json()['id']
+        blocked = self.api.post(
+            f'/api/tasks/{task_id}/block', headers=self.headers['L4'],
+            json={'reason': 'Bloqueo de ejecución'},
+        )
+        self.assertEqual(blocked.status_code, 200, blocked.text)
+
+        # T-03 no define una prohibición universal para las transiciones ordinarias;
+        # los flujos autorizados conservan el indicador hasta que se levante explícitamente.
+        started = self.api.post(f'/api/tasks/{task_id}/start', headers=self.headers['L5'])
+        self.assertEqual(started.status_code, 200, started.text)
+        self.assertTrue(started.json()['is_blocked'])
+        self.assertTrue(started.json()['events'][-1]['is_blocked_before'])
+        self.assertTrue(started.json()['events'][-1]['is_blocked_after'])
+        reassigned = self.api.post(
+            f'/api/tasks/{task_id}/reassignment', headers=self.headers['L4'],
+            json={'assignee_id': self.people['L5C'].id, 'reason': 'Cambio del ejecutor'},
+        )
+        self.assertEqual(reassigned.status_code, 200, reassigned.text)
+        self.assertEqual(reassigned.json()['status'], 'Asignada')
+        self.assertTrue(reassigned.json()['is_blocked'])
+        self.assertTrue(reassigned.json()['events'][-1]['is_blocked_before'])
+        self.assertTrue(reassigned.json()['events'][-1]['is_blocked_after'])
+        event_types = [item['event_type'] for item in reassigned.json()['events']]
+        self.assertIn('bloqueo_declarado', event_types)
+        self.assertIn('ejecutor_reasignado', event_types)
+
+        removed = self.api.post(
+            f'/api/tasks/{task_id}/remove-executor', headers=self.headers['L4'],
+            json={'reason': 'Retirada sin reemplazo'},
+        )
+        self.assertEqual(removed.status_code, 200, removed.text)
+        self.assertEqual(removed.json()['status'], 'Pendiente')
+        self.assertTrue(removed.json()['is_blocked'])
+        self.assertEqual(removed.json()['events'][-1]['event_type'], 'ejecutor_retirado')
+        self.assertTrue(removed.json()['events'][-1]['is_blocked_before'])
+        self.assertTrue(removed.json()['events'][-1]['is_blocked_after'])

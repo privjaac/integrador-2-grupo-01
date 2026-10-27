@@ -42,6 +42,21 @@ export async function removeTaskExecutor(id, reason) {
   return data;
 }
 
+export async function blockTask(id, reason, evidence = "") {
+  const { data } = await axiosInstance.post(`/api/tasks/${id}/block`, { reason, evidence });
+  return data;
+}
+
+export async function unblockTask(id, reason, evidence = "") {
+  const { data } = await axiosInstance.post(`/api/tasks/${id}/unblock`, { reason, evidence });
+  return data;
+}
+
+export async function reportTaskIncident(id, reason, evidence = "") {
+  const { data } = await axiosInstance.post(`/api/tasks/${id}/incident`, { reason, evidence });
+  return data;
+}
+
 export async function designateLeader(projectId, collaborator_id) {
   const { data } = await axiosInstance.post(`/api/tasks/projects/${projectId}/leadership`, { collaborator_id });
   return data;

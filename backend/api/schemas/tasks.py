@@ -36,5 +36,15 @@ class TaskExecutorRemoval(SafeInputModel):
     reason: str = Field(min_length=1)
 
 
+class TaskBlockInput(SafeInputModel):
+    reason: str = Field(min_length=1)
+    evidence: str | None = None
+
+
+class TaskIncidentInput(SafeInputModel):
+    reason: str = Field(min_length=1)
+    evidence: str | None = None
+
+
 class Designation(SafeInputModel):
     collaborator_id: int = Field(gt=0)

@@ -6,8 +6,8 @@ from fastapi import Depends, HTTPException, status
 from api.dependencies import get_current_user
 from api.router import APIRouter
 from api.schemas.tasks import (
-    Designation, TaskAssign, TaskCreate, TaskExecutorRemoval,
-    TaskReassignment, TaskReview, TaskSubmission,
+    Designation, TaskAssign, TaskBlockInput, TaskCreate, TaskExecutorRemoval,
+    TaskIncidentInput, TaskReassignment, TaskReview, TaskSubmission,
 )
 from clients.models import (
     Collaborator, Project, ProjectCoordination, ProjectLeadership, Task,
@@ -91,6 +91,9 @@ def task_action_permissions(task: Task, user: dict) -> dict:
             'can_review': False,
             'can_reassign': False,
             'can_remove_executor': False,
+            'can_block': False,
+            'can_unblock': False,
+            'can_report_incident': member,
         }
     if role == 'L4':
         in_scope = task_queryset(user).filter(pk=task.pk).exists()
@@ -117,6 +120,16 @@ def task_action_permissions(task: Task, user: dict) -> dict:
                 in_scope and task.responsible_id == collaborator_id and responsible_leadership
                 and task.status in {'Asignada', 'En proceso'} and member
             ),
+            'can_block': (
+                in_scope and task.responsible_id == collaborator_id and responsible_leadership
+                and task.status != 'Finalizada' and not task.is_blocked
+                and (task.assignee_id is None or member)
+            ),
+            'can_unblock': (
+                in_scope and task.responsible_id == collaborator_id and responsible_leadership
+                and task.is_blocked and (task.assignee_id is None or member)
+            ),
+            'can_report_incident': False,
         }
     if role == 'L3':
         in_scope = task_queryset(user).filter(pk=task.pk).exists()
@@ -126,10 +139,14 @@ def task_action_permissions(task: Task, user: dict) -> dict:
             'can_review': False,
             'can_reassign': in_scope and task.status in {'En proceso', 'Observada'},
             'can_remove_executor': in_scope and task.status in {'Asignada', 'En proceso'},
+            'can_block': in_scope and task.status != 'Finalizada' and not task.is_blocked,
+            'can_unblock': in_scope and task.is_blocked,
+            'can_report_incident': False,
         }
     return {
         'can_start': False, 'can_submit_result': False, 'can_review': False,
         'can_reassign': False, 'can_remove_executor': False,
+        'can_block': False, 'can_unblock': False, 'can_report_incident': False,
     }
 
 
@@ -141,6 +158,9 @@ def task_response(task: Task, user: dict) -> dict:
         'title': task.title,
         'description': task.description,
         'status': task.status,
+        'is_blocked': task.is_blocked,
+        'block_reason': task.block_reason,
+        'block_evidence': task.block_evidence,
         'created_by_id': task.created_by_id,
         'created_by_name': f'{task.created_by.first_name} {task.created_by.last_name}',
         'responsible_id': task.responsible_id,
@@ -177,6 +197,9 @@ def task_response(task: Task, user: dict) -> dict:
                     f'{event.previous_responsible.first_name} {event.previous_responsible.last_name}'
                     if event.previous_responsible_id else None
                 ),
+                'is_blocked_before': event.is_blocked_before,
+                'is_blocked_after': event.is_blocked_after,
+                'evidence': event.evidence,
                 'result_text': event.result_text,
                 'reason': event.reason,
                 'occurred_at': event.occurred_at.isoformat(),
@@ -377,6 +400,44 @@ def lock_task_for_executor_removal(task_id: int, actor_id: int) -> Task:
         or task.responsible_id != candidate['responsible_id']
     ):
         raise HTTPException(409, 'La asignación cambió durante la operación')
+    return task
+
+
+def lock_task_for_block_action(task_id: int, actor_id: int, actor_role: str) -> Task:
+    candidate = Task.objects.filter(pk=task_id).values(
+        'project_id', 'responsible_id', 'assignee_id', 'status', 'is_blocked',
+    ).first()
+    if candidate is None:
+        raise HTTPException(404, 'Tarea no encontrada en tu ámbito')
+    coordinations = lock_project_coordinations(candidate['project_id'])
+    if actor_role == 'L3':
+        if not any(item.coordinator_id == actor_id for item in coordinations):
+            raise HTTPException(404, 'Tarea no encontrada en tu coordinación vigente')
+    elif actor_role == 'L4':
+        if candidate['responsible_id'] != actor_id:
+            raise HTTPException(404, 'Tarea fuera de tu responsabilidad vigente')
+        _coordinations, leaderships = lock_l4_leaderships(candidate['project_id'], actor_id)
+        if not leaderships:
+            raise HTTPException(404, 'La responsabilidad L4 ya no está vigente')
+        if candidate['assignee_id'] is not None:
+            membership = TeamMembership.objects.select_for_update(of=('self',)).filter(
+                leadership_id__in=[item.id for item in leaderships],
+                developer_id=candidate['assignee_id'], developer__is_active=True,
+                developer__role__level='L5', is_active=True,
+            ).exists()
+            if not membership:
+                raise HTTPException(404, 'La pertenencia del ejecutor ya no está vigente')
+    else:
+        raise HTTPException(403, 'Solo L3 coordinador o L4 responsable puede gestionar bloqueos')
+    task = Task.objects.select_for_update().filter(pk=task_id).first()
+    if task is None or (
+        task.project_id != candidate['project_id']
+        or task.responsible_id != candidate['responsible_id']
+        or task.assignee_id != candidate['assignee_id']
+        or task.status != candidate['status']
+        or task.is_blocked != candidate['is_blocked']
+    ):
+        raise HTTPException(409, 'La tarea cambió durante la operación')
     return task
 
 
@@ -804,6 +865,7 @@ def reassign_task(
                 previous_assignee_id=previous_assignee_id, assignee_id=membership.developer_id,
                 previous_responsible_id=previous_responsible_id,
                 responsible_id=target_responsible_id, reason=reason,
+                is_blocked_before=task.is_blocked, is_blocked_after=task.is_blocked,
             )
     except IntegrityError:
         raise HTTPException(409, 'No se pudo registrar la reasignación')
@@ -840,9 +902,107 @@ def remove_task_executor(
                 previous_assignee_id=previous_assignee_id, assignee=None,
                 responsible_id=task.responsible_id,
                 previous_responsible_id=task.responsible_id, reason=reason,
+                is_blocked_before=task.is_blocked, is_blocked_after=task.is_blocked,
             )
     except IntegrityError:
         raise HTTPException(409, 'No se pudo registrar la retirada del ejecutor')
+    return task_response(Task.objects.select_related('project', 'assignee').get(pk=task_id), user)
+
+
+@router.post('/{task_id}/block')
+def block_task(task_id: int, payload: TaskBlockInput, user: dict = Depends(get_current_user)):
+    role = user.get('role')
+    if role not in {'L3', 'L4'}:
+        raise HTTPException(403, 'Solo L3 coordinador o L4 responsable puede bloquear tareas')
+    reason = payload.reason.strip()
+    if not reason:
+        raise HTTPException(422, 'El impedimento debe indicar un motivo')
+    evidence = (payload.evidence or '').strip()
+    current_actor = actor(user)
+    try:
+        with transaction.atomic():
+            task = lock_task_for_block_action(task_id, user['collaborator_id'], role)
+            if task.is_blocked:
+                raise HTTPException(409, 'La tarea ya está bloqueada')
+            if task.status == 'Finalizada':
+                raise HTTPException(409, 'T-03 no define declarar bloqueos sobre tareas Finalizadas')
+            previous_blocked = task.is_blocked
+            task.is_blocked = True
+            task.block_reason = reason
+            task.block_evidence = evidence
+            task.save(update_fields=['is_blocked', 'block_reason', 'block_evidence'])
+            TaskEvent.objects.create(
+                task=task, event_type='bloqueo_declarado', actor=current_actor,
+                previous_status=task.status, new_status=task.status,
+                assignee_id=task.assignee_id, responsible_id=task.responsible_id,
+                previous_responsible_id=task.responsible_id,
+                is_blocked_before=previous_blocked, is_blocked_after=True,
+                reason=reason, evidence=evidence,
+            )
+    except IntegrityError:
+        raise HTTPException(409, 'No se pudo registrar el bloqueo')
+    return task_response(Task.objects.select_related('project', 'assignee').get(pk=task_id), user)
+
+
+@router.post('/{task_id}/unblock')
+def unblock_task(task_id: int, payload: TaskBlockInput, user: dict = Depends(get_current_user)):
+    role = user.get('role')
+    if role not in {'L3', 'L4'}:
+        raise HTTPException(403, 'Solo L3 coordinador o L4 responsable puede levantar bloqueos')
+    resolution = payload.reason.strip()
+    if not resolution:
+        raise HTTPException(422, 'El resultado del levantamiento es obligatorio')
+    evidence = (payload.evidence or '').strip()
+    current_actor = actor(user)
+    try:
+        with transaction.atomic():
+            task = lock_task_for_block_action(task_id, user['collaborator_id'], role)
+            if not task.is_blocked:
+                raise HTTPException(409, 'La tarea no tiene un bloqueo vigente')
+            previous_blocked = task.is_blocked
+            task.is_blocked = False
+            task.block_reason = ''
+            task.block_evidence = ''
+            task.save(update_fields=['is_blocked', 'block_reason', 'block_evidence'])
+            TaskEvent.objects.create(
+                task=task, event_type='bloqueo_levantado', actor=current_actor,
+                previous_status=task.status, new_status=task.status,
+                assignee_id=task.assignee_id, responsible_id=task.responsible_id,
+                previous_responsible_id=task.responsible_id,
+                is_blocked_before=previous_blocked, is_blocked_after=False,
+                reason=resolution, evidence=evidence,
+            )
+    except IntegrityError:
+        raise HTTPException(409, 'No se pudo registrar el levantamiento del bloqueo')
+    return task_response(Task.objects.select_related('project', 'assignee').get(pk=task_id), user)
+
+
+@router.post('/{task_id}/incident')
+def report_task_incident(
+    task_id: int, payload: TaskIncidentInput, user: dict = Depends(get_current_user),
+):
+    if user.get('role') != 'L5':
+        raise HTTPException(403, 'Solo L5 ejecutor informa incidencias de ejecución')
+    reason = payload.reason.strip()
+    if not reason:
+        raise HTTPException(422, 'La incidencia debe incluir un motivo')
+    evidence = (payload.evidence or '').strip()
+    current_actor = actor(user)
+    try:
+        with transaction.atomic():
+            task = lock_task_for_l5(task_id, user['collaborator_id'])
+            if task.status not in {'Asignada', 'En proceso', 'En revisión', 'Observada'}:
+                raise HTTPException(409, 'La tarea no está en una fase operativa para informar una incidencia')
+            TaskEvent.objects.create(
+                task=task, event_type='incidencia_comunicada', actor=current_actor,
+                previous_status=task.status, new_status=task.status,
+                assignee_id=task.assignee_id, responsible_id=task.responsible_id,
+                previous_responsible_id=task.responsible_id,
+                is_blocked_before=task.is_blocked, is_blocked_after=task.is_blocked,
+                reason=reason, evidence=evidence,
+            )
+    except IntegrityError:
+        raise HTTPException(409, 'No se pudo registrar la incidencia')
     return task_response(Task.objects.select_related('project', 'assignee').get(pk=task_id), user)
 
 
@@ -866,6 +1026,7 @@ def start_task(task_id: int, user: dict = Depends(get_current_user)):
                 previous_status=previous_status,
                 new_status=task.status,
                 assignee_id=task.assignee_id,
+                is_blocked_before=task.is_blocked, is_blocked_after=task.is_blocked,
             )
     except IntegrityError:
         raise HTTPException(409, 'No se pudo registrar el inicio de la tarea')
@@ -893,6 +1054,7 @@ def submit_task_for_review(
                 task=task, event_type='resultado_presentado', actor=current_actor,
                 previous_status='En proceso', new_status='En revisión',
                 assignee_id=task.assignee_id, result_text=result_text,
+                is_blocked_before=task.is_blocked, is_blocked_after=task.is_blocked,
             )
     except IntegrityError:
         raise HTTPException(409, 'No se pudo registrar el resultado de la tarea')
@@ -925,6 +1087,7 @@ def review_task(task_id: int, payload: TaskReview, user: dict = Depends(get_curr
                 new_status=task.status,
                 assignee_id=task.assignee_id,
                 reason=reason,
+                is_blocked_before=task.is_blocked, is_blocked_after=task.is_blocked,
             )
     except IntegrityError:
         raise HTTPException(409, 'No se pudo registrar la resolución de revisión')

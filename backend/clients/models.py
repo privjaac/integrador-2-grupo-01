@@ -459,6 +459,9 @@ class Task(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     assigned_at = models.DateTimeField(null=True, blank=True)
+    is_blocked = models.BooleanField(default=False)
+    block_reason = models.TextField(blank=True, default='')
+    block_evidence = models.TextField(blank=True, default='')
 
     class Meta:
         db_table = 'tasks'
@@ -480,6 +483,13 @@ class Task(models.Model):
                 ),
                 name='task_assignment_matches_status',
             ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(is_blocked=True) & ~models.Q(block_reason='')
+                    | models.Q(is_blocked=False, block_reason='', block_evidence='')
+                ),
+                name='task_block_condition_consistent',
+            ),
         ]
 
 
@@ -491,6 +501,9 @@ class TaskEvent(models.Model):
         ('correccion_iniciada', 'Corrección iniciada'),
         ('ejecutor_reasignado', 'Ejecutor reasignado'),
         ('ejecutor_retirado', 'Ejecutor retirado'),
+        ('bloqueo_declarado', 'Bloqueo declarado'),
+        ('bloqueo_levantado', 'Bloqueo levantado'),
+        ('incidencia_comunicada', 'Incidencia comunicada'),
     ]
 
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='events')
@@ -513,6 +526,9 @@ class TaskEvent(models.Model):
         Collaborator, on_delete=models.PROTECT, null=True, blank=True,
         related_name='task_previous_responsibility_events',
     )
+    is_blocked_before = models.BooleanField(default=False)
+    is_blocked_after = models.BooleanField(default=False)
+    evidence = models.TextField(blank=True, default='')
     result_text = models.TextField(blank=True, default='')
     reason = models.TextField(blank=True, default='')
     occurred_at = models.DateTimeField(auto_now_add=True)
