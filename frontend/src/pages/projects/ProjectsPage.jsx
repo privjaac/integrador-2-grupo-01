@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getClients } from "../../api/clients";
+import { designateCoordinator, getTaskContext, removeCoordinator } from "../../api/tasks";
 import { createProject, getProjects } from "../../api/projects";
 import { useAuth } from "../../hooks/useAuth";
 import { can } from "../../utils/permissions";
@@ -11,6 +12,8 @@ export default function ProjectsPage() {
   const canCreate = can(user, "projects", "create");
   const [projects, setProjects] = useState([]);
   const [clients, setClients] = useState([]);
+  const [taskContext, setTaskContext] = useState({ coordinators: [], coordination_assignments: [] });
+  const [coordinatorSelection, setCoordinatorSelection] = useState({});
   const [form, setForm] = useState({ client_id: "", name: "", objective: "", scope: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -24,12 +27,34 @@ export default function ProjectsPage() {
       ]);
       setProjects(projectRows);
       setClients(clientRows);
+      if (user?.role === "L2") setTaskContext(await getTaskContext());
     } catch (err) {
       setError(err.response?.data?.detail || "No se pudieron cargar los proyectos.");
     } finally { setLoading(false); }
   }
 
   useEffect(() => { refresh(); }, [canCreate]);
+
+  async function assignCoordinator(projectId) {
+    setError("");
+    try {
+      await designateCoordinator(projectId, Number(coordinatorSelection[projectId]));
+      setCoordinatorSelection((items) => ({ ...items, [projectId]: "" }));
+      setTaskContext(await getTaskContext());
+    } catch (err) {
+      setError(err.userMessage || "No se pudo designar la coordinación del proyecto.");
+    }
+  }
+
+  async function unassignCoordinator(projectId, coordinatorId) {
+    setError("");
+    try {
+      await removeCoordinator(projectId, coordinatorId);
+      setTaskContext(await getTaskContext());
+    } catch (err) {
+      setError(err.userMessage || "No se pudo retirar la coordinación.");
+    }
+  }
 
   async function submit(event) {
     event.preventDefault();
@@ -58,6 +83,12 @@ export default function ProjectsPage() {
       <button type="submit" style={{ ...fieldStyle, cursor: "pointer" }}>Crear proyecto</button>
     </form>}
     <h2>Proyectos registrados</h2>
-    {loading ? <p>Cargando…</p> : projects.length === 0 ? <p>No hay proyectos registrados.</p> : <div style={{ overflowX: "auto" }}><table style={{ width: "100%", borderCollapse: "collapse" }}><thead><tr>{["Nombre", "Cliente", "Estado", "Objetivo", "Alcance"].map((label) => <th key={label} style={{ textAlign: "left", padding: 10, borderBottom: "1px solid #34394a" }}>{label}</th>)}</tr></thead><tbody>{projects.map((project) => <tr key={project.id}>{[project.name, project.client_name, project.status, project.objective || "—", project.scope || "—"].map((value, index) => <td key={index} style={{ padding: 10, borderBottom: "1px solid #202434" }}>{value}</td>)}</tr>)}</tbody></table></div>}
+    {loading ? <p>Cargando…</p> : projects.length === 0 ? <p>No hay proyectos registrados.</p> : <div style={{ overflowX: "auto" }}><table style={{ width: "100%", borderCollapse: "collapse" }}><thead><tr>{["Nombre", "Cliente", "Estado", "Objetivo", "Alcance", ...(user?.role === "L2" ? ["Coordinación L3"] : [])].map((label) => <th key={label} style={{ textAlign: "left", padding: 10, borderBottom: "1px solid #34394a" }}>{label}</th>)}</tr></thead><tbody>{projects.map((project) => {
+      const assigned = taskContext.coordination_assignments?.filter((item) => item.project_id === project.id) || [];
+      return <tr key={project.id}>{[project.name, project.client_name, project.status, project.objective || "—", project.scope || "—"].map((value, index) => <td key={index} style={{ padding: 10, borderBottom: "1px solid #202434" }}>{value}</td>)}{user?.role === "L2" && <td style={{ padding: 10, borderBottom: "1px solid #202434", minWidth: 240 }}>
+        <div style={{ color: "#aab2c5", marginBottom: 6 }}>{assigned.length ? assigned.map((item) => <div key={item.coordinator_id} style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}><span>{item.coordinator_name}</span>{can(user, "tasks", "withdrawCoordination") && item.can_remove && <button type="button" onClick={() => unassignCoordinator(project.id, item.coordinator_id)} style={{ ...fieldStyle, padding: "5px 8px", cursor: "pointer" }}>Retirar</button>}</div>) : "Sin coordinación"}</div>
+        <div style={{ display: "flex", gap: 6 }}><select aria-label={`Coordinación de ${project.name}`} value={coordinatorSelection[project.id] || ""} onChange={(event) => setCoordinatorSelection({ ...coordinatorSelection, [project.id]: event.target.value })} style={fieldStyle}><option value="">Seleccionar L3</option>{taskContext.coordinators?.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" disabled={!coordinatorSelection[project.id]} onClick={() => assignCoordinator(project.id)} style={{ ...fieldStyle, cursor: "pointer" }}>Designar</button></div>
+      </td>}</tr>;
+    })}</tbody></table></div>}
   </section>;
 }

@@ -55,28 +55,28 @@ export const ROLES = {
     level: 2,
     label: "Scrum Master",
     // Scrum Master ve todo excepto gestión de roles
-    routes: ["/clientes", "/proyectos", "/usuarios", "/catalogo"],
+    routes: ["/clientes", "/proyectos", "/usuarios", "/catalogo", "/tareas"],
   },
 
   L3: {
     level: 3,
     label: "Tech Lead",
     // Tech Lead gestiona clientes, usuarios y catálogo
-    routes: ["/clientes", "/proyectos", "/usuarios", "/catalogo"],
+    routes: ["/clientes", "/proyectos", "/usuarios", "/catalogo", "/tareas"],
   },
 
   L4: {
     level: 4,
     label: "Líder",
     // Líder gestiona clientes y usuarios
-    routes: ["/clientes", "/usuarios"],
+    routes: ["/clientes", "/usuarios", "/tareas"],
   },
 
   L5: {
     level: 5,
     label: "Developer",
     // Developer solo accede a clientes
-    routes: ["/clientes"],
+    routes: ["/clientes", "/tareas"],
   },
 };
 
@@ -114,6 +114,17 @@ const PERMISSIONS = {
     create: ["L2"],
     edit: [],
     delete: [],
+  },
+  tasks: {
+    view: ["L3", "L4", "L5"],
+    create: ["L3", "L4"],
+    assign: ["L4"],
+    designate: ["L2"],
+    withdrawCoordination: ["L2"],
+    delegate: ["L3"],
+    withdrawLeadership: ["L3"],
+    manageTeam: ["L4"],
+    withdrawTeam: ["L4"],
   },
 
   // ── MÓDULO USUARIOS (COLABORADORES) ─────────────────────────────────────

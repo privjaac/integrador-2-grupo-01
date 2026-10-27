@@ -358,6 +358,140 @@ class Project(models.Model):
         return self.name
 
 
+class ProjectCoordination(models.Model):
+    """Explicit L2→L3 coordination assignment for one project."""
+
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='coordinations')
+    coordinator = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='project_coordinations',
+    )
+    assigned_by = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='coordinations_made',
+    )
+    assigned_at = models.DateTimeField(auto_now_add=True)
+    is_active = models.BooleanField(default=True)
+    ended_by = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, null=True, blank=True, related_name='coordinations_ended',
+    )
+    ended_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'project_coordinations'
+        constraints = [models.UniqueConstraint(
+            fields=['project', 'coordinator'], condition=models.Q(is_active=True),
+            name='project_coordinator_unique',
+        )]
+
+
+class ProjectLeadership(models.Model):
+    """Explicit L3→L4 delegation within an L3-coordinated project."""
+
+    coordination = models.ForeignKey(
+        ProjectCoordination, on_delete=models.CASCADE, related_name='leaderships',
+    )
+    leader = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='project_leaderships',
+    )
+    designated_by = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='leaderships_designated',
+    )
+    designated_at = models.DateTimeField(auto_now_add=True)
+    is_active = models.BooleanField(default=True)
+    ended_by = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, null=True, blank=True, related_name='leaderships_ended',
+    )
+    ended_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'project_leaderships'
+        constraints = [models.UniqueConstraint(
+            fields=['coordination', 'leader'], condition=models.Q(is_active=True),
+            name='coordination_leader_unique',
+        )]
+
+
+class TeamMembership(models.Model):
+    """Explicit L4→L5 team membership, scoped to a project leadership."""
+
+    leadership = models.ForeignKey(
+        ProjectLeadership, on_delete=models.CASCADE, related_name='memberships',
+    )
+    developer = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='team_memberships',
+    )
+    added_by = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='team_memberships_added',
+    )
+    added_at = models.DateTimeField(auto_now_add=True)
+    is_active = models.BooleanField(default=True)
+    ended_by = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, null=True, blank=True, related_name='team_memberships_ended',
+    )
+    ended_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'team_memberships'
+        constraints = [models.UniqueConstraint(
+            fields=['leadership', 'developer'], condition=models.Q(is_active=True),
+            name='leadership_developer_unique',
+        )]
+
+
+class Task(models.Model):
+    STATUS_CHOICES = [('Pendiente', 'Pendiente'), ('Asignada', 'Asignada')]
+
+    project = models.ForeignKey(Project, on_delete=models.PROTECT, related_name='tasks')
+    title = models.CharField(max_length=200)
+    description = models.TextField(blank=True, null=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='Pendiente')
+    created_by = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='tasks_created',
+    )
+    responsible = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='tasks_responsible',
+    )
+    assignee = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, null=True, blank=True, related_name='tasks_assigned',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    assigned_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'tasks'
+        ordering = ['-created_at', 'id']
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(status__in=['Pendiente', 'Asignada']),
+                name='task_initial_status_valid',
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(status='Pendiente', assignee__isnull=True, assigned_at__isnull=True)
+                    | models.Q(status='Asignada', assignee__isnull=False, assigned_at__isnull=False)
+                ),
+                name='task_assignment_matches_status',
+            ),
+        ]
+
+
+class TaskEvent(models.Model):
+    EVENT_CHOICES = [('creada', 'Creada'), ('asignada', 'Asignada')]
+
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='events')
+    event_type = models.CharField(max_length=20, choices=EVENT_CHOICES)
+    actor = models.ForeignKey(Collaborator, on_delete=models.PROTECT, related_name='task_events')
+    previous_status = models.CharField(max_length=20, blank=True, default='')
+    new_status = models.CharField(max_length=20)
+    assignee = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, null=True, blank=True, related_name='task_assignment_events',
+    )
+    occurred_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'task_events'
+        ordering = ['occurred_at', 'id']
+
+
 # ------------------------------------------------------------------------------
 # WEBFEATURE — Funcionalidades adicionales
 #

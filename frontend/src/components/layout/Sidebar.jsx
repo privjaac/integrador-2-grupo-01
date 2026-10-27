@@ -62,6 +62,12 @@ const NAV_ITEMS = [
         module: "projects",
         icon: <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M8 2v4m8-4v4M3 10h18" /></svg>,
       },
+      {
+        path: "/tareas",
+        label: "Tareas",
+        module: "tasks",
+        icon: <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" /></svg>,
+      },
     ],
   },
   {
@@ -238,7 +244,8 @@ export default function Sidebar() {
           // Filtra los items según permisos del usuario
           const visibleItems = section.items.filter((item) => {
             if (!item.module) return true; // Dashboard visible para todos
-            return can(user, item.module, "view");
+            return can(user, item.module, "view") ||
+              (item.path === "/tareas" && can(user, "tasks", "designate"));
           });
           if (visibleItems.length === 0) return null;
 
