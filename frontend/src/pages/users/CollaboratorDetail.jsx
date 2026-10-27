@@ -5,7 +5,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
-import { can } from "../../utils/permissions";
+import { can, canManageCollaborator } from "../../utils/permissions";
 import { getCollaboratorById, toggleCollaboratorStatus } from "../../api/users";
 import { getNextCupe, changeCupe, getCupeHistory } from "../../api/cupe";
 import { formatDate } from "../../utils/formatDate";
@@ -203,7 +203,8 @@ export default function CollaboratorDetail() {
       </div>
     );
 
-  const canToggle = can(user, "users", "delete") && collab.id !== user?.id;
+  const canToggle = can(user, "users", collab.is_active ? "deactivate" : "activate") && canManageCollaborator(user, collab);
+  const canEditCollaborator = can(user, "users", "edit") && canManageCollaborator(user, collab);
   const isSuperAdmin = user?.role === "L1";
 
   return (
@@ -361,7 +362,7 @@ export default function CollaboratorDetail() {
           </div>
 
           <div style={{ display: "flex", gap: "0.75rem", flexShrink: 0 }}>
-            {can(user, "users", "edit") && (
+            {canEditCollaborator && (
               <Button
                 variant="secondary"
                 onClick={() => navigate(`/usuarios/${id}/editar`)}

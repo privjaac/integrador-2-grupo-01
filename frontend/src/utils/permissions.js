@@ -106,6 +106,7 @@ const PERMISSIONS = {
     // Solo L1 y L2 pueden desactivar clientes
     delete: ["L1", "L2"],
   },
+
   // ── MÓDULO PROYECTOS (F2-01) ─────────────────────────────────────────────
   // L2 crea; L2 y L3 consultan. La autorización no se hereda por jerarquía.
   projects: {
@@ -115,17 +116,17 @@ const PERMISSIONS = {
     delete: [],
   },
 
-
   // ── MÓDULO USUARIOS (COLABORADORES) ─────────────────────────────────────
   users: {
-    // L1 a L4 pueden ver usuarios
+    // PB-COL-002/006: listado y detalle para L1 a L4.
     view: ["L1", "L2", "L3", "L4"],
-    // L1 a L4 pueden crear usuarios (respetando jerarquía — validado en backend)
+    // PB-COL-005/R-B3-01-A: la matriz final por nivel se valida también en backend.
     create: ["L1", "L2", "L3", "L4"],
-    // L1 a L3 pueden editar usuarios
-    edit: ["L1", "L2", "L3"],
-    // Solo L1 puede desactivar usuarios
-    delete: ["L1"],
+    // PB-COL-003/004: competencia SA/SM, sujeta al nivel y al objetivo.
+    edit: ["L1", "L2"],
+    activate: ["L1", "L2"],
+    deactivate: ["L1", "L2"],
+    delete: [],
   },
 
   // ── MÓDULO ROLES ─────────────────────────────────────────────────────────
@@ -213,6 +214,23 @@ export function can(user, module, action) {
 
   // Verifica si el rol del usuario está en la lista de roles permitidos
   return allowedRoles.includes(user.role);
+}
+
+// Verifica alcance ordinario de administración de colaboradores. La capacidad
+// del actor nunca permite gestionar su propia cuenta ni una cuenta L1.
+export function canManageCollaborator(user, collaborator) {
+  if (!user?.role || !collaborator || String(user.id) === String(collaborator.id)) {
+    return false;
+  }
+  const actorLevel = Number(user.role.slice(1));
+  if (![1, 2].includes(actorLevel)) return false;
+  if (user.role === "L1" && collaborator.role_level === "L1") return false;
+  const targetRole = collaborator.role_level || collaborator.role;
+  const targetLevel = typeof targetRole === "string"
+    ? Number(targetRole.slice(1))
+    : Number(targetRole);
+  return Number.isInteger(actorLevel) && Number.isInteger(targetLevel)
+    && targetLevel > 1;
 }
 
 // ------------------------------------------------------------------------------
@@ -354,10 +372,10 @@ export function getCreatableRoles(user) {
 
   const currentLevel = getRoleLevel(user);
 
-  // Filtra los roles que tienen nivel mayor al del usuario actual
-  // (solo puede crear usuarios de menor jerarquía)
+  // La excepción L1→L1 aplica únicamente a la creación; en los demás casos
+  // se conserva la matriz de HU-24 por nivel funcional.
   return Object.entries(ROLES)
-    .filter(([, roleDef]) => roleDef.level > currentLevel)
+    .filter(([, roleDef]) => roleDef.level > currentLevel || (user.role === "L1" && roleDef.level === 1))
     .map(([roleKey, roleDef]) => ({
       value: roleKey,
       label: roleDef.label,

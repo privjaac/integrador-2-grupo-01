@@ -10,7 +10,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
-import { can } from "../../utils/permissions";
+import { can, canManageCollaborator } from "../../utils/permissions";
 import { getCollaborators, toggleCollaboratorStatus } from "../../api/users";
 import { getRoles } from "../../api/roles";
 import { formatDate } from "../../utils/formatDate";
@@ -268,7 +268,7 @@ export default function UsersPage() {
     return col && col.filter !== "none";
   });
 
-  const hasActions = can(user, "users", "edit") || can(user, "users", "delete");
+  const hasActions = can(user, "users", "edit") || can(user, "users", "activate") || can(user, "users", "deactivate");
   const totalCols = 7 + visibleExtras.length + (hasActions ? 1 : 0);
 
   const filterInputStyle = {
@@ -1022,7 +1022,7 @@ export default function UsersPage() {
                                 />
                               </svg>
                             </button>
-                            {can(user, "users", "edit") && (
+                            {can(user, "users", "edit") && canManageCollaborator(user, collab) && (
                               <button
                                 onClick={() =>
                                   navigate(`/usuarios/${collab.id}/editar`)
@@ -1063,8 +1063,8 @@ export default function UsersPage() {
                                 </svg>
                               </button>
                             )}
-                            {can(user, "users", "delete") &&
-                              collab.id !== user?.id && (
+                            {can(user, "users", collab.is_active ? "deactivate" : "activate") &&
+                              canManageCollaborator(user, collab) && (
                                 <button
                                   onClick={() =>
                                     setConfirmModal({

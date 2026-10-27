@@ -50,6 +50,11 @@ def require_can_create_users(user: dict):
         )
 
 
+def require_can_view_users(user: dict):
+    if user.get('role') not in ('L1', 'L2', 'L3', 'L4'):
+        raise HTTPException(status_code=403, detail='No tienes permiso para consultar colaboradores')
+
+
 # ------------------------------------------------------------------------------
 # FUNCIÓN AUXILIAR — Verificar que el usuario sea Superadmin (L1)
 # ------------------------------------------------------------------------------
@@ -134,6 +139,7 @@ def get_collaborators(
     search: Optional[str] = None,
     user: dict = Depends(get_current_user)
 ):
+    require_can_view_users(user)
     # select_related('role') precarga el rol de cada colaborador
     # para no hacer una consulta extra por cada uno (optimización)
     collaborators = Collaborator.objects.select_related('role').all()
@@ -154,14 +160,27 @@ def get_collaborators(
     return [collaborator_to_response(c) for c in collaborators]
 
 
-def require_lower_role(user: dict, role: Role):
+def require_lower_role(user: dict, role: Role, *, allow_l1_creation: bool = False):
     current_level = int(user['role'][1:])
     target_level = int(role.level[1:])
-    if current_level != 1 and target_level <= current_level:
+    l1_creation = allow_l1_creation and current_level == 1 and target_level == 1
+    if target_level <= 1 and not l1_creation or target_level <= current_level and not l1_creation:
         raise HTTPException(
             status_code=403,
             detail='Solo puedes gestionar colaboradores de menor jerarquía',
         )
+
+
+def require_manage_target(user: dict, collaborator: Collaborator):
+    """Verifica competencia y alcance ordinario de edición/estado."""
+    if user.get('role') not in ('L1', 'L2'):
+        raise HTTPException(status_code=403, detail='Solo SA/SM pueden administrar colaboradores')
+    if collaborator.id == user.get('collaborator_id'):
+        raise HTTPException(status_code=403, detail='No puedes administrar tu propia cuenta por esta operación')
+    if not collaborator.role or collaborator.role.level not in {'L1', 'L2', 'L3', 'L4', 'L5'}:
+        raise HTTPException(status_code=403, detail='El nivel del colaborador objetivo no es válido')
+    if collaborator.role.level == 'L1':
+        raise HTTPException(status_code=403, detail='No se permite administrar otra cuenta L1')
 
 # ------------------------------------------------------------------------------
 # GET /api/users/{id} — Detalle de un colaborador
@@ -176,6 +195,7 @@ def get_collaborator(
     collaborator_id: int,
     user: dict = Depends(get_current_user)
 ):
+    require_can_view_users(user)
     try:
         collaborator = Collaborator.objects.select_related('role').get(id=collaborator_id)
     except Collaborator.DoesNotExist:
@@ -237,7 +257,7 @@ def create_collaborator(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f'Rol con id {data.role_id} no encontrado'
         )
-    require_lower_role(user, role)
+    require_lower_role(user, role, allow_l1_creation=True)
 
     # Crear el colaborador con la contraseña encriptada
     # hash_password convierte la contraseña en texto plano a bcrypt
@@ -289,8 +309,8 @@ def update_collaborator(
     data: CollaboratorUpdate,
     user: dict = Depends(get_current_user)
 ):
-    if user.get('role') not in ('L1', 'L2', 'L3'):
-        raise HTTPException(status_code=403, detail='No tienes permiso para editar colaboradores')
+    if user.get('role') not in ('L1', 'L2'):
+        raise HTTPException(status_code=403, detail='Solo SA/SM pueden editar colaboradores')
 
     try:
         collaborator = Collaborator.objects.select_related('role').get(id=collaborator_id)
@@ -299,10 +319,11 @@ def update_collaborator(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f'Colaborador con id {collaborator_id} no encontrado'
         )
-    if collaborator.role:
-        require_lower_role(user, collaborator.role)
+    require_manage_target(user, collaborator)
 
     update_data = data.model_dump(exclude_unset=True)
+    if 'role_id' in update_data:
+        raise HTTPException(status_code=403, detail='El cambio de rol no está disponible en la edición ordinaria')
     unique_fields = {
         'username': 'El username ya está en uso',
         'email': 'El email ya está registrado',
@@ -315,12 +336,12 @@ def update_collaborator(
             .exclude(id=collaborator_id).exists()
         ):
             raise HTTPException(status_code=400, detail=message)
-    if 'is_active' in update_data and user.get('role') != 'L1':
-        raise HTTPException(status_code=403, detail='Solo Superadmin puede cambiar el estado')
-    if update_data.get('is_active') is False and collaborator.role and collaborator.role.level == 'L1':
-        active_admins = Collaborator.objects.filter(role__level='L1', is_active=True).count()
-        if active_admins <= 1:
-            raise HTTPException(status_code=400, detail='No se puede desactivar al último Superadmin')
+    if 'is_active' in update_data:
+        if update_data != {'is_active': True}:
+            raise HTTPException(status_code=403, detail='Usa la operación autorizada de activación/desactivación')
+        collaborator.is_active = True
+        collaborator.save(update_fields=['is_active', 'updated_at'])
+        return collaborator_to_response(collaborator)
 
     for field, value in update_data.items():
 
@@ -377,8 +398,8 @@ def delete_collaborator(
     collaborator_id: int,
     user: dict = Depends(get_current_user)
 ):
-    # Solo Superadmin puede dar de baja colaboradores
-    require_superadmin(user)
+    if user.get('role') not in ('L1', 'L2'):
+        raise HTTPException(status_code=403, detail='Solo SA/SM pueden cambiar el estado de colaboradores')
 
     try:
         collaborator = Collaborator.objects.select_related('role').get(id=collaborator_id)
@@ -388,20 +409,9 @@ def delete_collaborator(
             detail=f'Colaborador con id {collaborator_id} no encontrado'
         )
 
-    # Verificar que no sea el único Superadmin activo
-    if collaborator.role and collaborator.role.level == 'L1':
-        superadmins_activos = Collaborator.objects.filter(
-            role__level='L1',
-            is_active=True
-        ).count()
+    require_manage_target(user, collaborator)
 
-        if superadmins_activos <= 1:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail='No se puede dar de baja al único Superadmin activo. Asigna otro Superadmin primero.'
-            )
-
-    # Soft delete — no borramos, solo desactivamos
+    # Soft delete — conserva historial; el nivel L1 objetivo está protegido.
     collaborator.is_active = False
     collaborator.save()
 

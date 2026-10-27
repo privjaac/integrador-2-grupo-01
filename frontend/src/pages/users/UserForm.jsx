@@ -5,7 +5,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
-import { can, getCreatableRoles } from "../../utils/permissions";
+import { can, canManageCollaborator, getCreatableRoles } from "../../utils/permissions";
 import {
   createCollaborator,
   updateCollaborator,
@@ -99,10 +99,23 @@ export default function UserForm() {
   const isEditMode = Boolean(id);
   const action = isEditMode ? "edit" : "create";
   const creatableRoles = getCreatableRoles(user);
+  const [targetCollaborator, setTargetCollaborator] = useState(null);
 
   useEffect(() => {
-    if (!can(user, "users", action)) navigate("/usuarios", { replace: true });
-  }, [user, action, navigate]);
+    if (!can(user, "users", action)) {
+      navigate("/usuarios", { replace: true });
+      return;
+    }
+    if (!isEditMode) return;
+    getCollaboratorById(id)
+      .then((collaborator) => {
+        setTargetCollaborator(collaborator);
+        if (!canManageCollaborator(user, collaborator)) {
+          navigate("/usuarios", { replace: true });
+        }
+      })
+      .catch(() => navigate("/usuarios", { replace: true }));
+  }, [user, action, navigate, isEditMode, id]);
 
   const [formData, setFormData] = useState(INITIAL_FORM);
   const [errors, setErrors] = useState({});
@@ -113,6 +126,7 @@ export default function UserForm() {
     if (!isEditMode) return;
     getCollaboratorById(id)
       .then((collab) => {
+        if (!canManageCollaborator(user, collab)) return;
         setFormData({
           username: collab.username || "",
           password: "",
@@ -135,7 +149,7 @@ export default function UserForm() {
         ),
       )
       .finally(() => setIsLoadingData(false));
-  }, [isEditMode, id]);
+  }, [isEditMode, id, user]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -170,7 +184,10 @@ export default function UserForm() {
     setIsLoading(true);
     try {
       const payload = { ...formData };
-      if (isEditMode && !payload.password) delete payload.password;
+      if (isEditMode) {
+        delete payload.role;
+        if (!payload.password) delete payload.password;
+      }
       if (isEditMode) {
         await updateCollaborator(id, payload);
         showToast(
@@ -406,11 +423,12 @@ export default function UserForm() {
             label="Rol en el sistema"
             name="role"
             value={formData.role}
-            onChange={handleChange}
+            onChange={isEditMode ? undefined : handleChange}
             error={errors.role}
             placeholder="Seleccioná el rol..."
-            options={creatableRoles}
-            hint={`Podés asignar roles de menor jerarquía que el tuyo (${user?.role_name})`}
+            options={isEditMode ? [{ value: formData.role, label: targetCollaborator?.role_name || formData.role }] : creatableRoles}
+            disabled={isEditMode}
+            hint={isEditMode ? "El cambio de nivel funcional o privilegios requiere una operación autorizada específica." : `Podés asignar roles permitidos para tu nivel (${user?.role_name})`}
             required
           />
         </section>
