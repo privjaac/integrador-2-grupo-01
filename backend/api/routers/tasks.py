@@ -7,7 +7,7 @@ from api.dependencies import get_current_user
 from api.router import APIRouter
 from api.schemas.tasks import (
     Designation, TaskAssign, TaskBlockInput, TaskCreate, TaskExecutorRemoval,
-    TaskIncidentInput, TaskReassignment, TaskReview, TaskSubmission,
+    TaskIncidentInput, TaskReassignment, TaskReview, TaskReopen, TaskSubmission,
 )
 from clients.models import (
     Collaborator, Project, ProjectCoordination, ProjectLeadership, Task,
@@ -94,6 +94,7 @@ def task_action_permissions(task: Task, user: dict) -> dict:
             'can_block': False,
             'can_unblock': False,
             'can_report_incident': member,
+            'can_reopen': False,
         }
     if role == 'L4':
         in_scope = task_queryset(user).filter(pk=task.pk).exists()
@@ -130,6 +131,7 @@ def task_action_permissions(task: Task, user: dict) -> dict:
                 and task.is_blocked and (task.assignee_id is None or member)
             ),
             'can_report_incident': False,
+            'can_reopen': False,
         }
     if role == 'L3':
         in_scope = task_queryset(user).filter(pk=task.pk).exists()
@@ -142,11 +144,13 @@ def task_action_permissions(task: Task, user: dict) -> dict:
             'can_block': in_scope and task.status != 'Finalizada' and not task.is_blocked,
             'can_unblock': in_scope and task.is_blocked,
             'can_report_incident': False,
+            'can_reopen': in_scope and task.status == 'Finalizada',
         }
     return {
         'can_start': False, 'can_submit_result': False, 'can_review': False,
         'can_reassign': False, 'can_remove_executor': False,
         'can_block': False, 'can_unblock': False, 'can_report_incident': False,
+        'can_reopen': False,
     }
 
 
@@ -173,6 +177,7 @@ def task_response(task: Task, user: dict) -> dict:
         'assigned_at': task.assigned_at.isoformat() if task.assigned_at else None,
         'events': [
             {
+                'task_id': event.task_id,
                 'event_type': event.event_type,
                 'actor_id': event.actor_id,
                 'actor_name': f'{event.actor.first_name} {event.actor.last_name}',
@@ -438,6 +443,21 @@ def lock_task_for_block_action(task_id: int, actor_id: int, actor_role: str) -> 
         or task.is_blocked != candidate['is_blocked']
     ):
         raise HTTPException(409, 'La tarea cambió durante la operación')
+    return task
+
+
+def lock_task_for_l3_reopen(task_id: int, coordinator_id: int) -> Task:
+    candidate = Task.objects.filter(pk=task_id).values('project_id', 'status').first()
+    if candidate is None:
+        raise HTTPException(404, 'Tarea no encontrada en tu coordinación')
+    coordinations = lock_project_coordinations(candidate['project_id'])
+    if not any(item.coordinator_id == coordinator_id for item in coordinations):
+        raise HTTPException(404, 'Tarea no encontrada en tu coordinación vigente')
+    task = Task.objects.select_for_update().filter(pk=task_id).first()
+    if task is None or task.project_id != candidate['project_id'] or task.status != candidate['status']:
+        raise HTTPException(409, 'La tarea cambió durante la operación')
+    if task.status != 'Finalizada':
+        raise HTTPException(409, 'Solo una tarea Finalizada puede reabrirse')
     return task
 
 
@@ -1091,4 +1111,35 @@ def review_task(task_id: int, payload: TaskReview, user: dict = Depends(get_curr
             )
     except IntegrityError:
         raise HTTPException(409, 'No se pudo registrar la resolución de revisión')
+    return task_response(Task.objects.select_related('project', 'assignee').get(pk=task_id), user)
+
+
+@router.post('/{task_id}/reopen')
+def reopen_task(task_id: int, payload: TaskReopen, user: dict = Depends(get_current_user)):
+    if user.get('role') != 'L3':
+        raise HTTPException(403, 'Solo L3 puede autorizar la reapertura de una tarea')
+    reason = payload.reason.strip()
+    result_text = payload.result_text.strip()
+    if not reason or not result_text:
+        raise HTTPException(422, 'La justificación y el resultado de la reapertura son obligatorios')
+    current_actor = Collaborator.objects.filter(
+        pk=user['collaborator_id'], is_active=True, role__level='L3',
+    ).first()
+    if current_actor is None:
+        raise HTTPException(403, 'El actor ya no tiene una cuenta L3 activa')
+    try:
+        with transaction.atomic():
+            task = lock_task_for_l3_reopen(task_id, current_actor.id)
+            previous_status = task.status
+            task.status = 'Observada'
+            task.save(update_fields=['status'])
+            TaskEvent.objects.create(
+                task=task, event_type='reapertura_autorizada', actor=current_actor,
+                previous_status=previous_status, new_status='Observada',
+                assignee_id=task.assignee_id, responsible_id=task.responsible_id,
+                reason=reason, result_text=result_text,
+                is_blocked_before=task.is_blocked, is_blocked_after=task.is_blocked,
+            )
+    except IntegrityError:
+        raise HTTPException(409, 'No se pudo registrar la reapertura de la tarea')
     return task_response(Task.objects.select_related('project', 'assignee').get(pk=task_id), user)

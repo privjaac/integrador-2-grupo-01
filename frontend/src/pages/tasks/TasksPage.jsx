@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { addTeamMember, assignTask, blockTask, createTask, designateCoordinator, designateLeader, getTaskContext, removeCoordinator, removeLeader, removeTaskExecutor, removeTeamMember, reassignTask, reportTaskIncident, reviewTask, startTask, submitTaskReview, unblockTask } from "../../api/tasks";
+import { addTeamMember, assignTask, blockTask, createTask, designateCoordinator, designateLeader, getTaskContext, removeCoordinator, removeLeader, removeTaskExecutor, removeTeamMember, reassignTask, reportTaskIncident, reopenTask, reviewTask, startTask, submitTaskReview, unblockTask } from "../../api/tasks";
 import Button from "../../components/ui/Button";
 import Input from "../../components/ui/Input";
 import Table from "../../components/ui/Table";
@@ -20,6 +20,7 @@ const eventLabels = {
   bloqueo_declarado: "Bloqueo declarado",
   bloqueo_levantado: "Bloqueo levantado",
   incidencia_comunicada: "Incidencia comunicada",
+  reapertura_autorizada: "Reapertura autorizada por L3",
 };
 
 export default function TasksPage() {
@@ -34,6 +35,7 @@ export default function TasksPage() {
   const [removalReasons, setRemovalReasons] = useState({});
   const [blockInputs, setBlockInputs] = useState({});
   const [incidentInputs, setIncidentInputs] = useState({});
+  const [reopenInputs, setReopenInputs] = useState({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
@@ -186,6 +188,19 @@ export default function TasksPage() {
     }
   }
 
+  async function reopenCompletedTask(taskId) {
+    const values = reopenInputs[taskId] || {};
+    setError("");
+    try {
+      await reopenTask(taskId, values.reason, values.result_text);
+      setReopenInputs((items) => ({ ...items, [taskId]: {} }));
+      setNotice("Tarea reabierta como Observada; la aprobación anterior permanece en el historial.");
+      await refresh();
+    } catch (err) {
+      setError(err.userMessage || "No se pudo reabrir la tarea.");
+    }
+  }
+
   async function submitReassignment(task) {
     const values = reassignments[task.id] || {};
     setError("");
@@ -303,12 +318,13 @@ export default function TasksPage() {
         const targetResponsibleId = user?.role === "L3" ? Number(reassignment.responsible_id) : task.responsible_id;
         const replacementOptions = options.filter((person) => Number(person.responsible_id) === Number(targetResponsibleId));
         return <Table.Row key={task.id} index={index}>
-          <Table.Cell>{task.project_name}</Table.Cell><Table.Cell><strong>{task.title}</strong>{task.description && <div style={{ color: "#8892a4", marginTop: 4 }}>{task.description}</div>}{task.is_blocked && <div style={{ color: "#f3c969", marginTop: 4 }}>Bloqueada: {task.block_reason}</div>}<details style={{ color: "#8892a4", fontSize: 12, marginTop: 6 }}><summary style={{ cursor: "pointer" }}>Responsables e historial</summary><p>Responsable actual: {task.responsible_name || "—"}<br />Creada por: {task.created_by_name || "—"}<br />Registro: {new Date(task.created_at).toLocaleString()}</p>{task.assigned_at && <p>Asignada: {new Date(task.assigned_at).toLocaleString()}</p>}{task.events?.map((event, eventIndex) => <div key={`${event.event_type}-${eventIndex}`} style={{ padding: "4px 0" }}><p>{eventLabels[event.event_type] || event.event_type} por {event.actor_name} · {new Date(event.occurred_at).toLocaleString()}{event.previous_status && event.new_status ? ` · ${event.previous_status} → ${event.new_status}` : ""}</p>{(event.previous_assignee_name || event.assignee_name) && <p>Ejecutor: {event.previous_assignee_name || "Sin asignar"} → {event.assignee_name || "Sin asignar"}</p>}{(event.previous_responsible_name || event.responsible_name) && <p>Responsable: {event.previous_responsible_name || "Sin asignar"} → {event.responsible_name || "Sin asignar"}</p>}{event.is_blocked_before !== event.is_blocked_after && <p>Condición: {event.is_blocked_before ? "Bloqueada" : "Sin bloqueo"} → {event.is_blocked_after ? "Bloqueada" : "Sin bloqueo"}</p>}{event.result_text && <p>Resultado presentado: {event.result_text}</p>}{event.reason && <p>Motivo/resultado: {event.reason}</p>}{event.evidence && <p>Evidencia: {event.evidence}</p>}</div>)}</details></Table.Cell><Table.Cell>{task.status}{task.is_blocked && <div style={{ color: "#f3c969", fontSize: 12 }}>Bloqueada</div>}</Table.Cell><Table.Cell>{task.assignee_name || "Sin asignar"}</Table.Cell>
+          <Table.Cell>{task.project_name}</Table.Cell><Table.Cell><strong>{task.title}</strong>{task.description && <div style={{ color: "#8892a4", marginTop: 4 }}>{task.description}</div>}{task.is_blocked && <div style={{ color: "#f3c969", marginTop: 4 }}>Bloqueada: {task.block_reason}</div>}<details style={{ color: "#8892a4", fontSize: 12, marginTop: 6 }}><summary style={{ cursor: "pointer" }}>Responsables e historial</summary><p>Responsable actual: {task.responsible_name || "—"}<br />Creada por: {task.created_by_name || "—"}<br />Registro: {new Date(task.created_at).toLocaleString()}</p>{task.assigned_at && <p>Asignada: {new Date(task.assigned_at).toLocaleString()}</p>}{task.events?.map((event, eventIndex) => <div key={`${event.event_type}-${eventIndex}`} style={{ padding: "4px 0" }}><p>{eventLabels[event.event_type] || event.event_type} por {event.actor_name} · {new Date(event.occurred_at).toLocaleString()}{event.previous_status && event.new_status ? ` · ${event.previous_status} → ${event.new_status}` : ""}</p>{(event.previous_assignee_name || event.assignee_name) && <p>Ejecutor: {event.previous_assignee_name || "Sin asignar"} → {event.assignee_name || "Sin asignar"}</p>}{(event.previous_responsible_name || event.responsible_name) && <p>Responsable: {event.previous_responsible_name || "Sin asignar"} → {event.responsible_name || "Sin asignar"}</p>}{event.is_blocked_before !== event.is_blocked_after && <p>Condición: {event.is_blocked_before ? "Bloqueada" : "Sin bloqueo"} → {event.is_blocked_after ? "Bloqueada" : "Sin bloqueo"}</p>}{event.result_text && <p>{event.event_type === "reapertura_autorizada" ? "Resultado de la reapertura" : "Resultado presentado"}: {event.result_text}</p>}{event.reason && <p>{event.event_type === "reapertura_autorizada" ? "Motivo de reapertura" : "Motivo/resultado"}: {event.reason}</p>}{event.evidence && <p>Evidencia: {event.evidence}</p>}</div>)}</details></Table.Cell><Table.Cell>{task.status}{task.is_blocked && <div style={{ color: "#f3c969", fontSize: 12 }}>Bloqueada</div>}</Table.Cell><Table.Cell>{task.assignee_name || "Sin asignar"}</Table.Cell>
           <Table.Cell>
             {user?.role === "L4" && task.status === "Pendiente" && <div style={{ display: "flex", gap: 8 }}><select aria-label={`Ejecutor para ${task.title}`} style={selectStyle} value={assignment[task.id] || ""} onChange={(e) => setAssignment({ ...assignment, [task.id]: e.target.value })}><option value="">Selecciona L5</option>{options.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select><Button size="sm" disabled={!assignment[task.id]} onClick={() => submitAssignment(task.id)}>Asignar</Button></div>}
             {can(user, "tasks", "start") && task.actions?.can_start && <Button size="sm" onClick={() => startTaskAction(task)}>{task.status === "Observada" ? "Iniciar corrección" : "Iniciar tarea"}</Button>}
             {can(user, "tasks", "submitReview") && task.actions?.can_submit_result && <div style={{ display: "grid", gap: 8, minWidth: 220 }}><Input label="Resultado presentado" name={`result-${task.id}`} type="textarea" value={results[task.id] || ""} onChange={(e) => setResults({ ...results, [task.id]: e.target.value })} required /><Button size="sm" disabled={!results[task.id]?.trim()} onClick={() => submitResult(task.id)}>Enviar a revisión</Button></div>}
             {can(user, "tasks", "review") && task.actions?.can_review && <div style={{ display: "grid", gap: 8, minWidth: 220 }}><Input label="Motivo de observación" name={`reason-${task.id}`} type="textarea" value={reviewReasons[task.id] || ""} onChange={(e) => setReviewReasons({ ...reviewReasons, [task.id]: e.target.value })} /><Button size="sm" variant="ghost" disabled={!reviewReasons[task.id]?.trim()} onClick={() => resolveReview(task.id, "Observada")}>Devolver con observaciones</Button><Button size="sm" onClick={() => resolveReview(task.id, "Finalizada")}>Aprobar resultado</Button></div>}
+            {can(user, "tasks", "reopen") && task.actions?.can_reopen && <div style={{ display: "grid", gap: 8, minWidth: 220 }}><Input label="Motivo de reapertura" name={`reopen-reason-${task.id}`} type="textarea" value={reopenInputs[task.id]?.reason || ""} onChange={(e) => setReopenInputs({ ...reopenInputs, [task.id]: { ...reopenInputs[task.id], reason: e.target.value } })} /><Input label="Resultado de la evaluación / corrección requerida" name={`reopen-result-${task.id}`} type="textarea" value={reopenInputs[task.id]?.result_text || ""} onChange={(e) => setReopenInputs({ ...reopenInputs, [task.id]: { ...reopenInputs[task.id], result_text: e.target.value } })} /><Button size="sm" variant="ghost" disabled={!reopenInputs[task.id]?.reason?.trim() || !reopenInputs[task.id]?.result_text?.trim()} onClick={() => reopenCompletedTask(task.id)}>Reabrir como Observada</Button></div>}
             {can(user, "tasks", "reassign") && task.actions?.can_reassign && <div style={{ display: "grid", gap: 8, minWidth: 220 }}>
               {user?.role === "L3" && <Input label="Nuevo responsable L4" name={`responsible-${task.id}`} type="select" value={reassignment.responsible_id || ""} onChange={(e) => setReassignments({ ...reassignments, [task.id]: { ...reassignment, responsible_id: e.target.value, assignee_id: "" } })} options={(context.leadership_assignments || []).filter((item) => item.project_id === task.project_id).map((item) => ({ value: item.leader_id, label: item.leader_name }))} />}
               <Input label="Nuevo ejecutor L5" name={`reassignee-${task.id}`} type="select" value={reassignment.assignee_id || ""} onChange={(e) => setReassignments({ ...reassignments, [task.id]: { ...reassignment, assignee_id: e.target.value } })} options={replacementOptions.map((person) => ({ value: person.id, label: person.name }))} />

@@ -127,6 +127,7 @@ const PERMISSIONS = {
     blockTask: ["L3", "L4"],
     unblockTask: ["L3", "L4"],
     reportIncident: ["L5"],
+    reopen: ["L3"],
     designate: ["L2"],
     withdrawCoordination: ["L2"],
     delegate: ["L3"],

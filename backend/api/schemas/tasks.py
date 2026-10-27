@@ -26,6 +26,11 @@ class TaskReview(SafeInputModel):
     reason: str | None = None
 
 
+class TaskReopen(SafeInputModel):
+    reason: str = Field(min_length=1)
+    result_text: str = Field(min_length=1)
+
+
 class TaskReassignment(SafeInputModel):
     assignee_id: int = Field(gt=0)
     responsible_id: int | None = Field(default=None, gt=0)

@@ -504,6 +504,7 @@ class TaskEvent(models.Model):
         ('bloqueo_declarado', 'Bloqueo declarado'),
         ('bloqueo_levantado', 'Bloqueo levantado'),
         ('incidencia_comunicada', 'Incidencia comunicada'),
+        ('reapertura_autorizada', 'Reapertura autorizada'),
     ]
 
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='events')

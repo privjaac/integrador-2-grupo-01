@@ -30,6 +30,11 @@ export async function reviewTask(id, resolution, reason = null) {
   return data;
 }
 
+export async function reopenTask(id, reason, result_text) {
+  const { data } = await axiosInstance.post(`/api/tasks/${id}/reopen`, { reason, result_text });
+  return data;
+}
+
 export async function reassignTask(id, { assignee_id, responsible_id, reason }) {
   const { data } = await axiosInstance.post(`/api/tasks/${id}/reassignment`, {
     assignee_id, responsible_id, reason,

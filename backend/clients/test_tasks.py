@@ -909,3 +909,107 @@ class TaskWorkflowApiTests(TransactionTestCase):
         self.assertEqual(removed.json()['events'][-1]['event_type'], 'ejecutor_retirado')
         self.assertTrue(removed.json()['events'][-1]['is_blocked_before'])
         self.assertTrue(removed.json()['events'][-1]['is_blocked_after'])
+
+    def make_finalized_task(self, project=None):
+        project = project or self.project
+        task = Task.objects.create(
+            project=project, title='Resultado aprobado', status='Finalizada',
+            created_by=self.people['L4'], responsible=self.people['L4'],
+            assignee=self.people['L5'], assigned_at=timezone.now(),
+        )
+        approval = TaskEvent.objects.create(
+            task=task, event_type='aprobada_revision', actor=self.people['L4'],
+            previous_status='En revisión', new_status='Finalizada',
+            assignee=self.people['L5'], result_text='Entrega aprobada originalmente',
+            reason='Aprobación inicial',
+        )
+        return task, approval
+
+    def test_l3_reopens_finalized_task_and_preserves_approval_and_project(self):
+        task, approval = self.make_finalized_task()
+        project_status = self.project.status
+        visible = self.api.get(f'/api/tasks/{task.id}', headers=self.headers['L3'])
+        self.assertTrue(visible.json()['actions']['can_reopen'])
+        response = self.api.post(
+            f'/api/tasks/{task.id}/reopen', headers=self.headers['L3'],
+            json={'reason': 'Se detectó una deficiencia técnica',
+                  'result_text': 'Corregir el cálculo y presentar evidencia actualizada'},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['status'], 'Observada')
+        self.assertFalse(response.json()['actions']['can_reopen'])
+        self.assertEqual(len(response.json()['events']), 2)
+        reopened = response.json()['events'][-1]
+        self.assertEqual(reopened['event_type'], 'reapertura_autorizada')
+        self.assertEqual(reopened['task_id'], task.id)
+        self.assertTrue(reopened['occurred_at'])
+        self.assertEqual(reopened['actor_id'], self.people['L3'].id)
+        self.assertEqual(reopened['previous_status'], 'Finalizada')
+        self.assertEqual(reopened['new_status'], 'Observada')
+        self.assertEqual(reopened['reason'], 'Se detectó una deficiencia técnica')
+        self.assertEqual(reopened['result_text'], 'Corregir el cálculo y presentar evidencia actualizada')
+        approval.refresh_from_db()
+        self.assertEqual(approval.new_status, 'Finalizada')
+        self.assertEqual(approval.result_text, 'Entrega aprobada originalmente')
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.status, project_status)
+
+    def test_reopen_denies_other_levels_foreign_coordination_and_invalid_states(self):
+        task, _approval = self.make_finalized_task()
+        before_events = TaskEvent.objects.filter(task=task).count()
+        payload = {'reason': 'Defecto comprobado', 'result_text': 'Corregir el defecto'}
+        for level in ('L1', 'L2', 'L4', 'L5'):
+            denied = self.api.post(
+                f'/api/tasks/{task.id}/reopen', headers=self.headers[level], json=payload,
+            )
+            self.assertEqual(denied.status_code, 403, f'{level}: {denied.text}')
+        foreign = self.api.post(
+            f'/api/tasks/{task.id}/reopen', headers=self.headers['L3B'], json=payload,
+        )
+        self.assertEqual(foreign.status_code, 404)
+        task.status = 'En revisión'
+        task.save(update_fields=['status'])
+        incompatible = self.api.post(
+            f'/api/tasks/{task.id}/reopen', headers=self.headers['L3'], json=payload,
+        )
+        self.assertEqual(incompatible.status_code, 409)
+        missing = self.api.post(
+            f'/api/tasks/{task.id}/reopen', headers=self.headers['L3'],
+            json={'reason': ' ', 'result_text': ' '},
+        )
+        self.assertEqual(missing.status_code, 422)
+        task.refresh_from_db()
+        self.assertEqual(task.status, 'En revisión')
+        self.assertEqual(TaskEvent.objects.filter(task=task).count(), before_events)
+
+    def test_reopen_remains_under_l3_followup_without_current_l4_or_executor_membership(self):
+        task, _approval = self.make_finalized_task()
+        self.leadership.is_active = False
+        self.leadership.save(update_fields=['is_active'])
+        self.membership.is_active = False
+        self.membership.save(update_fields=['is_active'])
+        response = self.api.post(
+            f'/api/tasks/{task.id}/reopen', headers=self.headers['L3'],
+            json={'reason': 'Corrección necesaria', 'result_text': 'Esperar ejecutor autorizado'},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['status'], 'Observada')
+        self.assertFalse(response.json()['actions']['can_reopen'])
+        detail = self.api.get(f'/api/tasks/{task.id}', headers=self.headers['L5'])
+        self.assertEqual(detail.status_code, 200)
+        self.assertFalse(detail.json()['actions']['can_start'])
+        denied_start = self.api.post(f'/api/tasks/{task.id}/start', headers=self.headers['L5'])
+        self.assertEqual(denied_start.status_code, 404)
+
+    def test_failed_reopen_event_rolls_back_status_change(self):
+        task, _approval = self.make_finalized_task()
+        before_events = TaskEvent.objects.filter(task=task).count()
+        with patch('api.routers.tasks.TaskEvent.objects.create', side_effect=IntegrityError):
+            response = self.api.post(
+                f'/api/tasks/{task.id}/reopen', headers=self.headers['L3'],
+                json={'reason': 'Defecto técnico', 'result_text': 'Corregir resultado'},
+            )
+        self.assertEqual(response.status_code, 409)
+        task.refresh_from_db()
+        self.assertEqual(task.status, 'Finalizada')
+        self.assertEqual(TaskEvent.objects.filter(task=task).count(), before_events)
