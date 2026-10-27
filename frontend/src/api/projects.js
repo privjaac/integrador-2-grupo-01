@@ -59,6 +59,28 @@ export async function markProjectReadyForDelivery(projectId, payload) {
   return data;
 }
 
+export async function getProjectDeliveries(projectId) {
+  const { data } = await axiosInstance.get(`/api/projects/${projectId}/deliveries`);
+  return data;
+}
+
+export async function recordProjectDelivery(projectId, payload) {
+  const { data } = await axiosInstance.post(`/api/projects/${projectId}/deliveries`, payload);
+  return data;
+}
+
+export async function reviewProjectDeliveryVersion(projectId, payload) {
+  const { data } = await axiosInstance.post(
+    `/api/projects/${projectId}/delivery-version-reviews`, payload,
+  );
+  return data;
+}
+
+export async function formalizeProjectDelivery(projectId, payload) {
+  const { data } = await axiosInstance.post(`/api/projects/${projectId}/deliveries/formalize`, payload);
+  return data;
+}
+
 export async function getCommercialAuthorizations(projectId) {
   const { data } = await axiosInstance.get(`/api/projects/${projectId}/commercial-authorizations`);
   return data;

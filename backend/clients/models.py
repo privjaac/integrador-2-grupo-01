@@ -481,6 +481,9 @@ class ProjectEvent(models.Model):
         'ProjectDeliveryAuthorization', on_delete=models.PROTECT, null=True, blank=True,
         related_name='project_transitions',
     )
+    delivery_records = models.ManyToManyField(
+        'ProjectDelivery', through='ProjectDeliveryTransition', related_name='project_transitions',
+    )
     previous_status = models.CharField(max_length=24)
     new_status = models.CharField(max_length=24)
     reason = models.TextField()
@@ -533,6 +536,7 @@ class ProjectTechnicalEvaluation(models.Model):
     ordinary_close_evidence = models.TextField()
     obligations_assessment = models.TextField()
     optional_task_assessments = models.JSONField(default=list)
+    validated_versions = models.JSONField(default=list)
     task_snapshot = models.JSONField(default=list)
     evaluated_at = models.DateTimeField(auto_now_add=True)
 
@@ -601,6 +605,90 @@ class ProjectDeliveryAuthorizationEvent(models.Model):
             condition=models.Q(event_type__in=['retirada', 'sustituida']),
             name='project_delivery_auth_single_close_event',
         )]
+
+
+class ProjectDelivery(models.Model):
+    """Immutable evidence of a partial or integral commercial transfer."""
+
+    DELIVERY_TYPES = [('parcial', 'Parcial'), ('integral', 'Integral')]
+
+    project = models.ForeignKey(Project, on_delete=models.PROTECT, related_name='deliveries')
+    recorded_by = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='project_deliveries_recorded',
+    )
+    preparation_authorization = models.ForeignKey(
+        ProjectDeliveryAuthorization, on_delete=models.PROTECT, related_name='deliveries',
+    )
+    delivery_type = models.CharField(max_length=12, choices=DELIVERY_TYPES)
+    scope = models.TextField()
+    scope_within_authorization = models.BooleanField(default=False)
+    covers_project_scope = models.BooleanField(default=False)
+    version_reference = models.CharField(max_length=200)
+    recipient = models.CharField(max_length=200)
+    delivery_method = models.TextField()
+    performed_by = models.CharField(max_length=200)
+    evidence_reference = models.CharField(max_length=300)
+    occurred_at = models.DateTimeField()
+    recorded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'project_deliveries'
+        ordering = ['occurred_at', 'id']
+        constraints = [models.CheckConstraint(
+            condition=models.Q(delivery_type__in=['parcial', 'integral']),
+            name='project_delivery_type_valid',
+        ), models.CheckConstraint(
+            condition=models.Q(scope_within_authorization=True),
+            name='project_delivery_scope_attested',
+        ), models.CheckConstraint(
+            condition=(
+                models.Q(delivery_type='integral', covers_project_scope=True)
+                | models.Q(delivery_type='parcial', covers_project_scope=False)
+            ),
+            name='project_delivery_coverage_kind_valid',
+        )]
+
+
+class ProjectDeliveryTechnicalReview(models.Model):
+    """L3's technical enablement review for a version before its delivery."""
+
+    project = models.ForeignKey(Project, on_delete=models.PROTECT, related_name='delivery_version_reviews')
+    version_reference = models.CharField(max_length=200)
+    technical_evaluation = models.ForeignKey(
+        ProjectTechnicalEvaluation, on_delete=models.PROTECT, related_name='delivery_reviews',
+    )
+    actor = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='project_delivery_reviews',
+    )
+    satisfactory = models.BooleanField()
+    technical_enablement_status = models.CharField(max_length=16, choices=[
+        ('Vigente', 'Vigente'), ('En revisión', 'En revisión'), ('No vigente', 'No vigente'),
+    ])
+    result_summary = models.TextField()
+    evidence = models.TextField()
+    reviewed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'project_delivery_technical_reviews'
+        ordering = ['reviewed_at', 'id']
+        constraints = [models.CheckConstraint(
+            condition=models.Q(technical_enablement_status__in=['Vigente', 'En revisión', 'No vigente']),
+            name='project_delivery_review_status_valid',
+        )]
+
+
+class ProjectDeliveryTransition(models.Model):
+    """Relates each delivery record to the one transition it substantiates."""
+
+    event = models.ForeignKey(ProjectEvent, on_delete=models.PROTECT, related_name='delivery_evidence_links')
+    delivery = models.ForeignKey(ProjectDelivery, on_delete=models.PROTECT, related_name='transition_links')
+
+    class Meta:
+        db_table = 'project_delivery_transitions'
+        constraints = [
+            models.UniqueConstraint(fields=['event', 'delivery'], name='project_delivery_transition_pair_unique'),
+            models.UniqueConstraint(fields=['delivery'], name='project_delivery_used_once'),
+        ]
 
 
 class TeamMembership(models.Model):

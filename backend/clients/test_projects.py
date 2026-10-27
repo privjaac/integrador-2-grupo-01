@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from clients.models import (Client, Collaborator, Project, ProjectCommercialAuthorization,
                             ProjectCommercialAuthorizationEvent, ProjectCoordination,
                             ProjectDeliveryAuthorization, ProjectDeliveryAuthorizationEvent,
+                            ProjectDelivery, ProjectDeliveryTechnicalReview, ProjectDeliveryTransition,
                             ProjectEvent, ProjectTaskClassification, ProjectTechnicalEvaluation,
                             Role, Task, TaskEvent, WebCatalog)
 
@@ -912,3 +913,203 @@ class ProjectApiTests(TransactionTestCase):
         self.assertEqual(Project.objects.get(pk=project.id).status, 'En validación técnica')
         self.assertFalse(ProjectEvent.objects.filter(project=project, event_type='listo_para_entrega').exists())
         self.assertTrue(ProjectTechnicalEvaluation.objects.filter(project=project).exists())
+
+    def prepare_delivery_project(self, *, validated_versions=None):
+        project, _task, _validation_event, _evaluation = self.create_validated_project()
+        if validated_versions:
+            evaluated = self.api.post(
+                f'/api/projects/{project.id}/technical-evaluations', headers=self.tokens['L3'],
+                json=self.technical_evaluation_payload(validated_versions=validated_versions),
+            )
+            self.assertEqual(evaluated.status_code, 200, evaluated.text)
+        authorization = self.create_delivery_authorization(project)
+        self.assertEqual(authorization.status_code, 201, authorization.text)
+        ProjectDeliveryAuthorization.objects.filter(pk=authorization.json()['id']).update(
+            effective_at=timezone.now() - timedelta(seconds=2),
+        )
+        ready = self.api.post(
+            f'/api/projects/{project.id}/ready-for-delivery', headers=self.tokens['L3'],
+            json={'delivery_authorization_id': authorization.json()['id'], 'reason': 'Cierre técnico ordinario'},
+        )
+        self.assertEqual(ready.status_code, 200, ready.text)
+        return project, authorization.json()['id']
+
+    @staticmethod
+    def project_delivery_payload(authorization_id, **overrides):
+        payload = {
+            'delivery_type': 'integral', 'preparation_authorization_id': authorization_id,
+            'scope': 'Portal institucional y alcance acordado',
+            'scope_within_authorization': True, 'covers_project_scope': True,
+            'version_reference': 'release-1.0', 'recipient': 'Responsable del cliente',
+            'delivery_method': 'Transferencia en repositorio acordado', 'performed_by': 'Equipo autorizado',
+            'evidence_reference': 'EXP-TRANSFERENCIA-01', 'occurred_at': timezone.now().isoformat(),
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_l2_records_and_formalizes_integral_delivery_atomically(self):
+        project, authorization_id = self.prepare_delivery_project(validated_versions=['release-1.0'])
+        delivery_response = self.api.post(
+            f'/api/projects/{project.id}/deliveries', headers=self.tokens['L2'],
+            json=self.project_delivery_payload(authorization_id),
+        )
+        self.assertEqual(delivery_response.status_code, 201, delivery_response.text)
+        delivery = ProjectDelivery.objects.get(pk=delivery_response.json()['id'])
+        self.assertEqual(Project.objects.get(pk=project.id).status, 'Listo para entrega')
+        self.assertTrue(delivery.scope_within_authorization)
+        formalized = self.api.post(
+            f'/api/projects/{project.id}/deliveries/formalize', headers=self.tokens['L2'],
+            json={'delivery_ids': [delivery.id], 'integral_coverage_confirmed': True,
+                  'coverage_evidence': 'La transferencia cubre el alcance actual', 'reason': 'Entrega formal ordinaria'},
+        )
+        self.assertEqual(formalized.status_code, 200, formalized.text)
+        project.refresh_from_db()
+        self.assertEqual(project.status, 'Entregado')
+        event = ProjectEvent.objects.get(project=project, event_type='entrega_formalizada')
+        self.assertEqual((event.previous_status, event.new_status), ('Listo para entrega', 'Entregado'))
+        self.assertEqual(event.actor.username, 'project-api-L2')
+        self.assertEqual(list(event.delivery_records.values_list('id', flat=True)), [delivery.id])
+        self.assertIn('EXP-TRANSFERENCIA-01', event.evidence)
+        self.assertIn('fecha efectiva=', event.evidence)
+        self.assertFalse(ProjectEvent.objects.filter(project=project, new_status__icontains='acept').exists())
+
+    def test_delivery_rejects_wrong_role_origin_and_missing_transfer_evidence_without_writes(self):
+        project, authorization_id = self.prepare_delivery_project()
+        payload = self.project_delivery_payload(authorization_id)
+        self.assertEqual(self.api.post(
+            f'/api/projects/{project.id}/deliveries', headers=self.tokens['L3'], json=payload,
+        ).status_code, 403)
+        self.assertEqual(self.api.post(
+            f'/api/projects/{project.id}/deliveries', headers=self.tokens['L2'],
+            json={**payload, 'evidence_reference': '   '},
+        ).status_code, 422)
+        self.assertEqual(self.api.post(
+            f'/api/projects/{project.id}/deliveries', headers=self.tokens['L2'],
+            json={**payload, 'scope_within_authorization': False},
+        ).status_code, 422)
+        self.assertEqual(self.api.post(
+            f'/api/projects/{project.id}/delivery-version-reviews', headers=self.tokens['L2'],
+            json={'version_reference': 'release-1', 'satisfactory': True, 'technical_enablement_status': 'Vigente',
+                  'result_summary': 'Revisión', 'evidence': 'EXP-REV'},
+        ).status_code, 403)
+        ProjectCoordination.objects.filter(project=project).update(is_active=False)
+        self.assertEqual(self.api.post(
+            f'/api/projects/{project.id}/delivery-version-reviews', headers=self.tokens['L3'],
+            json={'version_reference': 'release-1', 'satisfactory': True, 'technical_enablement_status': 'Vigente',
+                  'result_summary': 'Revisión', 'evidence': 'EXP-REV'},
+        ).status_code, 404)
+        self.assertEqual(self.api.post(
+            f'/api/projects/{project.id}/deliveries/formalize', headers=self.tokens['L3'],
+            json={'delivery_ids': [1], 'integral_coverage_confirmed': True,
+                  'coverage_evidence': 'Cobertura', 'reason': 'Entrega'},
+        ).status_code, 403)
+        Project.objects.filter(pk=project.id).update(status='En ejecución')
+        failed = self.api.post(
+            f'/api/projects/{project.id}/deliveries', headers=self.tokens['L2'], json=payload,
+        )
+        self.assertEqual(failed.status_code, 409, failed.text)
+        self.assertEqual(ProjectDelivery.objects.filter(project=project).count(), 0)
+        self.assertFalse(ProjectEvent.objects.filter(project=project, event_type='entrega_formalizada').exists())
+
+    def test_expired_authorization_and_pre_ready_transfer_cannot_be_formalized(self):
+        project, authorization_id = self.prepare_delivery_project(validated_versions=['release-1.0'])
+        payload = self.project_delivery_payload(authorization_id)
+        expired_at = timezone.now() - timedelta(seconds=1)
+        ProjectDeliveryAuthorization.objects.filter(pk=authorization_id).update(expires_at=expired_at)
+        rejected = self.api.post(f'/api/projects/{project.id}/deliveries', headers=self.tokens['L2'], json=payload)
+        self.assertEqual(rejected.status_code, 409, rejected.text)
+        ProjectDeliveryAuthorization.objects.filter(pk=authorization_id).update(expires_at=None)
+        ready_event = ProjectEvent.objects.get(project=project, event_type='listo_para_entrega')
+        ProjectDeliveryAuthorization.objects.filter(pk=authorization_id).update(
+            authorized_at=ready_event.occurred_at - timedelta(hours=1),
+            effective_at=ready_event.occurred_at - timedelta(hours=1),
+        )
+        payload['occurred_at'] = (ready_event.occurred_at - timedelta(minutes=1)).isoformat()
+        recorded = self.api.post(f'/api/projects/{project.id}/deliveries', headers=self.tokens['L2'], json=payload)
+        self.assertEqual(recorded.status_code, 201, recorded.text)
+        formalized = self.api.post(
+            f'/api/projects/{project.id}/deliveries/formalize', headers=self.tokens['L2'],
+            json={'delivery_ids': [recorded.json()['id']], 'integral_coverage_confirmed': True,
+                  'coverage_evidence': 'Cobertura documentada', 'reason': 'Entrega ordinaria'},
+        )
+        self.assertEqual(formalized.status_code, 409, formalized.text)
+        self.assertEqual(Project.objects.get(pk=project.id).status, 'Listo para entrega')
+        self.assertFalse(ProjectDeliveryTransition.objects.filter(delivery_id=recorded.json()['id']).exists())
+
+    def test_unvalidated_version_requires_current_satisfactory_l3_review(self):
+        project, authorization_id = self.prepare_delivery_project(validated_versions=['release-1.0'])
+        review = self.api.post(
+            f'/api/projects/{project.id}/delivery-version-reviews', headers=self.tokens['L3'],
+            json={'version_reference': 'release-2.0', 'satisfactory': True,
+                  'technical_enablement_status': 'Vigente', 'result_summary': 'Versión revisada antes de transferir',
+                  'evidence': 'EXP-TEC-V2'},
+        )
+        self.assertEqual(review.status_code, 200, review.text)
+        delivery = self.api.post(
+            f'/api/projects/{project.id}/deliveries', headers=self.tokens['L2'],
+            json=self.project_delivery_payload(authorization_id, version_reference='release-2.0'),
+        )
+        self.assertEqual(delivery.status_code, 201, delivery.text)
+        formalize_payload = {'delivery_ids': [delivery.json()['id']], 'integral_coverage_confirmed': True,
+                             'coverage_evidence': 'Cobertura integral', 'reason': 'Entrega'}
+        accepted = self.api.post(
+            f'/api/projects/{project.id}/deliveries/formalize', headers=self.tokens['L2'], json=formalize_payload,
+        )
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+        self.assertEqual(ProjectDeliveryTechnicalReview.objects.count(), 1)
+
+    def test_review_after_transfer_does_not_retroactively_enable_delivered_version(self):
+        project, authorization_id = self.prepare_delivery_project(validated_versions=['release-1.0'])
+        delivery = self.api.post(
+            f'/api/projects/{project.id}/deliveries', headers=self.tokens['L2'],
+            json=self.project_delivery_payload(authorization_id, version_reference='release-2.0'),
+        )
+        self.assertEqual(delivery.status_code, 201, delivery.text)
+        review = self.api.post(
+            f'/api/projects/{project.id}/delivery-version-reviews', headers=self.tokens['L3'],
+            json={'version_reference': 'release-2.0', 'satisfactory': True,
+                  'technical_enablement_status': 'Vigente', 'result_summary': 'Revisión posterior',
+                  'evidence': 'EXP-TEC-V2'},
+        )
+        self.assertEqual(review.status_code, 200, review.text)
+        rejected = self.api.post(
+            f'/api/projects/{project.id}/deliveries/formalize', headers=self.tokens['L2'],
+            json={'delivery_ids': [delivery.json()['id']], 'integral_coverage_confirmed': True,
+                  'coverage_evidence': 'Cobertura integral', 'reason': 'Entrega'},
+        )
+        self.assertEqual(rejected.status_code, 409, rejected.text)
+
+    def test_changed_tasks_after_ready_require_a_new_technical_close_before_delivery(self):
+        project, authorization_id = self.prepare_delivery_project(validated_versions=['release-1.0'])
+        task = Task.objects.get(project=project)
+        Task.objects.filter(pk=task.pk).update(status='Observada')
+        delivery = self.api.post(
+            f'/api/projects/{project.id}/deliveries', headers=self.tokens['L2'],
+            json=self.project_delivery_payload(authorization_id),
+        )
+        self.assertEqual(delivery.status_code, 201, delivery.text)
+        rejected = self.api.post(
+            f'/api/projects/{project.id}/deliveries/formalize', headers=self.tokens['L2'],
+            json={'delivery_ids': [delivery.json()['id']], 'integral_coverage_confirmed': True,
+                  'coverage_evidence': 'Cobertura integral', 'reason': 'Entrega'},
+        )
+        self.assertEqual(rejected.status_code, 409, rejected.text)
+        self.assertEqual(Project.objects.get(pk=project.id).status, 'Listo para entrega')
+
+    def test_delivery_formalization_rolls_back_state_event_and_delivery_link(self):
+        project, authorization_id = self.prepare_delivery_project(validated_versions=['release-1.0'])
+        delivery = self.api.post(
+            f'/api/projects/{project.id}/deliveries', headers=self.tokens['L2'],
+            json=self.project_delivery_payload(authorization_id),
+        )
+        self.assertEqual(delivery.status_code, 201, delivery.text)
+        payload = {'delivery_ids': [delivery.json()['id']], 'integral_coverage_confirmed': True,
+                   'coverage_evidence': 'Cobertura integral', 'reason': 'Entrega'}
+        with patch('api.routers.projects.ProjectDeliveryTransition.objects.bulk_create', side_effect=IntegrityError):
+            failed = self.api.post(
+                f'/api/projects/{project.id}/deliveries/formalize', headers=self.tokens['L2'], json=payload,
+            )
+        self.assertEqual(failed.status_code, 409)
+        self.assertEqual(Project.objects.get(pk=project.id).status, 'Listo para entrega')
+        self.assertFalse(ProjectEvent.objects.filter(project=project, event_type='entrega_formalizada').exists())
+        self.assertFalse(ProjectDeliveryTransition.objects.filter(delivery_id=delivery.json()['id']).exists())

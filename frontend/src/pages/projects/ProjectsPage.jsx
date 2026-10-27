@@ -6,6 +6,7 @@ import {
   createProject, enterTechnicalValidation, getCommercialAuthorizations,
   getDeliveryAuthorizations, getDeliveryContext, getProjects,
   markProjectReadyForDelivery, recordTechnicalEvaluation, returnProjectToExecution,
+  formalizeProjectDelivery, getProjectDeliveries, recordProjectDelivery, reviewProjectDeliveryVersion,
   startProject, withdrawCommercialAuthorization, withdrawDeliveryAuthorization,
 } from "../../api/projects";
 import { useAuth } from "../../hooks/useAuth";
@@ -24,6 +25,9 @@ export default function ProjectsPage() {
   const canEvaluateClosure = can(user, "projects", "evaluateProjectClosure");
   const canMarkReady = can(user, "projects", "markProjectReadyForDelivery");
   const canAuthorizeDelivery = can(user, "projects", "authorizeProjectDelivery");
+  const canRecordDelivery = can(user, "projects", "recordProjectDelivery");
+  const canFormalizeDelivery = can(user, "projects", "formalizeProjectDelivery");
+  const canReviewDeliveryVersion = can(user, "projects", "reviewProjectDeliveryVersion");
   const [projects, setProjects] = useState([]);
   const [clients, setClients] = useState([]);
   const [commercialAuthorizations, setCommercialAuthorizations] = useState({});
@@ -35,6 +39,10 @@ export default function ProjectsPage() {
   const [startInputs, setStartInputs] = useState({});
   const [deliveryContexts, setDeliveryContexts] = useState({});
   const [deliveryAuthorizations, setDeliveryAuthorizations] = useState({});
+  const [projectDeliveries, setProjectDeliveries] = useState({});
+  const [deliveryInputs, setDeliveryInputs] = useState({});
+  const [deliveryReviewInputs, setDeliveryReviewInputs] = useState({});
+  const [formalizationInputs, setFormalizationInputs] = useState({});
   const [classificationInputs, setClassificationInputs] = useState({});
   const [evaluationInputs, setEvaluationInputs] = useState({});
   const [deliveryAuthorizationInputs, setDeliveryAuthorizationInputs] = useState({});
@@ -72,6 +80,10 @@ export default function ProjectsPage() {
         projectId, await getDeliveryAuthorizations(projectId),
       ]));
       setDeliveryAuthorizations(Object.fromEntries(deliveryRows));
+      const deliveryRecordRows = await Promise.all(deliveryProjectIds.map(async (projectId) => [
+        projectId, await getProjectDeliveries(projectId),
+      ]));
+      setProjectDeliveries(Object.fromEntries(deliveryRecordRows));
       const deliveryContextRows = user?.role === "L3"
         ? await Promise.all(deliveryProjectIds.map(async (projectId) => [projectId, await getDeliveryContext(projectId)]))
         : [];
@@ -160,11 +172,58 @@ export default function ProjectsPage() {
       await recordTechnicalEvaluation(projectId, {
         ...input,
         optional_task_assessments: optionalTaskAssessments,
+        validated_versions: (input.validated_versions_text || "").split("\n").map((item) => item.trim()).filter(Boolean),
       });
       await refresh();
       setEvaluationInputs((items) => ({ ...items, [projectId]: {} }));
     } catch (err) {
       setError(err.userMessage || err.response?.data?.detail || "No se pudo registrar la evaluación técnica.");
+    }
+  }
+
+  async function submitDelivery(projectId) {
+    setError("");
+    try {
+      const input = deliveryInputs[projectId] || {};
+      await recordProjectDelivery(projectId, {
+        ...input,
+        preparation_authorization_id: Number(input.preparation_authorization_id),
+        occurred_at: new Date(input.occurred_at || localDateTime(0)).toISOString(),
+        covers_project_scope: input.delivery_type === "integral",
+      });
+      await refresh();
+      setDeliveryInputs((items) => ({ ...items, [projectId]: {} }));
+    } catch (err) {
+      setError(err.userMessage || err.response?.data?.detail || "No se pudo registrar la constancia de entrega.");
+    }
+  }
+
+  async function submitDeliveryReview(projectId) {
+    setError("");
+    try {
+      await reviewProjectDeliveryVersion(projectId, deliveryReviewInputs[projectId] || {});
+      await refresh();
+      setDeliveryReviewInputs((items) => ({ ...items, [projectId]: {} }));
+    } catch (err) {
+      setError(err.userMessage || err.response?.data?.detail || "No se pudo registrar la revisión de versión.");
+    }
+  }
+
+  async function submitFormalization(projectId) {
+    setError("");
+    try {
+      const input = formalizationInputs[projectId] || {};
+      const updated = await formalizeProjectDelivery(projectId, {
+        delivery_ids: input.delivery_ids || [],
+        integral_coverage_confirmed: Boolean(input.integral_coverage_confirmed),
+        coverage_evidence: input.coverage_evidence,
+        reason: input.reason,
+      });
+      setProjects((items) => items.map((item) => item.id === projectId ? updated : item));
+      await refresh();
+      setFormalizationInputs((items) => ({ ...items, [projectId]: {} }));
+    } catch (err) {
+      setError(err.userMessage || err.response?.data?.detail || "No se pudo formalizar la entrega.");
     }
   }
 
@@ -320,6 +379,16 @@ export default function ProjectsPage() {
     setReadyInputs((items) => ({ ...items, [projectId]: { ...items[projectId], [field]: value } }));
   }
 
+  function updateDelivery(projectId, field, value) {
+    setDeliveryInputs((items) => ({ ...items, [projectId]: { ...items[projectId], [field]: value } }));
+  }
+  function updateDeliveryReview(deliveryId, field, value) {
+    setDeliveryReviewInputs((items) => ({ ...items, [deliveryId]: { ...items[deliveryId], [field]: value } }));
+  }
+  function updateFormalization(projectId, field, value) {
+    setFormalizationInputs((items) => ({ ...items, [projectId]: { ...items[projectId], [field]: value } }));
+  }
+
   return <section style={{ color: "white", maxWidth: 1050, margin: "0 auto" }}>
     <h1>Proyectos</h1>
     <p style={{ color: "#aab2c5" }}>Los proyectos nuevos se crean en estado Planificado.</p>
@@ -404,6 +473,7 @@ export default function ProjectsPage() {
             <label>Estado de habilitación técnica<select value={input.technical_enablement_status || "En revisión"} onChange={(event) => updateEvaluation(project.id, "technical_enablement_status", event.target.value)} style={fieldStyle}><option>Vigente</option><option>En revisión</option><option>No vigente</option></select></label>
             <label style={{ display: "flex", gap: 8 }}><input type="checkbox" checked={input.ordinary_close_valid || false} onChange={(event) => updateEvaluation(project.id, "ordinary_close_valid", event.target.checked)} />El cierre técnico ordinario es válido</label>
             <label style={{ display: "flex", gap: 8 }}><input type="checkbox" checked={input.obligations_compatible || false} onChange={(event) => updateEvaluation(project.id, "obligations_compatible", event.target.checked)} />Las obligaciones evaluadas son compatibles con el cierre y la habilitación</label>
+            <label>Versiones técnicas verificadas, una por línea<textarea value={input.validated_versions_text || ""} onChange={(event) => updateEvaluation(project.id, "validated_versions_text", event.target.value)} style={fieldStyle} /></label>
             {[["result_summary", "Resultado y requisitos evaluados"], ["evidence", "Evidencia de validación integral"], ["ordinary_close_evidence", "Fundamento del cierre ordinario"], ["obligations_assessment", "Obligaciones pendientes y seguimiento"]].map(([field, label]) => <label key={field} style={{ display: "grid", gap: 4 }}>{label}<textarea required value={input[field] || ""} onChange={(event) => updateEvaluation(project.id, field, event.target.value)} style={fieldStyle} /></label>)}
             {pendingOptional.map((task) => <div key={task.task_id} style={{ borderTop: "1px solid #34394a", paddingTop: 8 }}><strong>Tarea opcional pendiente: {task.title}</strong>
               <label style={{ display: "grid", gap: 4 }}>Evaluación de impacto<textarea required value={input.optionalTasks?.[task.task_id]?.impact_assessment || ""} onChange={(event) => updateOptionalAssessment(project.id, task.task_id, "impact_assessment", event.target.value)} style={fieldStyle} /></label>
@@ -458,6 +528,60 @@ export default function ProjectsPage() {
             {input.replaces_authorization_id && <label>Motivo de sustitución<input required value={input.replacement_reason || ""} onChange={(event) => updateDeliveryAuthorization(project.id, "replacement_reason", event.target.value)} style={fieldStyle} /></label>}
             <button type="submit" disabled={!input.conditions_accredited} style={fieldStyle}>Registrar habilitación de entrega</button>
           </form>
+        </article>;
+      })}
+    </section>}
+    {(canRecordDelivery || canReviewDeliveryVersion || canFormalizeDelivery) && <section style={{ marginTop: 28 }}>
+      <h2>Formalización de entrega</h2>
+      <p style={{ color: "#aab2c5" }}>L2 registra la transferencia efectiva y formaliza cuando las constancias cubren el alcance. La recepción, aceptación y pago permanecen independientes.</p>
+      {projects.filter((project) => ["En ejecución", "En validación técnica", "Listo para entrega"].includes(project.status) && (user?.role === "L2" || scopedProjects.has(project.id))).map((project) => {
+        const rows = projectDeliveries[project.id] || [];
+        const input = deliveryInputs[project.id] || {};
+        const formInput = formalizationInputs[project.id] || {};
+        const auths = (deliveryAuthorizations[project.id] || []).filter((item) => item.conditions_accredited && new Date(item.effective_at).getTime() <= Date.now() && (!item.expires_at || new Date(item.expires_at).getTime() > Date.now()) && !item.events?.length);
+        return <article key={project.id} style={{ border: "1px solid #34394a", borderRadius: 8, padding: 16, margin: "12px 0" }}>
+          <h3>{project.name} · {project.status}</h3>
+          {canRecordDelivery && <div style={{ display: "grid", gap: 8, maxWidth: 760 }}>
+            <h4>Registrar transferencia efectiva (L2)</h4>
+            {auths.length === 0 ? <p>No hay habilitación de preparación vigente.</p> : <>
+              <label>Habilitación<select value={input.preparation_authorization_id || ""} onChange={(e) => updateDelivery(project.id, "preparation_authorization_id", e.target.value)} style={fieldStyle}><option value="">Seleccionar</option>{auths.map((a) => <option key={a.id} value={a.id}>#{a.id} · {a.authorized_scope}</option>)}</select></label>
+              <label>Tipo<select value={input.delivery_type || "parcial"} onChange={(e) => updateDelivery(project.id, "delivery_type", e.target.value)} style={fieldStyle}><option value="parcial">Parcial</option><option value="integral" disabled={project.status !== "Listo para entrega"}>Integral</option></select></label>
+              <label>Alcance transferido<textarea value={input.scope || project.scope || ""} onChange={(e) => updateDelivery(project.id, "scope", e.target.value)} style={fieldStyle} /></label>
+              <label><input type="checkbox" checked={input.scope_within_authorization || false} onChange={(e) => updateDelivery(project.id, "scope_within_authorization", e.target.checked)} />Confirmo que el alcance transferido está dentro de la habilitación L2</label>
+              <label>Versión<input value={input.version_reference || ""} onChange={(e) => updateDelivery(project.id, "version_reference", e.target.value)} style={fieldStyle} /></label>
+              <label>Destinatario<input value={input.recipient || ""} onChange={(e) => updateDelivery(project.id, "recipient", e.target.value)} style={fieldStyle} /></label>
+              <label>Método de transferencia<input value={input.delivery_method || ""} onChange={(e) => updateDelivery(project.id, "delivery_method", e.target.value)} style={fieldStyle} /></label>
+              <label>Responsable de ejecutar la transferencia<input value={input.performed_by || ""} onChange={(e) => updateDelivery(project.id, "performed_by", e.target.value)} style={fieldStyle} /></label>
+              <label>Referencia de evidencia<input value={input.evidence_reference || ""} onChange={(e) => updateDelivery(project.id, "evidence_reference", e.target.value)} style={fieldStyle} /></label>
+              <label>Fecha efectiva<input type="datetime-local" value={input.occurred_at || localDateTime(0)} onChange={(e) => updateDelivery(project.id, "occurred_at", e.target.value)} style={fieldStyle} /></label>
+              <button type="button" disabled={!input.preparation_authorization_id || !input.scope?.trim() || !input.scope_within_authorization || !input.version_reference?.trim() || !input.recipient?.trim() || !input.delivery_method?.trim() || !input.performed_by?.trim() || !input.evidence_reference?.trim()} onClick={() => submitDelivery(project.id)} style={fieldStyle}>Registrar constancia</button>
+            </>}
+          </div>}
+          {canReviewDeliveryVersion && project.status === "Listo para entrega" && <div style={{ display: "grid", gap: 6, maxWidth: 700, margin: "14px 0" }}>
+            <h4>Habilitar versión para entrega (L3)</h4>
+            <p style={{ color: "#aab2c5" }}>Registra la revisión técnica antes de la fecha efectiva de transferencia. Las versiones ya cubiertas por la evaluación integral no requieren otra revisión.</p>
+            <label>Versión<input value={deliveryReviewInputs[project.id]?.version_reference || ""} onChange={(e) => updateDeliveryReview(project.id, "version_reference", e.target.value)} style={fieldStyle} /></label>
+            <label><input type="checkbox" checked={deliveryReviewInputs[project.id]?.satisfactory || false} onChange={(e) => updateDeliveryReview(project.id, "satisfactory", e.target.checked)} />Resultado técnico satisfactorio</label>
+            <label>Estado técnico<select value={deliveryReviewInputs[project.id]?.technical_enablement_status || "Vigente"} onChange={(e) => updateDeliveryReview(project.id, "technical_enablement_status", e.target.value)} style={fieldStyle}><option>Vigente</option><option>En revisión</option><option>No vigente</option></select></label>
+            <label>Resultado<input value={deliveryReviewInputs[project.id]?.result_summary || ""} onChange={(e) => updateDeliveryReview(project.id, "result_summary", e.target.value)} style={fieldStyle} /></label>
+            <label>Evidencia<input value={deliveryReviewInputs[project.id]?.evidence || ""} onChange={(e) => updateDeliveryReview(project.id, "evidence", e.target.value)} style={fieldStyle} /></label>
+            <button type="button" disabled={!deliveryReviewInputs[project.id]?.version_reference?.trim() || !deliveryReviewInputs[project.id]?.result_summary?.trim() || !deliveryReviewInputs[project.id]?.evidence?.trim()} onClick={() => submitDeliveryReview(project.id)} style={fieldStyle}>Registrar revisión técnica previa</button>
+          </div>}
+          <h4>Constancias e historial</h4>
+          {rows.length === 0 ? <p>Sin constancias registradas.</p> : rows.map((delivery) => {
+            return <div key={delivery.id} style={{ borderTop: "1px solid #34394a", padding: "8px 0" }}>
+              <p>#{delivery.id} {delivery.delivery_type} · {delivery.scope} · versión {delivery.version_reference} · destinatario {delivery.recipient} · transferencia por {delivery.performed_by} mediante {delivery.delivery_method} · {new Date(delivery.occurred_at).toLocaleString()} · evidencia {delivery.evidence_reference} · L2 {delivery.recorded_by_name}{delivery.formalized ? " · formalizada" : ""}</p>
+              {delivery.technical_reviews.map((review, index) => <p key={index}>Revisión L3 de {review.version_reference} {review.actor_name}: {review.satisfactory ? "satisfactoria" : "no satisfactoria"}, habilitación {review.technical_enablement_status} · {review.evidence}</p>)}
+            </div>;
+          })}
+          {canFormalizeDelivery && project.status === "Listo para entrega" && rows.some((item) => !item.formalized) && <div style={{ display: "grid", gap: 8, maxWidth: 760 }}>
+            <h4>Formalizar alcance integral (L2)</h4>
+            {rows.filter((item) => !item.formalized).map((item) => <label key={item.id}><input type="checkbox" checked={(formInput.delivery_ids || []).includes(item.id)} onChange={(e) => updateFormalization(project.id, "delivery_ids", e.target.checked ? [...(formInput.delivery_ids || []), item.id] : (formInput.delivery_ids || []).filter((id) => id !== item.id))} />Entrega #{item.id} · {item.delivery_type} · {item.scope}</label>)}
+            <label><input type="checkbox" checked={formInput.integral_coverage_confirmed || false} onChange={(e) => updateFormalization(project.id, "integral_coverage_confirmed", e.target.checked)} />Confirmo que las entregas seleccionadas cubren integralmente el alcance vigente</label>
+            <label>Evidencia de cobertura<input value={formInput.coverage_evidence || ""} onChange={(e) => updateFormalization(project.id, "coverage_evidence", e.target.value)} style={fieldStyle} /></label>
+            <label>Motivo<input value={formInput.reason || ""} onChange={(e) => updateFormalization(project.id, "reason", e.target.value)} style={fieldStyle} /></label>
+            <button type="button" disabled={!formInput.delivery_ids?.length || !formInput.integral_coverage_confirmed || !formInput.coverage_evidence?.trim() || !formInput.reason?.trim()} onClick={() => submitFormalization(project.id)} style={fieldStyle}>Formalizar entrega</button>
+          </div>}
         </article>;
       })}
     </section>}

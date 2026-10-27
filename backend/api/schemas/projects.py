@@ -43,6 +43,7 @@ class ProjectEventResponse(BaseModel):
     commercial_authorization_id: int | None = None
     technical_evaluation_id: int | None = None
     delivery_authorization_id: int | None = None
+    delivery_record_ids: list[int] = Field(default_factory=list)
 
 
 class ProjectListItem(ProjectResponse):
@@ -118,6 +119,7 @@ class ProjectTechnicalEvaluationInput(SafeInputModel):
     ordinary_close_evidence: str = Field(min_length=1)
     obligations_assessment: str = Field(min_length=1)
     optional_task_assessments: list[OptionalTaskAssessment] = Field(default_factory=list)
+    validated_versions: list[str] = Field(default_factory=list)
 
     @field_validator('result_summary', 'evidence', 'ordinary_close_evidence', 'obligations_assessment')
     @classmethod
@@ -132,6 +134,16 @@ class ProjectTechnicalEvaluationInput(SafeInputModel):
         if len(task_ids) != len(set(task_ids)):
             raise ValueError('Una tarea opcional no puede evaluarse más de una vez')
         return self
+
+    @field_validator('validated_versions')
+    @classmethod
+    def normalize_validated_versions(cls, values):
+        normalized = [value.strip() for value in values]
+        if any(not value for value in normalized):
+            raise ValueError('Cada versión técnica debe identificarse expresamente')
+        if len({value.casefold() for value in normalized}) != len(normalized):
+            raise ValueError('Una versión técnica no puede repetirse')
+        return normalized
 
     @model_validator(mode='after')
     def enforce_consistent_technical_close(self):
@@ -182,6 +194,79 @@ class ProjectReadyForDeliveryInput(SafeInputModel):
         if not value.strip():
             raise ValueError('El motivo no puede estar vacío')
         return value
+
+
+class ProjectDeliveryCreate(SafeInputModel):
+    delivery_type: Literal['parcial', 'integral']
+    preparation_authorization_id: int = Field(gt=0)
+    scope: str = Field(min_length=1)
+    scope_within_authorization: bool
+    covers_project_scope: bool
+    version_reference: str = Field(min_length=1, max_length=200)
+    recipient: str = Field(min_length=1, max_length=200)
+    delivery_method: str = Field(min_length=1)
+    performed_by: str = Field(min_length=1, max_length=200)
+    evidence_reference: str = Field(min_length=1, max_length=300)
+    occurred_at: datetime
+
+    @field_validator('scope', 'version_reference', 'recipient', 'delivery_method', 'performed_by', 'evidence_reference')
+    @classmethod
+    def reject_blank_delivery_fields(cls, value):
+        if not value.strip():
+            raise ValueError('La constancia de entrega no puede contener campos vacíos')
+        return value.strip()
+
+    @field_validator('occurred_at')
+    @classmethod
+    def require_aware_delivery_time(cls, value):
+        if value.utcoffset() is None:
+            raise ValueError('La fecha efectiva de entrega debe incluir zona horaria')
+        return value
+
+    @model_validator(mode='after')
+    def validate_delivery_scope_kind(self):
+        if not self.scope_within_authorization:
+            raise ValueError('L2 debe confirmar que la entrega está dentro del alcance autorizado')
+        if (self.delivery_type == 'integral') != self.covers_project_scope:
+            raise ValueError('La cobertura integral debe corresponder al tipo de entrega')
+        return self
+
+
+class ProjectDeliveryTechnicalReviewInput(SafeInputModel):
+    version_reference: str = Field(min_length=1, max_length=200)
+    satisfactory: bool
+    technical_enablement_status: Literal['Vigente', 'En revisión', 'No vigente']
+    result_summary: str = Field(min_length=1)
+    evidence: str = Field(min_length=1)
+
+    @field_validator('version_reference', 'result_summary', 'evidence')
+    @classmethod
+    def reject_blank_delivery_review(cls, value):
+        if not value.strip():
+            raise ValueError('La revisión técnica requiere resultado y evidencia')
+        return value.strip()
+
+
+class ProjectDeliveryFormalizeInput(SafeInputModel):
+    delivery_ids: list[int] = Field(min_length=1)
+    integral_coverage_confirmed: bool
+    coverage_evidence: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+    @field_validator('coverage_evidence', 'reason')
+    @classmethod
+    def reject_blank_formalization_details(cls, value):
+        if not value.strip():
+            raise ValueError('La formalización requiere fundamento y evidencia de cobertura')
+        return value.strip()
+
+    @model_validator(mode='after')
+    def reject_duplicate_deliveries(self):
+        if len(self.delivery_ids) != len(set(self.delivery_ids)):
+            raise ValueError('Una entrega no puede seleccionarse más de una vez')
+        if not self.integral_coverage_confirmed:
+            raise ValueError('L2 debe acreditar que las entregas cubren integralmente el alcance')
+        return self
 
 
 class ProjectCommercialAuthorizationCreate(SafeInputModel):

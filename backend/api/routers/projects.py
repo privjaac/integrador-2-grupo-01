@@ -8,6 +8,7 @@ from api.router import APIRouter
 from api.schemas.projects import (
     ProjectCommercialAuthorizationCreate, ProjectCommercialAuthorizationWithdrawal,
     ProjectCreate, ProjectDeliveryAuthorizationCreate, ProjectExecutionReturn,
+    ProjectDeliveryCreate, ProjectDeliveryFormalizeInput, ProjectDeliveryTechnicalReviewInput,
     ProjectReadyForDeliveryInput, ProjectResponse, ProjectStartReadiness,
     ProjectTaskClassificationInput, ProjectTechnicalEvaluationInput,
     ProjectValidationReadiness,
@@ -15,8 +16,9 @@ from api.schemas.projects import (
 from clients.models import (
     Client, Collaborator, Project, ProjectCommercialAuthorization,
     ProjectCommercialAuthorizationEvent, ProjectCoordination, ProjectDeliveryAuthorization,
-    ProjectDeliveryAuthorizationEvent, ProjectEvent, ProjectTaskClassification,
-    ProjectTechnicalEvaluation, Task, TaskEvent,
+    ProjectDeliveryAuthorizationEvent, ProjectDelivery, ProjectDeliveryTechnicalReview,
+    ProjectDeliveryTransition, ProjectEvent, ProjectTaskClassification, ProjectTechnicalEvaluation,
+    Task, TaskEvent,
 )
 
 router = APIRouter()
@@ -147,6 +149,57 @@ def active_delivery_authorizations(project_id: int, now=None):
     ).annotate(is_closed=Exists(closed_events)).filter(is_closed=False)
 
 
+def delivery_authorization_valid_at(authorization: ProjectDeliveryAuthorization, occurred_at) -> bool:
+    if (
+        not authorization.conditions_accredited
+        or authorization.effective_at > occurred_at
+        or (authorization.expires_at is not None and authorization.expires_at <= occurred_at)
+    ):
+        return False
+    return not authorization.events.filter(
+        event_type__in=['retirada', 'sustituida'], occurred_at__lte=occurred_at,
+    ).exists()
+
+
+def project_delivery_response(delivery: ProjectDelivery) -> dict:
+    return {
+        'id': delivery.id,
+        'project_id': delivery.project_id,
+        'delivery_type': delivery.delivery_type,
+        'scope': delivery.scope,
+        'scope_within_authorization': delivery.scope_within_authorization,
+        'covers_project_scope': delivery.covers_project_scope,
+        'version_reference': delivery.version_reference,
+        'recipient': delivery.recipient,
+        'delivery_method': delivery.delivery_method,
+        'performed_by': delivery.performed_by,
+        'evidence_reference': delivery.evidence_reference,
+        'occurred_at': delivery.occurred_at.isoformat(),
+        'recorded_at': delivery.recorded_at.isoformat(),
+        'recorded_by_id': delivery.recorded_by_id,
+        'recorded_by_name': f'{delivery.recorded_by.first_name} {delivery.recorded_by.last_name}',
+        'preparation_authorization_id': delivery.preparation_authorization_id,
+        'technical_reviews': [
+            {
+                'actor_id': item.actor_id,
+                'actor_name': f'{item.actor.first_name} {item.actor.last_name}',
+                'version_reference': item.version_reference,
+                'technical_evaluation_id': item.technical_evaluation_id,
+                'satisfactory': item.satisfactory,
+                'technical_enablement_status': item.technical_enablement_status,
+                'result_summary': item.result_summary,
+                'evidence': item.evidence,
+                'reviewed_at': item.reviewed_at.isoformat(),
+            }
+            for item in ProjectDeliveryTechnicalReview.objects.filter(
+                project_id=delivery.project_id,
+                version_reference__iexact=delivery.version_reference,
+            ).select_related('actor').order_by('reviewed_at', 'id')
+        ],
+        'formalized': delivery.transition_links.exists(),
+    }
+
+
 def to_response(project: Project) -> dict:
     return {
         'id': project.id,
@@ -169,6 +222,7 @@ def to_response(project: Project) -> dict:
                 'commercial_authorization_id': event.commercial_authorization_id,
                 'technical_evaluation_id': event.technical_evaluation_id,
                 'delivery_authorization_id': event.delivery_authorization_id,
+                'delivery_record_ids': list(event.delivery_records.values_list('id', flat=True)),
             }
             for event in project.events.select_related('actor').all()
         ],
@@ -568,6 +622,7 @@ def delivery_context(project_id: int, user: dict = Depends(get_current_user)):
                 'evidence': item.evidence,
                 'obligations_assessment': item.obligations_assessment,
                 'optional_task_assessments': item.optional_task_assessments,
+                'validated_versions': item.validated_versions,
                 'evaluated_at': item.evaluated_at.isoformat(),
             }
             for item in evaluations
@@ -656,6 +711,7 @@ def record_project_technical_evaluation(
                 ordinary_close_evidence=payload.ordinary_close_evidence.strip(),
                 obligations_assessment=payload.obligations_assessment.strip(),
                 optional_task_assessments=[item.model_dump() for item in payload.optional_task_assessments],
+                validated_versions=payload.validated_versions,
                 task_snapshot=task_snapshot,
             )
     except IntegrityError:
@@ -667,6 +723,7 @@ def record_project_technical_evaluation(
         'satisfactory': evaluation.satisfactory,
         'technical_enablement_status': evaluation.technical_enablement_status,
         'ordinary_close_valid': evaluation.ordinary_close_valid,
+        'validated_versions': evaluation.validated_versions,
         'evaluated_at': evaluation.evaluated_at.isoformat(),
     }
 
@@ -832,6 +889,229 @@ def mark_project_ready_for_delivery(
             )
     except IntegrityError:
         raise HTTPException(status_code=409, detail='No se pudo registrar la transición por un cambio concurrente')
+    return to_response(Project.objects.select_related('client').get(pk=project_id))
+
+
+@router.get('/{project_id}/deliveries')
+def list_project_deliveries(project_id: int, user: dict = Depends(get_current_user)):
+    role = user.get('role')
+    if role == 'L2':
+        active_l2_actor(user)
+    elif role == 'L3':
+        actor = active_l3_actor(user)
+        if not ProjectCoordination.objects.filter(
+            project_id=project_id, coordinator=actor, is_active=True,
+            coordinator__is_active=True, coordinator__role__level='L3',
+        ).exists():
+            raise HTTPException(status_code=404, detail='Proyecto fuera de tu coordinación vigente')
+    else:
+        raise HTTPException(status_code=403, detail='Solo L2 o L3 puede consultar las entregas del proyecto')
+    if not Project.objects.filter(pk=project_id).exists():
+        raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+    return [
+        project_delivery_response(item)
+        for item in ProjectDelivery.objects.filter(project_id=project_id)
+        .select_related('recorded_by', 'preparation_authorization')
+        .prefetch_related('transition_links')
+    ]
+
+
+@router.post('/{project_id}/deliveries', status_code=status.HTTP_201_CREATED)
+def record_project_delivery(
+    project_id: int, payload: ProjectDeliveryCreate,
+    user: dict = Depends(get_current_user),
+):
+    actor = active_l2_actor(user)
+    if payload.occurred_at > timezone.now():
+        raise HTTPException(status_code=422, detail='La fecha real de entrega no puede estar en el futuro')
+    try:
+        with transaction.atomic():
+            project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
+            if project is None:
+                raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+            if project.status not in {'En ejecución', 'En validación técnica', 'Listo para entrega'}:
+                raise HTTPException(status_code=409, detail='No se pueden registrar entregas en el estado actual')
+            if payload.delivery_type == 'integral' and project.status != 'Listo para entrega':
+                raise HTTPException(status_code=409, detail='La entrega integral ordinaria requiere Listo para entrega')
+            authorization = ProjectDeliveryAuthorization.objects.select_for_update(of=('self',)).filter(
+                pk=payload.preparation_authorization_id, project=project,
+            ).first()
+            if authorization is None:
+                raise HTTPException(status_code=404, detail='La habilitación no corresponde al proyecto')
+            if authorization.authorized_at > payload.occurred_at or not delivery_authorization_valid_at(
+                authorization, payload.occurred_at,
+            ):
+                raise HTTPException(status_code=409, detail='La habilitación no era aplicable en la fecha efectiva de entrega')
+            scope_snapshot = project_scope_snapshot(project)
+            if normalized_scope(authorization.scope_snapshot) != normalized_scope(scope_snapshot) or normalized_scope(
+                authorization.authorized_scope,
+            ) != normalized_scope(scope_snapshot):
+                raise HTTPException(status_code=409, detail='La habilitación no corresponde al alcance actual del proyecto')
+            if payload.delivery_type == 'integral' and normalized_scope(payload.scope) != normalized_scope(scope_snapshot):
+                raise HTTPException(status_code=409, detail='La entrega integral debe cubrir el alcance vigente del proyecto')
+            delivery = ProjectDelivery.objects.create(
+                project=project, recorded_by=actor, preparation_authorization=authorization,
+                delivery_type=payload.delivery_type, scope=payload.scope.strip(),
+                scope_within_authorization=payload.scope_within_authorization,
+                covers_project_scope=payload.covers_project_scope,
+                version_reference=payload.version_reference.strip(), recipient=payload.recipient.strip(),
+                delivery_method=payload.delivery_method.strip(), performed_by=payload.performed_by.strip(),
+                evidence_reference=payload.evidence_reference.strip(), occurred_at=payload.occurred_at,
+            )
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail='No se pudo conservar la constancia de entrega')
+    delivery = ProjectDelivery.objects.select_related('recorded_by', 'preparation_authorization').get(pk=delivery.pk)
+    return project_delivery_response(delivery)
+
+
+@router.post('/{project_id}/delivery-version-reviews')
+def review_project_delivery_version(
+    project_id: int, payload: ProjectDeliveryTechnicalReviewInput,
+    user: dict = Depends(get_current_user),
+):
+    actor = active_l3_actor(user)
+    try:
+        with transaction.atomic():
+            project = lock_coordinated_project(project_id, actor)
+            if project.status != 'Listo para entrega':
+                raise HTTPException(status_code=409, detail='La revisión de versión requiere Listo para entrega')
+            ready_event = ProjectEvent.objects.filter(
+                project=project, event_type='listo_para_entrega', new_status='Listo para entrega',
+            ).order_by('-occurred_at', '-id').first()
+            evaluation = ready_event.technical_evaluation if ready_event else None
+            scope_snapshot = project_scope_snapshot(project)
+            if (
+                evaluation is None
+                or evaluation.project_id != project.id
+                or normalized_scope(evaluation.scope_snapshot) != normalized_scope(scope_snapshot)
+            ):
+                raise HTTPException(status_code=409, detail='No existe una evaluación técnica aplicable al alcance vigente')
+            task_snapshot, _tasks = current_task_snapshot(project.id, lock=True)
+            if task_snapshot != evaluation.task_snapshot:
+                raise HTTPException(status_code=409, detail='Las tareas cambiaron después de la evaluación técnica')
+            review = ProjectDeliveryTechnicalReview.objects.create(
+                project=project, version_reference=payload.version_reference.strip(),
+                technical_evaluation=evaluation, actor=actor,
+                satisfactory=payload.satisfactory,
+                technical_enablement_status=payload.technical_enablement_status,
+                result_summary=payload.result_summary.strip(), evidence=payload.evidence.strip(),
+            )
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail='No se pudo registrar la revisión técnica de versión')
+    return {
+        'project_id': project_id, 'version_reference': review.version_reference,
+        'technical_evaluation_id': review.technical_evaluation_id,
+        'actor_id': review.actor_id, 'satisfactory': review.satisfactory,
+        'technical_enablement_status': review.technical_enablement_status,
+        'reviewed_at': review.reviewed_at.isoformat(),
+    }
+
+
+@router.post('/{project_id}/deliveries/formalize', response_model=ProjectResponse)
+def formalize_project_delivery(
+    project_id: int, payload: ProjectDeliveryFormalizeInput,
+    user: dict = Depends(get_current_user),
+):
+    actor = active_l2_actor(user)
+    try:
+        with transaction.atomic():
+            project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
+            if project is None:
+                raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+            if project.status != 'Listo para entrega':
+                raise HTTPException(status_code=409, detail='El proyecto debe estar Listo para entrega')
+            scope_snapshot = project_scope_snapshot(project)
+            ready_event = ProjectEvent.objects.filter(
+                project=project, event_type='listo_para_entrega', new_status='Listo para entrega',
+            ).order_by('-occurred_at', '-id').first()
+            evaluation = ready_event.technical_evaluation if ready_event else None
+            authorization_id = ready_event.delivery_authorization_id if ready_event else None
+            if evaluation is None or authorization_id is None:
+                raise HTTPException(status_code=409, detail='Falta el cierre técnico y la habilitación comercial de B4-10')
+            if (
+                not evaluation.satisfactory
+                or evaluation.technical_enablement_status != 'Vigente'
+                or not evaluation.ordinary_close_valid
+                or not evaluation.obligations_compatible
+                or normalized_scope(evaluation.scope_snapshot) != normalized_scope(scope_snapshot)
+            ):
+                raise HTTPException(status_code=409, detail='La evaluación técnica o habilitación vigente no es suficiente')
+            task_snapshot, _tasks = current_task_snapshot(project.id, lock=True)
+            if task_snapshot != evaluation.task_snapshot:
+                raise HTTPException(status_code=409, detail='Las tareas o clasificaciones cambiaron después de la evaluación técnica')
+            authorization = active_delivery_authorizations(project.id, timezone.now()).select_for_update(
+                of=('self',),
+            ).filter(pk=authorization_id).first()
+            if authorization is None:
+                raise HTTPException(status_code=409, detail='La habilitación para preparar entrega ya no está vigente')
+            if normalized_scope(authorization.scope_snapshot) != normalized_scope(scope_snapshot):
+                raise HTTPException(status_code=409, detail='La habilitación no corresponde al alcance vigente')
+            deliveries = list(ProjectDelivery.objects.select_for_update(of=('self',)).filter(
+                project=project, pk__in=payload.delivery_ids,
+            ).select_related('preparation_authorization').order_by('occurred_at', 'id'))
+            if len(deliveries) != len(payload.delivery_ids):
+                raise HTTPException(status_code=404, detail='Una o más entregas no pertenecen al proyecto')
+            if ProjectDeliveryTransition.objects.filter(delivery_id__in=payload.delivery_ids).exists():
+                raise HTTPException(status_code=409, detail='Una entrega ya quedó vinculada a una transición')
+            integral = [item for item in deliveries if item.delivery_type == 'integral']
+            if integral:
+                if len(deliveries) != 1 or not integral[0].covers_project_scope or normalized_scope(
+                    integral[0].scope,
+                ) != normalized_scope(scope_snapshot):
+                    raise HTTPException(status_code=409, detail='Una entrega integral debe acreditar por sí sola el alcance completo')
+            elif any(item.delivery_type != 'parcial' for item in deliveries):
+                raise HTTPException(status_code=409, detail='La combinación de entregas no es válida')
+            if not any(item.occurred_at >= ready_event.occurred_at for item in deliveries):
+                raise HTTPException(status_code=409, detail='La cobertura integral ocurrió antes de Listo para entrega; no se admite regularización por esta ruta')
+            for item in deliveries:
+                if not delivery_authorization_valid_at(item.preparation_authorization, item.occurred_at):
+                    raise HTTPException(status_code=409, detail=f'La habilitación no cubría la entrega #{item.id} en su fecha efectiva')
+                if (
+                    normalized_scope(item.preparation_authorization.scope_snapshot) != normalized_scope(scope_snapshot)
+                    or normalized_scope(item.preparation_authorization.authorized_scope) != normalized_scope(scope_snapshot)
+                    or not item.scope_within_authorization
+                ):
+                    raise HTTPException(status_code=409, detail=f'La entrega #{item.id} no acredita alcance comprendido en la habilitación vigente')
+                same_version = any(
+                    version.strip().casefold() == item.version_reference.strip().casefold()
+                    for version in evaluation.validated_versions
+                )
+                if not same_version:
+                    review = ProjectDeliveryTechnicalReview.objects.filter(
+                        project=project, version_reference__iexact=item.version_reference,
+                        technical_evaluation=evaluation, reviewed_at__lte=item.occurred_at,
+                    ).order_by('-reviewed_at', '-id').first()
+                    if (
+                        review is None or not review.satisfactory
+                        or review.technical_enablement_status != 'Vigente'
+                    ):
+                        raise HTTPException(status_code=409, detail=f'La versión de entrega #{item.id} requiere revisión técnica satisfactoria de L3')
+            evidence_lines = [
+                f'Cobertura integral comprobada por L2: {payload.coverage_evidence.strip()}',
+                f'Actor L2: {actor.id}; alcance del proyecto: {scope_snapshot}',
+                f'Evaluación técnica B4-10 #{evaluation.id}; habilitación para preparar #{authorization.id}',
+            ]
+            evidence_lines.extend(
+                f'Entrega #{item.id}: {item.delivery_type}; alcance={item.scope}; versión={item.version_reference}; '
+                f'destinatario={item.recipient}; mecanismo={item.delivery_method}; responsable={item.performed_by}; '
+                f'fecha efectiva={item.occurred_at.isoformat()}; evidencia={item.evidence_reference}; '
+                f'habilitación=#{item.preparation_authorization_id}; alcance dentro de habilitación acreditado por L2={item.scope_within_authorization}'
+                for item in deliveries
+            )
+            previous_status = project.status
+            project.status = 'Entregado'
+            project.save(update_fields=['status'])
+            event = ProjectEvent.objects.create(
+                event_type='entrega_formalizada', project=project, actor=actor,
+                technical_evaluation=evaluation, delivery_authorization=authorization,
+                previous_status=previous_status, new_status=project.status,
+                reason=payload.reason.strip(), evidence='\n'.join(evidence_lines),
+            )
+            ProjectDeliveryTransition.objects.bulk_create([
+                ProjectDeliveryTransition(event=event, delivery=item) for item in deliveries
+            ])
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail='No se pudo formalizar la entrega por un cambio concurrente')
     return to_response(Project.objects.select_related('client').get(pk=project_id))
 
 
