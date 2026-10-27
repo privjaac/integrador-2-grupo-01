@@ -438,7 +438,11 @@ class TeamMembership(models.Model):
 
 
 class Task(models.Model):
-    STATUS_CHOICES = [('Pendiente', 'Pendiente'), ('Asignada', 'Asignada')]
+    STATUS_CHOICES = [
+        ('Pendiente', 'Pendiente'), ('Asignada', 'Asignada'),
+        ('En proceso', 'En proceso'), ('En revisión', 'En revisión'),
+        ('Observada', 'Observada'), ('Finalizada', 'Finalizada'),
+    ]
 
     project = models.ForeignKey(Project, on_delete=models.PROTECT, related_name='tasks')
     title = models.CharField(max_length=200)
@@ -461,13 +465,18 @@ class Task(models.Model):
         ordering = ['-created_at', 'id']
         constraints = [
             models.CheckConstraint(
-                condition=models.Q(status__in=['Pendiente', 'Asignada']),
-                name='task_initial_status_valid',
+                condition=models.Q(status__in=[
+                    'Pendiente', 'Asignada', 'En proceso', 'En revisión', 'Observada', 'Finalizada',
+                ]),
+                name='task_status_valid',
             ),
             models.CheckConstraint(
                 condition=(
                     models.Q(status='Pendiente', assignee__isnull=True, assigned_at__isnull=True)
-                    | models.Q(status='Asignada', assignee__isnull=False, assigned_at__isnull=False)
+                    | models.Q(
+                        status__in=['Asignada', 'En proceso', 'En revisión', 'Observada', 'Finalizada'],
+                        assignee__isnull=False, assigned_at__isnull=False,
+                    )
                 ),
                 name='task_assignment_matches_status',
             ),
@@ -475,16 +484,23 @@ class Task(models.Model):
 
 
 class TaskEvent(models.Model):
-    EVENT_CHOICES = [('creada', 'Creada'), ('asignada', 'Asignada')]
+    EVENT_CHOICES = [
+        ('creada', 'Creada'), ('asignada', 'Asignada'),
+        ('iniciada', 'Iniciada'), ('resultado_presentado', 'Resultado presentado'),
+        ('observada', 'Observada'), ('aprobada_revision', 'Aprobada en revisión'),
+        ('correccion_iniciada', 'Corrección iniciada'),
+    ]
 
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='events')
-    event_type = models.CharField(max_length=20, choices=EVENT_CHOICES)
+    event_type = models.CharField(max_length=30, choices=EVENT_CHOICES)
     actor = models.ForeignKey(Collaborator, on_delete=models.PROTECT, related_name='task_events')
     previous_status = models.CharField(max_length=20, blank=True, default='')
     new_status = models.CharField(max_length=20)
     assignee = models.ForeignKey(
         Collaborator, on_delete=models.PROTECT, null=True, blank=True, related_name='task_assignment_events',
     )
+    result_text = models.TextField(blank=True, default='')
+    reason = models.TextField(blank=True, default='')
     occurred_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

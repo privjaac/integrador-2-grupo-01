@@ -1,6 +1,8 @@
 from django.test import TransactionTestCase
 from django.utils import timezone
 from fastapi.testclient import TestClient
+from unittest.mock import patch
+from django.db import IntegrityError
 
 from api.main import app
 from api.routers.auth import hash_password
@@ -307,6 +309,11 @@ class TaskWorkflowApiTests(TransactionTestCase):
         task = self.create('L4', status='Asignada', assignee=self.people['L5'])
         self.assertEqual(task.status_code, 201, task.text)
         task_id = task.json()['id']
+        self.assertEqual(self.api.post(f'/api/tasks/{task_id}/start', headers=self.headers['L5']).status_code, 200)
+        self.assertEqual(self.api.post(
+            f'/api/tasks/{task_id}/submit-review', headers=self.headers['L5'],
+            json={'result_text': 'Resultado esperando revisión'},
+        ).status_code, 200)
         original_event_count = TaskEvent.objects.filter(task_id=task_id).count()
         other_leader = self.api.delete(
             f'/api/tasks/projects/{self.project.id}/leadership/{self.people["L4"].id}',
@@ -324,6 +331,13 @@ class TaskWorkflowApiTests(TransactionTestCase):
         self.assertFalse(self.membership.is_active)
         self.assertEqual(self.membership.ended_by_id, self.people['L3'].id)
         self.assertTrue(Task.objects.filter(pk=task_id).exists())
+        self.assertEqual(TaskEvent.objects.filter(task_id=task_id).count(), original_event_count)
+        stale_review = self.api.post(
+            f'/api/tasks/{task_id}/review', headers=self.headers['L4'],
+            json={'resolution': 'Finalizada'},
+        )
+        self.assertEqual(stale_review.status_code, 404)
+        self.assertEqual(Task.objects.get(pk=task_id).status, 'En revisión')
         self.assertEqual(TaskEvent.objects.filter(task_id=task_id).count(), original_event_count)
         self.assertEqual(self.api.get('/api/tasks/', headers=self.headers['L4']).json(), [])
         self.assertEqual(self.api.get(f"/api/tasks/{task.json()['id']}", headers=self.headers['L5']).status_code, 200)
@@ -369,3 +383,121 @@ class TaskWorkflowApiTests(TransactionTestCase):
         )
         self.assertEqual(readd.status_code, 201, readd.text)
         self.assertEqual(TeamMembership.objects.filter(leadership=self.leadership, developer=self.people['L5']).count(), 2)
+
+    def test_ordinary_task_cycle_preserves_each_result_observation_and_resolution(self):
+        response = self.create('L4', status='Asignada', assignee=self.people['L5'])
+        self.assertEqual(response.status_code, 201, response.text)
+        task_id = response.json()['id']
+        project_status = self.project.status
+
+        started = self.api.post(f'/api/tasks/{task_id}/start', headers=self.headers['L5'])
+        self.assertEqual(started.status_code, 200, started.text)
+        self.assertEqual(started.json()['status'], 'En proceso')
+
+        self.assertEqual(
+            self.api.post(f'/api/tasks/{task_id}/review', headers=self.headers['L5'],
+                          json={'resolution': 'Finalizada'}).status_code,
+            403,
+        )
+        empty_result = self.api.post(
+            f'/api/tasks/{task_id}/submit-review', headers=self.headers['L5'],
+            json={'result_text': '   '},
+        )
+        self.assertEqual(empty_result.status_code, 422)
+        self.assertEqual(Task.objects.get(pk=task_id).status, 'En proceso')
+        self.assertEqual(TaskEvent.objects.filter(task_id=task_id).count(), 2)
+
+        first_submission = self.api.post(
+            f'/api/tasks/{task_id}/submit-review', headers=self.headers['L5'],
+            json={'result_text': 'Resultado ciclo uno'},
+        )
+        self.assertEqual(first_submission.status_code, 200, first_submission.text)
+        self.assertEqual(first_submission.json()['status'], 'En revisión')
+        self.assertTrue(first_submission.json()['events'][-1]['result_text'] == 'Resultado ciclo uno')
+
+        foreign_review = self.api.post(
+            f'/api/tasks/{task_id}/review', headers=self.headers['L4B'],
+            json={'resolution': 'Observada', 'reason': 'Corrección necesaria'},
+        )
+        self.assertEqual(foreign_review.status_code, 404)
+        missing_reason = self.api.post(
+            f'/api/tasks/{task_id}/review', headers=self.headers['L4'],
+            json={'resolution': 'Observada'},
+        )
+        self.assertEqual(missing_reason.status_code, 422)
+        observed = self.api.post(
+            f'/api/tasks/{task_id}/review', headers=self.headers['L4'],
+            json={'resolution': 'Observada', 'reason': 'Falta documentar el cambio'},
+        )
+        self.assertEqual(observed.status_code, 200, observed.text)
+        self.assertEqual(observed.json()['status'], 'Observada')
+        self.assertTrue(observed.json()['events'][-1]['reason'])
+        l5_observed = self.api.get(f'/api/tasks/{task_id}', headers=self.headers['L5'])
+        self.assertTrue(l5_observed.json()['actions']['can_start'])
+
+        corrected = self.api.post(f'/api/tasks/{task_id}/start', headers=self.headers['L5'])
+        self.assertEqual(corrected.status_code, 200, corrected.text)
+        self.assertEqual(corrected.json()['events'][-1]['event_type'], 'correccion_iniciada')
+        second_submission = self.api.post(
+            f'/api/tasks/{task_id}/submit-review', headers=self.headers['L5'],
+            json={'result_text': 'Resultado ciclo dos corregido'},
+        )
+        self.assertEqual(second_submission.status_code, 200, second_submission.text)
+        approved = self.api.post(
+            f'/api/tasks/{task_id}/review', headers=self.headers['L4'],
+            json={'resolution': 'Finalizada'},
+        )
+        self.assertEqual(approved.status_code, 200, approved.text)
+        self.assertEqual(approved.json()['status'], 'Finalizada')
+        events = list(TaskEvent.objects.filter(task_id=task_id))
+        self.assertEqual(
+            [event.event_type for event in events],
+            ['creada', 'iniciada', 'resultado_presentado', 'observada',
+             'correccion_iniciada', 'resultado_presentado', 'aprobada_revision'],
+        )
+        submissions = [event.result_text for event in events if event.event_type == 'resultado_presentado']
+        self.assertEqual(submissions, ['Resultado ciclo uno', 'Resultado ciclo dos corregido'])
+        self.assertEqual(events[3].reason, 'Falta documentar el cambio')
+        self.assertEqual(events[-1].previous_status, 'En revisión')
+        self.assertEqual(events[-1].new_status, 'Finalizada')
+        self.project.refresh_from_db()
+        self.assertEqual(self.project.status, project_status)
+
+    def test_transition_rejections_and_withdrawn_membership_leave_task_and_history_unchanged(self):
+        response = self.create('L4', status='Asignada', assignee=self.people['L5'])
+        self.assertEqual(response.status_code, 201, response.text)
+        task_id = response.json()['id']
+        before_events = TaskEvent.objects.filter(task_id=task_id).count()
+        invalid_submission = self.api.post(
+            f'/api/tasks/{task_id}/submit-review', headers=self.headers['L5'],
+            json={'result_text': 'No se inició'},
+        )
+        self.assertEqual(invalid_submission.status_code, 409)
+        self.assertEqual(TaskEvent.objects.filter(task_id=task_id).count(), before_events)
+
+        withdrawn = self.api.delete(
+            f'/api/tasks/projects/{self.project.id}/team/{self.people["L5"].id}',
+            headers=self.headers['L4'],
+        )
+        self.assertEqual(withdrawn.status_code, 200)
+        denied_start = self.api.post(f'/api/tasks/{task_id}/start', headers=self.headers['L5'])
+        self.assertEqual(denied_start.status_code, 404)
+        history = self.api.get(f'/api/tasks/{task_id}', headers=self.headers['L5'])
+        self.assertEqual(history.status_code, 200)
+        self.assertFalse(history.json()['actions']['can_start'])
+        self.assertFalse(history.json()['actions']['can_submit_result'])
+        task = Task.objects.get(pk=task_id)
+        self.assertEqual(task.status, 'Asignada')
+        self.assertEqual(TaskEvent.objects.filter(task_id=task_id).count(), before_events)
+
+    def test_failed_event_write_rolls_back_task_transition(self):
+        response = self.create('L4', status='Asignada', assignee=self.people['L5'])
+        self.assertEqual(response.status_code, 201, response.text)
+        task_id = response.json()['id']
+        before_events = TaskEvent.objects.filter(task_id=task_id).count()
+        with patch('api.routers.tasks.TaskEvent.objects.create', side_effect=IntegrityError):
+            failed_start = self.api.post(f'/api/tasks/{task_id}/start', headers=self.headers['L5'])
+        self.assertEqual(failed_start.status_code, 409)
+        task = Task.objects.get(pk=task_id)
+        self.assertEqual(task.status, 'Asignada')
+        self.assertEqual(TaskEvent.objects.filter(task_id=task_id).count(), before_events)

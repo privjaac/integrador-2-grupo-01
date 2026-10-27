@@ -15,6 +15,21 @@ export async function assignTask(id, assignee_id) {
   return data;
 }
 
+export async function startTask(id) {
+  const { data } = await axiosInstance.post(`/api/tasks/${id}/start`);
+  return data;
+}
+
+export async function submitTaskReview(id, result_text) {
+  const { data } = await axiosInstance.post(`/api/tasks/${id}/submit-review`, { result_text });
+  return data;
+}
+
+export async function reviewTask(id, resolution, reason = null) {
+  const { data } = await axiosInstance.post(`/api/tasks/${id}/review`, { resolution, reason });
+  return data;
+}
+
 export async function designateLeader(projectId, collaborator_id) {
   const { data } = await axiosInstance.post(`/api/tasks/projects/${projectId}/leadership`, { collaborator_id });
   return data;

@@ -5,7 +5,7 @@ from fastapi import Depends, HTTPException, status
 
 from api.dependencies import get_current_user
 from api.router import APIRouter
-from api.schemas.tasks import Designation, TaskAssign, TaskCreate
+from api.schemas.tasks import Designation, TaskAssign, TaskCreate, TaskReview, TaskSubmission
 from clients.models import (
     Collaborator, Project, ProjectCoordination, ProjectLeadership, Task,
     TaskEvent, TeamMembership,
@@ -57,7 +57,51 @@ def task_queryset(user: dict):
     return Task.objects.none()
 
 
-def task_response(task: Task) -> dict:
+def active_team_membership(task: Task, developer_id: int | None = None):
+    return TeamMembership.objects.filter(
+        leadership__coordination__project_id=task.project_id,
+        leadership__leader_id=task.responsible_id,
+        leadership__is_active=True,
+        leadership__leader__is_active=True,
+        leadership__leader__role__level='L4',
+        leadership__coordination__is_active=True,
+        leadership__coordination__coordinator__is_active=True,
+        leadership__coordination__coordinator__role__level='L3',
+        developer_id=developer_id if developer_id is not None else task.assignee_id,
+        developer__is_active=True,
+        developer__role__level='L5',
+        is_active=True,
+    )
+
+
+def task_action_permissions(task: Task, user: dict) -> dict:
+    role = user.get('role')
+    collaborator_id = user.get('collaborator_id')
+    if role == 'L5':
+        member = (
+            task.assignee_id == collaborator_id
+            and active_team_membership(task, collaborator_id).exists()
+        )
+        return {
+            'can_start': member and task.status in {'Asignada', 'Observada'},
+            'can_submit_result': member and task.status == 'En proceso',
+            'can_review': False,
+        }
+    if role == 'L4':
+        in_scope = task_queryset(user).filter(pk=task.pk).exists()
+        member = active_team_membership(task).exists()
+        return {
+            'can_start': False,
+            'can_submit_result': False,
+            'can_review': (
+                in_scope and task.responsible_id == collaborator_id
+                and task.status == 'En revisión' and member
+            ),
+        }
+    return {'can_start': False, 'can_submit_result': False, 'can_review': False}
+
+
+def task_response(task: Task, user: dict) -> dict:
     return {
         'id': task.id,
         'project_id': task.project_id,
@@ -86,10 +130,13 @@ def task_response(task: Task) -> dict:
                 'assignee_name': (
                     f'{event.assignee.first_name} {event.assignee.last_name}' if event.assignee_id else None
                 ),
+                'result_text': event.result_text,
+                'reason': event.reason,
                 'occurred_at': event.occurred_at.isoformat(),
             }
             for event in task.events.select_related('actor', 'assignee').all()
         ],
+        'actions': task_action_permissions(task, user),
     }
 
 
@@ -136,6 +183,54 @@ def lock_l4_leaderships(project_id: int, leader_id: int) -> tuple[list[ProjectCo
     return coordinations, leaderships
 
 
+def lock_task_for_l5(task_id: int, collaborator_id: int) -> Task:
+    candidate = Task.objects.filter(pk=task_id).values(
+        'project_id', 'responsible_id', 'assignee_id',
+    ).first()
+    if candidate is None or candidate['assignee_id'] != collaborator_id:
+        raise HTTPException(404, 'Tarea no encontrada en tu ámbito')
+    _coordinations, leaderships = lock_l4_leaderships(
+        candidate['project_id'], candidate['responsible_id'],
+    )
+    if not leaderships:
+        raise HTTPException(404, 'La responsabilidad vigente de la tarea no está disponible')
+    membership = TeamMembership.objects.select_for_update(of=('self',)).filter(
+        leadership_id__in=[item.id for item in leaderships],
+        developer_id=collaborator_id, developer__is_active=True,
+        developer__role__level='L5', is_active=True,
+    ).first()
+    if membership is None:
+        raise HTTPException(404, 'La pertenencia al equipo ya no está vigente')
+    task = Task.objects.select_for_update().filter(pk=task_id).first()
+    if task is None or task.assignee_id != collaborator_id or task.responsible_id != candidate['responsible_id']:
+        raise HTTPException(404, 'Tarea no encontrada en tu ámbito')
+    return task
+
+
+def lock_task_for_l4_review(task_id: int, collaborator_id: int) -> Task:
+    candidate = Task.objects.filter(pk=task_id).values(
+        'project_id', 'responsible_id', 'assignee_id',
+    ).first()
+    if candidate is None or candidate['responsible_id'] != collaborator_id or not candidate['assignee_id']:
+        raise HTTPException(404, 'Tarea no encontrada en tu responsabilidad')
+    _coordinations, leaderships = lock_l4_leaderships(
+        candidate['project_id'], collaborator_id,
+    )
+    if not leaderships:
+        raise HTTPException(404, 'La responsabilidad L4 ya no está vigente')
+    membership = TeamMembership.objects.select_for_update(of=('self',)).filter(
+        leadership_id__in=[item.id for item in leaderships],
+        developer_id=candidate['assignee_id'], developer__is_active=True,
+        developer__role__level='L5', is_active=True,
+    ).first()
+    if membership is None:
+        raise HTTPException(404, 'La pertenencia del ejecutor ya no está vigente')
+    task = Task.objects.select_for_update().filter(pk=task_id).first()
+    if task is None or task.responsible_id != collaborator_id or task.assignee_id != candidate['assignee_id']:
+        raise HTTPException(404, 'Tarea no encontrada en tu responsabilidad')
+    return task
+
+
 @router.get('/context')
 def get_task_context(user: dict = Depends(get_current_user)):
     role = user.get('role')
@@ -178,7 +273,7 @@ def get_task_context(user: dict = Depends(get_current_user)):
                 leader__is_active=True, leader__role__level='L4',
             ).select_related('coordination', 'leader')
         ]
-        result['tasks'] = [task_response(t) for t in task_queryset(user).select_related('project', 'assignee').distinct()]
+        result['tasks'] = [task_response(t, user) for t in task_queryset(user).select_related('project', 'assignee').distinct()]
     elif role == 'L4':
         leaderships = ProjectLeadership.objects.filter(
             leader_id=collaborator_id, is_active=True, coordination__is_active=True,
@@ -214,9 +309,9 @@ def get_task_context(user: dict = Depends(get_current_user)):
                 'project_id': membership.leadership.coordination.project_id,
             })
         result['developers'] = list(unique_members.values())
-        result['tasks'] = [task_response(t) for t in task_queryset(user).select_related('project', 'assignee').distinct()]
+        result['tasks'] = [task_response(t, user) for t in task_queryset(user).select_related('project', 'assignee').distinct()]
     elif role == 'L5':
-        result['tasks'] = [task_response(t) for t in task_queryset(user).select_related('project', 'assignee').distinct()]
+        result['tasks'] = [task_response(t, user) for t in task_queryset(user).select_related('project', 'assignee').distinct()]
     return result
 
 
@@ -391,7 +486,7 @@ def remove_team_member(project_id: int, collaborator_id: int, user: dict = Depen
 def list_tasks(user: dict = Depends(get_current_user)):
     if user.get('role') not in {'L3', 'L4', 'L5'}:
         raise HTTPException(403, 'No tienes permiso para consultar tareas')
-    return [task_response(t) for t in task_queryset(user).select_related('project', 'assignee').distinct()]
+    return [task_response(t, user) for t in task_queryset(user).select_related('project', 'assignee').distinct()]
 
 
 @router.get('/{task_id}')
@@ -401,7 +496,7 @@ def get_task(task_id: int, user: dict = Depends(get_current_user)):
     task = task_queryset(user).select_related('project', 'assignee').filter(pk=task_id).first()
     if task is None:
         raise HTTPException(404, 'Tarea no encontrada')
-    return task_response(task)
+    return task_response(task, user)
 
 
 @router.post('/', status_code=status.HTTP_201_CREATED)
@@ -455,7 +550,7 @@ def create_task(payload: TaskCreate, user: dict = Depends(get_current_user)):
             )
     except IntegrityError:
         raise HTTPException(409, 'No se pudo registrar la tarea por una relación concurrente')
-    return task_response(Task.objects.select_related('project', 'assignee').get(pk=task.pk))
+    return task_response(Task.objects.select_related('project', 'assignee').get(pk=task.pk), user)
 
 
 @router.post('/{task_id}/assignment')
@@ -495,4 +590,89 @@ def assign_task(task_id: int, payload: TaskAssign, user: dict = Depends(get_curr
             )
     except IntegrityError:
         raise HTTPException(409, 'No se pudo registrar la asignación')
-    return task_response(Task.objects.select_related('project', 'assignee').get(pk=task_id))
+    return task_response(Task.objects.select_related('project', 'assignee').get(pk=task_id), user)
+
+
+@router.post('/{task_id}/start')
+def start_task(task_id: int, user: dict = Depends(get_current_user)):
+    if user.get('role') != 'L5':
+        raise HTTPException(403, 'Solo el ejecutor L5 puede iniciar esta tarea')
+    current_actor = actor(user)
+    try:
+        with transaction.atomic():
+            task = lock_task_for_l5(task_id, user['collaborator_id'])
+            if task.status not in {'Asignada', 'Observada'}:
+                raise HTTPException(409, 'La tarea no está disponible para iniciar o retomar')
+            previous_status = task.status
+            task.status = 'En proceso'
+            task.save(update_fields=['status'])
+            TaskEvent.objects.create(
+                task=task,
+                event_type='iniciada' if previous_status == 'Asignada' else 'correccion_iniciada',
+                actor=current_actor,
+                previous_status=previous_status,
+                new_status=task.status,
+                assignee_id=task.assignee_id,
+            )
+    except IntegrityError:
+        raise HTTPException(409, 'No se pudo registrar el inicio de la tarea')
+    return task_response(Task.objects.select_related('project', 'assignee').get(pk=task_id), user)
+
+
+@router.post('/{task_id}/submit-review')
+def submit_task_for_review(
+    task_id: int, payload: TaskSubmission, user: dict = Depends(get_current_user),
+):
+    if user.get('role') != 'L5':
+        raise HTTPException(403, 'Solo el ejecutor L5 puede presentar el resultado')
+    result_text = payload.result_text.strip()
+    if not result_text:
+        raise HTTPException(422, 'El resultado presentado es obligatorio')
+    current_actor = actor(user)
+    try:
+        with transaction.atomic():
+            task = lock_task_for_l5(task_id, user['collaborator_id'])
+            if task.status != 'En proceso':
+                raise HTTPException(409, 'Solo una tarea En proceso puede presentarse a revisión')
+            task.status = 'En revisión'
+            task.save(update_fields=['status'])
+            TaskEvent.objects.create(
+                task=task, event_type='resultado_presentado', actor=current_actor,
+                previous_status='En proceso', new_status='En revisión',
+                assignee_id=task.assignee_id, result_text=result_text,
+            )
+    except IntegrityError:
+        raise HTTPException(409, 'No se pudo registrar el resultado de la tarea')
+    return task_response(Task.objects.select_related('project', 'assignee').get(pk=task_id), user)
+
+
+@router.post('/{task_id}/review')
+def review_task(task_id: int, payload: TaskReview, user: dict = Depends(get_current_user)):
+    if user.get('role') != 'L4':
+        raise HTTPException(403, 'Solo L4 responsable puede resolver la revisión')
+    reason = (payload.reason or '').strip()
+    if payload.resolution == 'Observada' and not reason:
+        raise HTTPException(422, 'La observación debe indicar el motivo de corrección')
+    current_actor = actor(user)
+    try:
+        with transaction.atomic():
+            task = lock_task_for_l4_review(task_id, user['collaborator_id'])
+            if not task_queryset(user).filter(pk=task_id).exists():
+                raise HTTPException(404, 'Tarea no encontrada en tu responsabilidad')
+            if task.status != 'En revisión':
+                raise HTTPException(409, 'Solo una tarea En revisión puede resolverse')
+            previous_status = task.status
+            task.status = payload.resolution
+            task.save(update_fields=['status'])
+            TaskEvent.objects.create(
+                task=task,
+                event_type='observada' if payload.resolution == 'Observada' else 'aprobada_revision',
+                actor=current_actor,
+                previous_status=previous_status,
+                new_status=task.status,
+                assignee_id=task.assignee_id,
+                reason=reason,
+            )
+    except IntegrityError:
+        raise HTTPException(409, 'No se pudo registrar la resolución de revisión')
+    return task_response(Task.objects.select_related('project', 'assignee').get(pk=task_id), user)

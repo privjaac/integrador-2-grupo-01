@@ -17,5 +17,14 @@ class TaskAssign(SafeInputModel):
     assignee_id: int = Field(gt=0)
 
 
+class TaskSubmission(SafeInputModel):
+    result_text: str = Field(min_length=1)
+
+
+class TaskReview(SafeInputModel):
+    resolution: Literal['Observada', 'Finalizada']
+    reason: str | None = None
+
+
 class Designation(SafeInputModel):
     collaborator_id: int = Field(gt=0)
