@@ -106,6 +106,15 @@ const PERMISSIONS = {
     // Solo L1 y L2 pueden desactivar clientes
     delete: ["L1", "L2"],
   },
+  // ── MÓDULO PROYECTOS (F2-01) ─────────────────────────────────────────────
+  // L2 crea; L2 y L3 consultan. La autorización no se hereda por jerarquía.
+  projects: {
+    view: ["L2", "L3"],
+    create: ["L2"],
+    edit: [],
+    delete: [],
+  },
+
 
   // ── MÓDULO USUARIOS (COLABORADORES) ─────────────────────────────────────
   users: {

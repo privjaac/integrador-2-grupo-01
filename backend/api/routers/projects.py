@@ -41,6 +41,8 @@ def create_project(payload: ProjectCreate, user: dict = Depends(get_current_user
         client = Client.objects.get(pk=payload.client_id)
     except Client.DoesNotExist:
         raise HTTPException(status_code=404, detail='Cliente no encontrado')
+    if client.status == 'inactivo':
+        raise HTTPException(status_code=400, detail='No se pueden crear proyectos para clientes inactivos')
     project = Project.objects.create(
         client=client,
         name=payload.name.strip(),

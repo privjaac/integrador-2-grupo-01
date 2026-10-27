@@ -1,10 +1,14 @@
 import { useEffect, useState } from "react";
 import { getClients } from "../../api/clients";
 import { createProject, getProjects } from "../../api/projects";
+import { useAuth } from "../../hooks/useAuth";
+import { can } from "../../utils/permissions";
 
 const fieldStyle = { padding: "10px 12px", background: "#0b0d1a", color: "white", border: "1px solid #34394a", borderRadius: 6 };
 
 export default function ProjectsPage() {
+  const { user } = useAuth();
+  const canCreate = can(user, "projects", "create");
   const [projects, setProjects] = useState([]);
   const [clients, setClients] = useState([]);
   const [form, setForm] = useState({ client_id: "", name: "", objective: "", scope: "" });
@@ -14,7 +18,10 @@ export default function ProjectsPage() {
   async function refresh() {
     setLoading(true);
     try {
-      const [projectRows, clientRows] = await Promise.all([getProjects(), getClients()]);
+      const [projectRows, clientRows] = await Promise.all([
+        getProjects(),
+        canCreate ? getClients() : Promise.resolve([]),
+      ]);
       setProjects(projectRows);
       setClients(clientRows);
     } catch (err) {
@@ -22,7 +29,7 @@ export default function ProjectsPage() {
     } finally { setLoading(false); }
   }
 
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => { refresh(); }, [canCreate]);
 
   async function submit(event) {
     event.preventDefault();
@@ -40,7 +47,7 @@ export default function ProjectsPage() {
     <h1>Proyectos</h1>
     <p style={{ color: "#aab2c5" }}>Los proyectos nuevos se crean en estado Planificado.</p>
     {error && <p role="alert" style={{ color: "#ff718b" }}>{String(error)}</p>}
-    <form onSubmit={submit} style={{ display: "grid", gap: 12, margin: "24px 0", maxWidth: 600 }}>
+    {canCreate && <form onSubmit={submit} style={{ display: "grid", gap: 12, margin: "24px 0", maxWidth: 600 }}>
       <h2>Crear proyecto</h2>
       <select required value={form.client_id} onChange={(e) => setForm({ ...form, client_id: e.target.value })} style={fieldStyle}>
         <option value="">Selecciona un cliente</option>{clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
@@ -49,7 +56,7 @@ export default function ProjectsPage() {
       <textarea placeholder="Objetivo (opcional)" value={form.objective} onChange={(e) => setForm({ ...form, objective: e.target.value })} style={fieldStyle} />
       <textarea placeholder="Alcance (opcional)" value={form.scope} onChange={(e) => setForm({ ...form, scope: e.target.value })} style={fieldStyle} />
       <button type="submit" style={{ ...fieldStyle, cursor: "pointer" }}>Crear proyecto</button>
-    </form>
+    </form>}
     <h2>Proyectos registrados</h2>
     {loading ? <p>Cargando…</p> : projects.length === 0 ? <p>No hay proyectos registrados.</p> : <div style={{ overflowX: "auto" }}><table style={{ width: "100%", borderCollapse: "collapse" }}><thead><tr>{["Nombre", "Cliente", "Estado", "Objetivo", "Alcance"].map((label) => <th key={label} style={{ textAlign: "left", padding: 10, borderBottom: "1px solid #34394a" }}>{label}</th>)}</tr></thead><tbody>{projects.map((project) => <tr key={project.id}>{[project.name, project.client_name, project.status, project.objective || "—", project.scope || "—"].map((value, index) => <td key={index} style={{ padding: 10, borderBottom: "1px solid #202434" }}>{value}</td>)}</tr>)}</tbody></table></div>}
   </section>;
