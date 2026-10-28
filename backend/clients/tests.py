@@ -1,10 +1,13 @@
 from django.test import TransactionTestCase
+from django.test import override_settings
+from django.core import mail
 from django.core.management import call_command
 from django.conf import settings
 from fastapi.testclient import TestClient
 from unittest.mock import patch
 from django.utils import timezone
 from datetime import timedelta
+import hashlib
 
 from api.main import app
 from api.routers.auth import hash_password, verify_password
@@ -143,6 +146,37 @@ class ApiContractTests(TransactionTestCase):
             'token': raw_token, 'new_password': 'other-password', 'confirm_password': 'other-password',
         })
         self.assertEqual(repeated.status_code, 400)
+
+    @override_settings(
+        EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+        DEFAULT_FROM_EMAIL='elisa@example.test',
+        FRONTEND_PUBLIC_URL='https://elisa.example.test',
+    )
+    def test_recovery_email_uses_configured_test_backend_without_exposing_account(self):
+        mail.outbox.clear()
+        response = self.api.post('/api/auth/forgot-password', json={'email': self.admin.email})
+        self.assertEqual(response.status_code, 202, response.text)
+        self.assertEqual(response.json()['message'], 'Si el correo corresponde a una cuenta activa, recibirá instrucciones para recuperar el acceso.')
+        self.assertEqual(len(mail.outbox), 1)
+        message = mail.outbox[0]
+        self.assertEqual(message.to, [self.admin.email])
+        self.assertIn('https://elisa.example.test/reset-password/', message.body)
+        self.assertNotIn('test-password', message.body)
+
+    def test_expired_password_recovery_token_is_rejected(self):
+        raw_token = 'synthetic-expired-recovery-token-12345'
+        recovery = PasswordResetRequest.objects.create(
+            collaborator=self.admin,
+            token_digest=hashlib.sha256(raw_token.encode()).hexdigest(),
+            expires_at=timezone.now() - timedelta(seconds=1),
+        )
+        response = self.api.put('/api/auth/reset-password', json={
+            'token': raw_token, 'new_password': 'updated-password',
+            'confirm_password': 'updated-password',
+        })
+        self.assertEqual(response.status_code, 400)
+        recovery.refresh_from_db()
+        self.assertIsNone(recovery.used_at)
 
     def test_collaborator_list_returns_users_and_supports_filters(self):
         token = self.login()['access_token']

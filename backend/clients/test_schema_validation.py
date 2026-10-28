@@ -210,11 +210,7 @@ class SchemaValidationRegressionTests(TransactionTestCase):
                 )
                 self.assertEqual(response.status_code, 422, response.text)
 
-    def test_client_update_duplicate_document_is_controlled(self):
-        first = Client.objects.create(
-            name='Primero', document_type='RUC', document_number='20111111111',
-            web_type=self.web_type, plan='alquiler', status='desarrollo',
-        )
+    def test_legacy_client_update_requires_approved_request(self):
         second = Client.objects.create(
             name='Segundo', document_type='RUC', document_number='20222222222',
             web_type=self.web_type, plan='alquiler', status='desarrollo',
@@ -222,7 +218,19 @@ class SchemaValidationRegressionTests(TransactionTestCase):
         response = self.api.put(
             f'/api/clients/{second.id}',
             headers=self.headers,
-            json={'document_number': first.document_number},
+            json={'name': 'Cambio directo no autorizado'},
         )
-        self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(response.status_code, 409, response.text)
+        second.refresh_from_db()
+        self.assertEqual(second.name, 'Segundo')
+
+        request = self.api.post(
+            f'/api/clients/{second.id}/change-requests',
+            headers=self.headers,
+            json={'changes': {'name': 'Cambio solicitado'}, 'reason': 'Corrección solicitada'},
+        )
+        self.assertEqual(request.status_code, 201, request.text)
+        self.assertEqual(request.json()['status'], 'pendiente')
+        second.refresh_from_db()
+        self.assertEqual(second.name, 'Segundo')
 
