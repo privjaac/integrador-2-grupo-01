@@ -62,6 +62,7 @@ from api.routers import (
     dashboard,
     collaborator_payments,
     notifications,
+    elomux_platforms,
 )
 
 
@@ -222,6 +223,13 @@ app.include_router(
     dashboard.router,
     prefix='/api/dashboard',
     tags=['Dashboard'],
+    dependencies=[Depends(require_route_permission)],
+)
+
+app.include_router(
+    elomux_platforms.router,
+    prefix='/api/elomux-platforms',
+    tags=['Plataformas ELOMUX'],
     dependencies=[Depends(require_route_permission)],
 )
 

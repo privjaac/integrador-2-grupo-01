@@ -84,6 +84,7 @@ def _service_row(service: ContractedService, recurrence_date: date | None = None
     return {
         'service_id': service.id, 'client_id': client.id, 'name': client.name,
         'cupe': client.cupe, 'plan': client.plan, 'status': client.status,
+        'email': client.email, 'phone': client.phone,
         'service_name': service.service_name,
         'web_type_name': service.catalog_service.name if service.catalog_service_id else None,
         'features': sorted(feature.feature.name for feature in client.features.all()),
@@ -130,6 +131,10 @@ def build_dashboard_summary(user: dict, as_of: date | None = None) -> dict:
             due = service_next_due_date(service, as_of)
             if due and as_of <= due <= as_of + timedelta(days=30):
                 upcoming_recurrences.append(_service_row(service, due))
+
+    upcoming_expirations.sort(key=lambda item: (item['documented_expiration'], item['client_id'], item['service_id']))
+    upcoming_recurrences.sort(key=lambda item: (item['next_recurrence_date'], item['client_id'], item['service_id']))
+    expired.sort(key=lambda item: (item['documented_expiration'], item['client_id'], item['service_id']))
 
     result = {
         'as_of': as_of,

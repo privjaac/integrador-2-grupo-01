@@ -209,6 +209,10 @@ const PERMISSIONS = {
     edit: [],
     delete: [],
   },
+  platforms: {
+    view: ["L1", "L2", "L3"],
+    manage: ["L1", "L2"],
+  },
 
   // ── MÓDULO DE ADMINISTRACIÓN DEL SISTEMA ─────────────────────────────────
   // Para funciones futuras como configuración global, reportes, etc.

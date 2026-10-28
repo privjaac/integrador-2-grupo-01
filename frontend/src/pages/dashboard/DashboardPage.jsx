@@ -16,6 +16,9 @@ import { formatDate } from "../../utils/formatDate";
 import Badge from "../../components/ui/Badge";
 import LoadingSpinner from "../../components/ui/LoadingSpinner";
 import ActiveServicesList from "./ActiveServicesList";
+import ElomuxPlatformsPanel from "./ElomuxPlatformsPanel";
+import { buildServiceDistribution } from "./serviceDistribution";
+import { can } from "../../utils/permissions";
 
 function formatCurrencyAmount(amount, currency) {
   try {
@@ -217,10 +220,11 @@ function PieChart({ data, size = 160 }) {
   const cx = size / 2,
     cy = size / 2,
     r = size / 2 - 10;
-  let startAngle = -Math.PI / 2;
-
-  const slices = top6.map((d) => {
+  const slices = top6.map((d, index) => {
     const angle = (d.value / total) * 2 * Math.PI;
+    const startAngle = -Math.PI / 2 + top6
+      .slice(0, index)
+      .reduce((sum, item) => sum + (item.value / total) * 2 * Math.PI, 0);
     const end = startAngle + angle;
     const x1 = cx + r * Math.cos(startAngle),
       y1 = cy + r * Math.sin(startAngle);
@@ -229,7 +233,6 @@ function PieChart({ data, size = 160 }) {
     const mid = startAngle + angle / 2;
     const lx = cx + r * 0.65 * Math.cos(mid),
       ly = cy + r * 0.65 * Math.sin(mid);
-    startAngle = end;
     return {
       ...d,
       path: `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${angle > Math.PI ? 1 : 0} 1 ${x2} ${y2} Z`,
@@ -243,6 +246,10 @@ function PieChart({ data, size = 160 }) {
   if (sorted.length > 6) {
     const othersVal = sorted.slice(6).reduce((s, d) => s + d.value, 0);
     const angle = (othersVal / total) * 2 * Math.PI;
+    const startAngle = -Math.PI / 2 + top6.reduce(
+      (sum, item) => sum + (item.value / total) * 2 * Math.PI,
+      0,
+    );
     const end = startAngle + angle;
     const x1 = cx + r * Math.cos(startAngle),
       y1 = cy + r * Math.sin(startAngle);
@@ -1062,12 +1069,14 @@ function ClientList({ clients, navigate }) {
 export default function DashboardPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const [activeView, setActiveView] = useState("dashboard");
   const [clients, setClients] = useState([]);
   const [collaboratorCounts, setCollaboratorCounts] = useState({ total: 0, active: 0, inactive: 0 });
   const [serviceIndicators, setServiceIndicators] = useState({
     active: [], upcoming_expirations_30_days: [], upcoming_recurrences_30_days: [], expired: [],
   });
   const [monthlyRevenue, setMonthlyRevenue] = useState([]);
+  const [serviceSearch, setServiceSearch] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const canViewFinance = ["L1", "L2"].includes(user?.role);
@@ -1217,41 +1226,24 @@ export default function DashboardPage() {
     [kpis],
   );
 
-  const pieVentasTipos = useMemo(() => {
-    const count = {};
-    filtered
-      .filter((c) => c.plan === "venta")
-      .forEach((c) => {
-        const k = c.web_type_name || "Sin tipo";
-        count[k] = (count[k] || 0) + 1;
-      });
-    return Object.entries(count)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 8)
-      .map(([label, value], i) => ({
-        label,
-        value,
-        color: PIE_COLORS[i % PIE_COLORS.length],
-      }));
-  }, [filtered]);
+  const activeServiceDistribution = useMemo(() => {
+    const filteredClientIds = new Set(filtered.map((client) => client.id));
+    return buildServiceDistribution(serviceIndicators.active, filteredClientIds);
+  }, [filtered, serviceIndicators.active]);
 
-  const pieAlquilerTipos = useMemo(() => {
-    const count = {};
-    filtered
-      .filter((c) => c.plan === "alquiler")
-      .forEach((c) => {
-        const k = c.web_type_name || "Sin tipo";
-        count[k] = (count[k] || 0) + 1;
-      });
-    return Object.entries(count)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 8)
-      .map(([label, value], i) => ({
-        label,
-        value,
-        color: PIE_COLORS[i % PIE_COLORS.length],
-      }));
-  }, [filtered]);
+  const pieVentasTipos = useMemo(() => activeServiceDistribution
+    .filter((item) => item.plan === "venta")
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 8)
+    .map((item, i) => ({ label: item.label, value: item.value, color: PIE_COLORS[i % PIE_COLORS.length] })),
+  [activeServiceDistribution]);
+
+  const pieAlquilerTipos = useMemo(() => activeServiceDistribution
+    .filter((item) => item.plan === "alquiler")
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 8)
+    .map((item, i) => ({ label: item.label, value: item.value, color: PIE_COLORS[i % PIE_COLORS.length] })),
+  [activeServiceDistribution]);
 
   // Genera datos de línea con filtros de año y mes
   const buildMonthlyData = (yearFilter, fromMonth, toMonth, valueFn) => {
@@ -1289,34 +1281,18 @@ export default function DashboardPage() {
 
   // Top 10
   const top10Ventas = useMemo(() => {
-    const count = {};
-    filtered
-      .filter((c) => c.plan === "venta")
-      .forEach((c) => {
-        const k = c.web_type_name || "Sin tipo";
-        count[k] = (count[k] || 0) + 1;
-      });
-    return Object.entries(count).map(([label, value]) => ({
-      label,
-      value,
-      valueLabel: `${value} ventas`,
-    }));
-  }, [filtered]);
+    return activeServiceDistribution.filter((item) => item.plan === "venta")
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 10)
+      .map(({ label, value }) => ({ label, value, valueLabel: `${value} clientes` }));
+  }, [activeServiceDistribution]);
 
   const top10Alquiler = useMemo(() => {
-    const count = {};
-    filtered
-      .filter((c) => c.plan === "alquiler")
-      .forEach((c) => {
-        const k = c.web_type_name || "Sin tipo";
-        count[k] = (count[k] || 0) + 1;
-      });
-    return Object.entries(count).map(([label, value]) => ({
-      label,
-      value,
-      valueLabel: `${value} alquileres`,
-    }));
-  }, [filtered]);
+    return activeServiceDistribution.filter((item) => item.plan === "alquiler")
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 10)
+      .map(({ label, value }) => ({ label, value, valueLabel: `${value} clientes` }));
+  }, [activeServiceDistribution]);
 
   const retencion = useMemo(
     () =>
@@ -1336,6 +1312,14 @@ export default function DashboardPage() {
     recurrences: serviceIndicators.upcoming_recurrences_30_days,
     expired: serviceIndicators.expired,
   }), [serviceIndicators, now]);
+
+  const filterVigencias = (items) => {
+    const query = serviceSearch.trim().toLocaleLowerCase("es-PE");
+    if (!query) return items;
+    return items.filter((item) => [
+      item.name, item.cupe, item.service_name, item.web_type_name, item.email, item.phone,
+    ].some((value) => String(value || "").toLocaleLowerCase("es-PE").includes(query)));
+  };
 
   const handleChartFilter = (which, field, val) => {
     if (which === "nc") {
@@ -1357,13 +1341,22 @@ export default function DashboardPage() {
     padding: "1.5rem",
   };
 
-  if (isLoading)
-    return <LoadingSpinner fullPage label="Cargando dashboard..." />;
-  if (loadError)
-    return <div role="alert" style={{ color: "#ff8888", padding: 24 }}>Error al cargar los indicadores del dashboard.</div>;
-
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "2rem" }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+      <nav role="tablist" aria-label="Secciones del dashboard" style={{ display: "flex", gap: 8, borderBottom: "1px solid #34394a", paddingBottom: 8 }}>
+        <button type="button" role="tab" aria-selected={activeView === "dashboard"} onClick={() => setActiveView("dashboard")} style={{ background: activeView === "dashboard" ? "#3fe5e5" : "transparent", color: activeView === "dashboard" ? "#05060f" : "#c6ccd8", border: "1px solid #3fe5e5", borderRadius: 6, padding: "8px 12px", cursor: "pointer" }}>
+          Dashboard
+        </button>
+        {can(user, "platforms", "view") && <button type="button" role="tab" aria-selected={activeView === "platforms"} onClick={() => setActiveView("platforms")} style={{ background: activeView === "platforms" ? "#3fe5e5" : "transparent", color: activeView === "platforms" ? "#05060f" : "#c6ccd8", border: "1px solid #3fe5e5", borderRadius: 6, padding: "8px 12px", cursor: "pointer" }}>
+          Ecosistema ELOMUX
+        </button>}
+      </nav>
+      {activeView === "platforms" ? <ElomuxPlatformsPanel user={user} /> : isLoading
+        ? <LoadingSpinner fullPage label="Cargando dashboard..." />
+        : loadError
+          ? <div role="alert" style={{ color: "#ff8888", padding: 24 }}>Error al cargar los indicadores del dashboard.</div>
+          : (
+      <div style={{ display: "flex", flexDirection: "column", gap: "2rem" }}>
       {/* Header */}
       <div
         style={{
@@ -1914,7 +1907,7 @@ export default function DashboardPage() {
               margin: "0 0 0.375rem 0",
             }}
           >
-            TIPOS DE WEB MÁS VENDIDOS
+            CLIENTES POR TIPO CONTRATADO — VENTA
           </p>
           <p
             style={{
@@ -1924,7 +1917,7 @@ export default function DashboardPage() {
               margin: "0 0 1.25rem 0",
             }}
           >
-            Distribución por tipo — plan venta
+            Tipo de compromiso vigente; plan registrado en la ficha del cliente
           </p>
           <PieChart data={pieVentasTipos} size={160} />
         </div>
@@ -1939,7 +1932,7 @@ export default function DashboardPage() {
               margin: "0 0 0.375rem 0",
             }}
           >
-            TIPOS DE WEB MÁS ALQUILADOS
+            CLIENTES POR TIPO CONTRATADO — ALQUILER
           </p>
           <p
             style={{
@@ -1949,7 +1942,7 @@ export default function DashboardPage() {
               margin: "0 0 1.25rem 0",
             }}
           >
-            Distribución por tipo — plan alquiler
+            Tipo de compromiso vigente; plan registrado en la ficha del cliente
           </p>
           <PieChart data={pieAlquilerTipos} size={160} />
         </div>
@@ -2033,7 +2026,7 @@ export default function DashboardPage() {
               margin: "0 0 0.5rem 0",
             }}
           >
-            Tipos de web — plan venta
+            Tipo de compromiso vigente — venta
           </p>
           <BarList data={top10Ventas} color="#8235f2" />
         </div>
@@ -2058,7 +2051,7 @@ export default function DashboardPage() {
               margin: "0 0 0.5rem 0",
             }}
           >
-            Tipos de web — plan alquiler
+            Tipo de compromiso vigente — alquiler
           </p>
           <BarList data={top10Alquiler} color="#3fe5e5" />
         </div>
@@ -2183,6 +2176,13 @@ export default function DashboardPage() {
       {/* Vencimientos */}
       <div>
         <SectionTitle>Vigencias de servicios</SectionTitle>
+        <input
+          aria-label="Buscar vigencias de servicios"
+          placeholder="Filtrar por cliente, servicio o contacto"
+          value={serviceSearch}
+          onChange={(event) => setServiceSearch(event.target.value)}
+          style={{ width: "100%", boxSizing: "border-box", padding: 9, marginBottom: 14, color: "white", background: "#0b0d1a", border: "1px solid #34394a", borderRadius: 6 }}
+        />
         <div
           style={{
             display: "grid",
@@ -2220,7 +2220,9 @@ export default function DashboardPage() {
               expired: true,
               dateField: "documented_expiration",
             },
-          ].map(({ title, list, color, bg, expired = false, dateField }) => (
+          ].map(({ title, list, color, bg, expired = false, dateField }) => {
+            const visibleList = filterVigencias(list);
+            return (
             <div key={title} style={{ ...card, border: `1px solid ${bg}0.2)` }}>
               {/* Header */}
               <div
@@ -2258,7 +2260,7 @@ export default function DashboardPage() {
                 </span>
               </div>
 
-              {list.length === 0 ? (
+              {visibleList.length === 0 ? (
                 <p
                   style={{
                     color: "#8892a4",
@@ -2268,7 +2270,7 @@ export default function DashboardPage() {
                     padding: "1rem 0",
                   }}
                 >
-                  ✓ Sin vencimientos próximos
+                  {list.length === 0 ? "✓ Sin registros en este período" : "No se encontraron coincidencias"}
                 </p>
               ) : (
                 /* Scroll visible con barra estilizada */
@@ -2285,7 +2287,7 @@ export default function DashboardPage() {
                     scrollbarColor: `${color} rgba(255,255,255,0.05)`,
                   }}
                 >
-                  {list.map((c, i) => {
+                  {visibleList.map((c, i) => {
                     const indicatorDate = c[dateField];
                     const dueDate = new Date(`${indicatorDate}T12:00:00`);
                     const today = new Date();
@@ -2401,12 +2403,13 @@ export default function DashboardPage() {
                             {c.cupe || "Sin CUPE"}
                           </span>
                           <span style={{ color: "#8892a4", fontSize: 11 }}>{c.documented_expiration ? `Vigencia: ${formatDate(c.documented_expiration)}` : "Sin vencimiento documentado"}</span>
+                          {(c.email || c.phone) && <span style={{ color: "#8892a4", fontSize: 11 }}>{[c.email, c.phone].filter(Boolean).join(" · ")}</span>}
                         </div>
                       </div>
                     );
                   })}
                   {/* Indicador de scroll si hay más de 4 */}
-                  {list.length > 4 && (
+                  {visibleList.length > 4 && (
                     <div
                       style={{
                         textAlign: "center",
@@ -2417,13 +2420,13 @@ export default function DashboardPage() {
                         letterSpacing: "0.1em",
                       }}
                     >
-                      ↑↓ SCROLL — {list.length} registros
+                      ↑↓ SCROLL — {visibleList.length} registros
                     </div>
                   )}
                 </div>
               )}
             </div>
-          ))}
+          );})}
         </div>
         <p style={{ color: "#8892a4", fontSize: 12, marginTop: 8 }}>
           Las recurrencias son fechas calculadas desde el inicio y frecuencia del compromiso. No acreditan un pago ni una renovación.
@@ -2437,6 +2440,8 @@ export default function DashboardPage() {
           <ClientList clients={filtered} navigate={navigate} />
         </div>
       </div>
+      </div>
+      )}
     </div>
   );
 }

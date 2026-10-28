@@ -1263,6 +1263,52 @@ class ContractedService(models.Model):
         ]
 
 
+class ElomuxPlatform(models.Model):
+    """Organizational marketing/acquisition platform, separate from service catalog."""
+
+    name = models.CharField(max_length=120)
+    url = models.URLField(max_length=500)
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='elomux_platforms_created',
+    )
+    updated_by = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='elomux_platforms_updated',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'elomux_platforms'
+        ordering = ['name', 'id']
+        constraints = [
+            models.UniqueConstraint(Lower('name'), name='elomux_platform_name_case_insensitive_unique'),
+        ]
+
+
+class ElomuxPlatformEvent(models.Model):
+    """Immutable change history for organizational platform records."""
+
+    platform = models.ForeignKey(ElomuxPlatform, on_delete=models.PROTECT, related_name='events')
+    actor = models.ForeignKey(Collaborator, on_delete=models.PROTECT, related_name='elomux_platform_events')
+    action = models.CharField(max_length=12, choices=[('created', 'Creada'), ('updated', 'Actualizada')])
+    before = models.JSONField(null=True, blank=True)
+    after = models.JSONField()
+    occurred_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'elomux_platform_events'
+        ordering = ['occurred_at', 'id']
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValueError('El historial de plataformas ELOMUX es inmutable')
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError('El historial de plataformas ELOMUX es inmutable')
+
+
 class ContractedServiceHistory(models.Model):
     service = models.ForeignKey(ContractedService, on_delete=models.PROTECT, related_name='history')
     actor = models.ForeignKey(Collaborator, on_delete=models.PROTECT, related_name='contracted_service_history')

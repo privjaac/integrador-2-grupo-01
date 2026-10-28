@@ -24,6 +24,7 @@ class DashboardIndicatorTests(TestCase):
         self.client_obj = Client.objects.create(
             name='Cliente operativo', document_type='DNI', document_number='DASH-CLIENT',
             web_type=self.catalog, status='activo', plan='alquiler',
+            email='contacto@example.test', phone='+51999999999',
             registration_date=date(2026, 1, 1), next_payment_date=date(2026, 2, 1),
             total_price=Decimal('9999.00'),
         )
@@ -78,14 +79,26 @@ class DashboardIndicatorTests(TestCase):
         self.assertEqual(series['USD'][0]['amount'], '50.00')
 
     def test_service_activity_expiration_and_recurrence_use_contract_dates(self):
+        soon = ContractedService.objects.create(
+            client=self.client_obj, service_name='Vigencia próxima',
+            commitment_reference='DASH-SOON', scope='Servicio por vencer',
+            frequency='mensual', effective_start=date(2026, 1, 1),
+            documented_expiration=date(2026, 11, 1), evidence_reference='DOC-SOON',
+            recorded_by=self.actors['L2'],
+        )
         summary = build_dashboard_summary(
             {'role': 'L3', 'collaborator_id': self.actors['L3'].id}, date(2026, 10, 27),
         )
-        self.assertEqual([row['service_id'] for row in summary['services']['active']], [self.service.id])
+        self.assertEqual(
+            {row['service_id'] for row in summary['services']['active']}, {self.service.id, soon.id},
+        )
         active = summary['services']['active'][0]
         self.assertEqual(active['features'], ['Chatbot'])
         self.assertEqual(active['web_type_name'], 'Web operativa')
-        self.assertEqual(summary['services']['upcoming_expirations_30_days'][0]['documented_expiration'], date(2026, 11, 15))
+        self.assertEqual(active['email'], 'contacto@example.test')
+        self.assertEqual(active['phone'], '+51999999999')
+        self.assertEqual(summary['services']['upcoming_expirations_30_days'][0]['service_id'], soon.id)
+        self.assertEqual(summary['services']['upcoming_expirations_30_days'][0]['documented_expiration'], date(2026, 11, 1))
         self.assertEqual(summary['services']['upcoming_recurrences_30_days'][0]['next_recurrence_date'], date(2026, 10, 28))
         self.assertNotIn('monthly_revenue', summary)
         self.assertNotIn('total_price', summary['clients'][0])
@@ -101,6 +114,19 @@ class DashboardIndicatorTests(TestCase):
         )
         self.assertIn(expired.id, [row['service_id'] for row in summary['services']['expired']])
         self.assertNotIn(expired.id, [row['service_id'] for row in summary['services']['active']])
+
+    def test_service_reports_require_a_real_current_contracted_service(self):
+        catalog_only = Client.objects.create(
+            name='Solo catálogo', document_type='DNI', document_number='DASH-CATALOG-ONLY',
+            web_type=self.catalog, status='activo', plan='venta',
+        )
+        summary = build_dashboard_summary(
+            {'role': 'L3', 'collaborator_id': self.actors['L3'].id}, date(2026, 10, 27),
+        )
+        self.assertEqual(
+            {row['client_id'] for row in summary['services']['active']}, {self.client_obj.id},
+        )
+        self.assertIn(catalog_only.id, {row['id'] for row in summary['clients']})
 
     def test_annual_recurrence_uses_contract_start_as_anchor(self):
         annual = ContractedService.objects.create(

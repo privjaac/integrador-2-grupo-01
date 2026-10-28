@@ -68,6 +68,8 @@ CAPABILITY_LEVELS = {
     'catalog.edit': {'L1'},
     'catalog.delete': {'L1'},
     'dashboard.view': {'L1', 'L2', 'L3'},
+    'platforms.view': {'L1', 'L2', 'L3'},
+    'platforms.manage': {'L1', 'L2'},
     'admin.view': {'L1'},
     'admin.create': {'L1'},
     'admin.edit': {'L1'},
@@ -174,6 +176,9 @@ ROUTE_CAPABILITIES = {
     # Administrative CUPE history and dashboard.
     'get_next_cupe': 'admin.view', 'get_cupe_logs': 'admin.view', 'get_cupe_log': 'admin.view',
     'change_cupe': 'admin.edit', 'get_dashboard_summary': 'dashboard.view',
+    'list_elomux_platforms': 'platforms.view',
+    'create_elomux_platform': 'platforms.manage',
+    'update_elomux_platform': 'platforms.manage',
 }
 
 
