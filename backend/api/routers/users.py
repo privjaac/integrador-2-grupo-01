@@ -323,7 +323,7 @@ def update_collaborator(
     try:
         with transaction.atomic():
             try:
-                collaborator = Collaborator.objects.select_for_update().select_related('role').get(id=collaborator_id)
+                collaborator = Collaborator.objects.select_for_update(of=('self',)).select_related('role').get(id=collaborator_id)
             except Collaborator.DoesNotExist:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
