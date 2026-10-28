@@ -3,7 +3,6 @@ from django.db.models.deletion import ProtectedError
 from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 from datetime import timedelta
-import time
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -416,7 +415,7 @@ class ProjectApiTests(TransactionTestCase):
             status='En ejecución',
         )
         self.coordinate_l3(project)
-        cancellation_task = Task.objects.create(
+        Task.objects.create(
             project=project, title='Tarea conserva estado',
             created_by=Collaborator.objects.get(username='project-api-L2'),
             responsible=Collaborator.objects.get(username='project-api-L4'),
@@ -491,7 +490,6 @@ class ProjectApiTests(TransactionTestCase):
         self.assertEqual(project.status, 'En ejecución')
         self.assertIn('task_snapshot', evaluated.json()['events'][-1]['data'])
 
-        planned_effective_at = timezone.now() + timedelta(seconds=2)
         decided = self.api.post(
             f'/api/projects/{project.id}/cancellations/{cancellation_id}/decision',
             headers=self.tokens['L2'], json={
@@ -499,76 +497,54 @@ class ProjectApiTests(TransactionTestCase):
                 'evidence': 'Acta comercial AC-01',
                 'commercial_consequences': 'Compromisos revisados; no se ordenan pagos ni devoluciones',
                 'effectivity_conditions': 'La condición documentada está satisfecha',
-                'planned_effective_at': planned_effective_at.isoformat(),
+                'planned_effective_at': (timezone.now() + timedelta(hours=1)).isoformat(),
             },
         )
-        self.assertEqual(decided.status_code, 200, decided.text)
-        too_early = self.api.post(
+        self.assertEqual(decided.status_code, 409, decided.text)
+        self.assertIn('competencia ordinaria L2 no puede acreditarse', decided.json()['detail'])
+        persisted_events = list(ProjectCancellationEvent.objects.filter(
+            cancellation_id=cancellation_id,
+        ).order_by('id'))
+        self.assertEqual([event.event_type for event in persisted_events], ['solicitada', 'evaluacion_tecnica'])
+        self.assertIn('task_snapshot', persisted_events[-1].data)
+        project.refresh_from_db()
+        self.assertEqual(project.status, 'En ejecución')
+        self.assertEqual(ProjectEvent.objects.filter(project=project).count(), 2)
+        self.assertFalse(ProjectCancellationEvent.objects.filter(
+            cancellation_id=cancellation_id, event_type__in=['autorizada', 'efectiva'],
+        ).exists())
+
+        # Simulate a pre-existing authorization record to prove the effectivity
+        # endpoint independently enforces the same competence guard.
+        l2_actor = Collaborator.objects.get(username='project-api-L2')
+        legacy_authorization = ProjectCancellationEvent.objects.create(
+            cancellation_id=cancellation_id, event_type='autorizada', actor=l2_actor,
+            reason='Registro previo de prueba', evidence='AC-legacy',
+            data={
+                'commercial_consequences': 'Consecuencias registradas',
+                'effectivity_conditions': 'Condición pendiente',
+                'planned_effective_at': (timezone.now() - timedelta(minutes=1)).isoformat(),
+                'authority': 'L2 ordinary cancellation',
+            },
+        )
+        project_event_count = ProjectEvent.objects.filter(project=project).count()
+        before_events = ProjectCancellationEvent.objects.filter(cancellation_id=cancellation_id).count()
+        blocked_effectivity = self.api.post(
             f'/api/projects/{project.id}/cancellations/{cancellation_id}/effectivity',
             headers=self.tokens['L2'], json={
-                'conditions_satisfied': False, 'reason': 'Condición pendiente', 'evidence': 'Pendiente',
+                'conditions_satisfied': True, 'reason': 'Intento de efectividad', 'evidence': 'EV-EFFECT',
             },
         )
-        self.assertEqual(too_early.status_code, 422)
+        self.assertEqual(blocked_effectivity.status_code, 409, blocked_effectivity.text)
+        self.assertIn('competencia ordinaria L2 no puede acreditarse', blocked_effectivity.json()['detail'])
+        self.assertEqual(ProjectCancellationEvent.objects.filter(cancellation_id=cancellation_id).count(), before_events)
+        self.assertTrue(ProjectCancellationEvent.objects.filter(pk=legacy_authorization.pk).exists())
         self.assertEqual(ProjectCancellationEvent.objects.filter(
             cancellation_id=cancellation_id, event_type='efectiva',
         ).count(), 0)
-
-        time.sleep(max(0, (planned_effective_at - timezone.now()).total_seconds()))
-        effective = self.api.post(
-            f'/api/projects/{project.id}/cancellations/{cancellation_id}/effectivity',
-            headers=self.tokens['L2'], json={
-                'conditions_satisfied': True, 'reason': 'Condiciones acreditadas',
-                'evidence': 'Constancia de cumplimiento de condiciones',
-            },
-        )
-        self.assertEqual(effective.status_code, 200, effective.text)
+        self.assertEqual(ProjectEvent.objects.filter(project=project).count(), project_event_count)
         project.refresh_from_db()
         self.assertEqual(project.status, 'En ejecución')
-        effective_event = ProjectCancellationEvent.objects.get(
-            cancellation_id=cancellation_id, event_type='efectiva',
-        )
-        self.assertEqual(effective_event.actor.username, 'project-api-L2')
-        self.assertLessEqual(effective_event.effective_at, effective_event.occurred_at)
-        timeline = list(ProjectEvent.objects.filter(project=project).order_by('id'))
-        self.assertEqual([event.event_type for event in timeline], [
-            'cancelacion_solicitada', 'cancelacion_evaluacion_tecnica',
-            'cancelacion_autorizada', 'cancelacion_efectiva',
-        ])
-        self.assertTrue(all(event.previous_status == event.new_status == 'En ejecución' for event in timeline))
-
-        blocked_transition = self.api.post(
-            f'/api/projects/{project.id}/technical-validation', headers=self.tokens['L3'], json={
-                'scope_within_current_commitment': True, 'criteria_identifiable': True,
-                'results_and_evidence_available': True, 'validation_conditions_ready': True,
-                'responsible_parties_identified': True, 'dependencies_ready': True,
-                'pending_obligations_assessed': True, 'reason': 'Continuar', 'evidence': 'Evidencia',
-            },
-        )
-        self.assertEqual(blocked_transition.status_code, 409)
-        blocked_task = self.api.post(
-            '/api/tasks/', headers=self.tokens['L3'],
-            json={'project_id': project.id, 'title': 'No iniciar alcance cancelado', 'status': 'Pendiente'},
-        )
-        self.assertEqual(blocked_task.status_code, 409, blocked_task.text)
-        blocked_block = self.api.post(
-            f'/api/tasks/{cancellation_task.id}/block', headers=self.tokens['L3'],
-            json={'reason': 'Prueba tras efectividad', 'evidence': 'EV-BLOCK'},
-        )
-        self.assertEqual(blocked_block.status_code, 409, blocked_block.text)
-        cancellation_task.refresh_from_db()
-        self.assertFalse(cancellation_task.is_blocked)
-        self.assertFalse(TaskEvent.objects.filter(task=cancellation_task, event_type='bloqueo_declarado').exists())
-        repeated = self.api.post(
-            f'/api/projects/{project.id}/cancellations/{cancellation_id}/effectivity',
-            headers=self.tokens['L2'], json={
-                'conditions_satisfied': True, 'reason': 'Repetición', 'evidence': 'Otra evidencia',
-            },
-        )
-        self.assertEqual(repeated.status_code, 409)
-        self.assertEqual(ProjectCancellationEvent.objects.filter(
-            cancellation_id=cancellation_id, event_type='efectiva',
-        ).count(), 1)
 
     def test_project_cancellation_future_effectivity_and_denial_preserve_history(self):
         project = Project.objects.create(
@@ -592,7 +568,10 @@ class ProjectApiTests(TransactionTestCase):
                 'planned_effective_at': (timezone.now() + timedelta(hours=1)).isoformat(),
             },
         )
-        self.assertEqual(future.status_code, 200, future.text)
+        self.assertEqual(future.status_code, 409, future.text)
+        self.assertFalse(ProjectCancellationEvent.objects.filter(
+            cancellation_id=cancellation_id, event_type='autorizada',
+        ).exists())
         premature = self.api.post(
             f'/api/projects/{project.id}/cancellations/{cancellation_id}/effectivity',
             headers=self.tokens['L2'], json={

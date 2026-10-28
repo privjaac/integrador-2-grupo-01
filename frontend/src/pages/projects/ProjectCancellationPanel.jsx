@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   decideProjectCancellation, evaluateProjectCancellation, getProjectCancellations,
-  openProjectCancellation, recordProjectCancellationEffectivity,
+  openProjectCancellation,
 } from "../../api/projects";
 
 const fieldStyle = { padding: "9px 11px", background: "#0b0d1a", color: "white", border: "1px solid #34394a", borderRadius: 6, width: "100%" };
@@ -19,8 +19,6 @@ export default function ProjectCancellationPanel({ project, canRequest, canEvalu
   const [reason, setReason] = useState("");
   const [evidence, setEvidence] = useState("");
   const [technical, setTechnical] = useState({ affected_tasks_assessment: "", obligations_assessment: "", evidence: "" });
-  const [commercial, setCommercial] = useState({ commercial_consequences: "", effectivity_conditions: "", planned_effective_at: "" });
-  const [effectivity, setEffectivity] = useState({ reason: "", evidence: "" });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -84,17 +82,10 @@ export default function ProjectCancellationPanel({ project, canRequest, canEvalu
         })} style={fieldStyle}>Registrar evaluación técnica L3</button>
       </>}
       {canDecide && <>
-        <label style={{ display: "grid", gap: 4 }}>Consecuencias comerciales<textarea value={commercial.commercial_consequences} onChange={(event) => setCommercial({ ...commercial, commercial_consequences: event.target.value })} style={fieldStyle} /></label>
-        <label style={{ display: "grid", gap: 4 }}>Condiciones de efectividad<textarea value={commercial.effectivity_conditions} onChange={(event) => setCommercial({ ...commercial, effectivity_conditions: event.target.value })} style={fieldStyle} /></label>
-        <label style={{ display: "grid", gap: 4 }}>Fecha prevista de efectividad<input type="datetime-local" value={commercial.planned_effective_at} onChange={(event) => setCommercial({ ...commercial, planned_effective_at: event.target.value })} style={fieldStyle} /></label>
+        <p role="status">La autorización y efectividad L2 están bloqueadas mientras no haya criterios ratificados para acreditar que esta cancelación pertenece a su competencia ordinaria.</p>
         <label style={{ display: "grid", gap: 4 }}>Motivo de la decisión<textarea value={reason} onChange={(event) => setReason(event.target.value)} style={fieldStyle} /></label>
         <label style={{ display: "grid", gap: 4 }}>Evidencia comercial<input value={evidence} onChange={(event) => setEvidence(event.target.value)} style={fieldStyle} /></label>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button type="button" disabled={busy || !reason.trim() || !evidence.trim() || !commercial.commercial_consequences.trim() || !commercial.effectivity_conditions.trim() || !commercial.planned_effective_at} onClick={() => run(async () => {
-            await decideProjectCancellation(project.id, current.id, {
-              authorized: true, ...commercial, planned_effective_at: new Date(commercial.planned_effective_at).toISOString(), reason, evidence,
-            });
-          })} style={fieldStyle}>Autorizar cancelación ordinaria L2</button>
           <button type="button" disabled={busy || !reason.trim() || !evidence.trim()} onClick={() => run(async () => {
             await decideProjectCancellation(project.id, current.id, { authorized: false, reason, evidence });
             setReason(""); setEvidence("");
@@ -102,11 +93,7 @@ export default function ProjectCancellationPanel({ project, canRequest, canEvalu
         </div>
       </>}
       {canMakeEffective && <>
-        <label style={{ display: "grid", gap: 4 }}>Motivo de efectividad<textarea value={effectivity.reason} onChange={(event) => setEffectivity({ ...effectivity, reason: event.target.value })} style={fieldStyle} /></label>
-        <label style={{ display: "grid", gap: 4 }}>Evidencia de que las condiciones se cumplieron<input value={effectivity.evidence} onChange={(event) => setEffectivity({ ...effectivity, evidence: event.target.value })} style={fieldStyle} /></label>
-        <button type="button" disabled={busy || !effectivity.reason.trim() || !effectivity.evidence.trim()} onClick={() => run(async () => {
-          await recordProjectCancellationEffectivity(project.id, current.id, { ...effectivity, conditions_satisfied: true });
-        })} style={fieldStyle}>Registrar efectividad ahora</button>
+        <p role="status">No se puede registrar la efectividad: la competencia ordinaria L2 no está acreditada mediante criterios funcionales ratificados.</p>
       </>}
     </section>}
     {cancellations.map((item) => <section key={item.id} style={{ borderTop: "1px solid #34394a", marginTop: 12, paddingTop: 8 }}>

@@ -94,6 +94,19 @@ def cancellation_is_open(cancellation: ProjectCancellation) -> bool:
     return latest is None or latest.event_type not in {'denegada', 'efectiva'}
 
 
+def require_accredited_ordinary_cancellation_competence() -> None:
+    # DEC-B4-23-COMP-01: PR-04.2/TR-01.3.3 assign ordinary cases to L2,
+    # but no ratified positive criteria currently distinguish them from L1 cases.
+    # A role check, L3 review, or L2-authored declaration cannot fill that gap.
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            'La competencia ordinaria L2 no puede acreditarse con criterios funcionales ratificados; '
+            'la solicitud permanece pendiente de determinación'
+        ),
+    )
+
+
 def cancellation_response(cancellation: ProjectCancellation) -> dict:
     return {
         'id': cancellation.id,
@@ -1376,6 +1389,7 @@ def decide_project_cancellation(
                 event_type = 'denegada'
                 data = {'commercial_consequences': 'No se autorizó la cancelación ordinaria'}
             else:
+                require_accredited_ordinary_cancellation_competence()
                 ensure_project_not_cancelled(project_id)
                 if ProjectCancellation.objects.filter(project=project).exclude(pk=cancellation_id).filter(
                     events__event_type='efectiva', events__effective_at__lte=timezone.now(),
@@ -1423,6 +1437,7 @@ def record_project_cancellation_effectivity(
             latest = cancellation_latest_event(cancellation)
             if latest is None or latest.event_type != 'autorizada':
                 raise HTTPException(status_code=409, detail='Solo una cancelación autorizada puede hacerse efectiva')
+            require_accredited_ordinary_cancellation_competence()
             effective_at = timezone.now()
             planned = datetime.fromisoformat(latest.data['planned_effective_at'])
             if planned > effective_at:
