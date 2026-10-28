@@ -799,7 +799,8 @@ def get_task_context(user: dict = Depends(get_current_user)):
             for c in active_role_collaborators('L4')
         ] if coordinations.exists() else []
         result['leadership_assignments'] = [
-            {'project_id': item.coordination.project_id, 'leader_id': item.leader_id,
+            {'project_id': item.coordination.project_id, 'coordination_id': item.coordination_id,
+             'leader_id': item.leader_id,
              'leadership_id': item.id, 'leader_name': f'{item.leader.first_name} {item.leader.last_name}',
              'can_remove': item.designated_by_id == collaborator_id}
             for item in ProjectLeadership.objects.filter(

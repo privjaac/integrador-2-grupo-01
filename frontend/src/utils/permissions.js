@@ -132,6 +132,10 @@ const PERMISSIONS = {
     requestProjectCancellation: ["L2"],
     evaluateProjectCancellation: ["L3"],
     resolveProjectCancellation: ["L2"],
+    resolveExceptionalCancellation: ["L1"],
+    resolveExceptionalResumption: ["L1"],
+    manageSubstitutions: ["L1", "L3"],
+    viewSubstitutions: ["L1", "L2", "L3"],
     edit: [],
     delete: [],
   },
@@ -313,6 +317,7 @@ export function canAccessRoute(user, route) {
   if (!user || !user.role) return false;
 
   const routePermission = {
+    "/proyectos/excepcionales": ["projects", "resolveExceptionalCancellation"],
     "/notificaciones/configuracion": ["notifications", "configure"],
     "/dashboard": ["dashboard", "view"],
     "/clientes": ["clients", "view"],

@@ -123,6 +123,38 @@ export async function getProjectCancellations(projectId) {
   return data;
 }
 
+export async function getL1ExceptionalCancellations() {
+  const { data } = await axiosInstance.get("/api/projects/exceptional-cancellations");
+  return data;
+}
+
+export async function getL1ExceptionalResumptions() {
+  const { data } = await axiosInstance.get("/api/projects/exceptional-resumptions");
+  return data;
+}
+
+export async function getL1SubstitutionContext() {
+  const { data } = await axiosInstance.get("/api/projects/substitutions/context");
+  return data;
+}
+
+export async function getProjectSubstitutions(projectId) {
+  const { data } = await axiosInstance.get(`/api/projects/${projectId}/substitutions`);
+  return data;
+}
+
+export async function createProjectSubstitution(projectId, payload) {
+  const { data } = await axiosInstance.post(`/api/projects/${projectId}/substitutions`, payload);
+  return data;
+}
+
+export async function endProjectSubstitution(projectId, substitutionId) {
+  const { data } = await axiosInstance.post(
+    `/api/projects/${projectId}/substitutions/${substitutionId}/end`,
+  );
+  return data;
+}
+
 export async function openProjectCancellation(projectId, payload) {
   const { data } = await axiosInstance.post(`/api/projects/${projectId}/cancellations`, payload);
   return data;
@@ -131,6 +163,20 @@ export async function openProjectCancellation(projectId, payload) {
 export async function evaluateProjectCancellation(projectId, cancellationId, payload) {
   const { data } = await axiosInstance.post(
     `/api/projects/${projectId}/cancellations/${cancellationId}/technical-evaluation`, payload,
+  );
+  return data;
+}
+
+export async function evaluateProjectCancellationCommercially(projectId, cancellationId, payload) {
+  const { data } = await axiosInstance.post(
+    `/api/projects/${projectId}/cancellations/${cancellationId}/commercial-evaluation`, payload,
+  );
+  return data;
+}
+
+export async function decideProjectCancellationExceptionally(projectId, cancellationId, payload) {
+  const { data } = await axiosInstance.post(
+    `/api/projects/${projectId}/cancellations/${cancellationId}/exceptional-decision`, payload,
   );
   return data;
 }
@@ -151,5 +197,26 @@ export async function recordProjectCancellationEffectivity(projectId, cancellati
 
 export async function getProjectResumptions(projectId) {
   const { data } = await axiosInstance.get(`/api/projects/${projectId}/resumptions`);
+  return data;
+}
+
+export async function evaluateProjectResumption(projectId, cancellationId, payload) {
+  const { data } = await axiosInstance.post(
+    `/api/projects/${projectId}/cancellations/${cancellationId}/resumption/technical-evaluation`, payload,
+  );
+  return data;
+}
+
+export async function decideProjectResumptionCommercially(resumptionId, payload) {
+  const { data } = await axiosInstance.post(
+    `/api/projects/resumptions/${resumptionId}/commercial-decision`, payload,
+  );
+  return data;
+}
+
+export async function decideProjectResumptionExceptionally(resumptionId, payload) {
+  const { data } = await axiosInstance.post(
+    `/api/projects/resumptions/${resumptionId}/exceptional-decision`, payload,
+  );
   return data;
 }

@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { getClients } from "../../api/clients";
 import ProjectServicesPanel from "./ProjectServicesPanel";
 import ProjectCancellationPanel from "./ProjectCancellationPanel";
+import ProjectSubstitutionsPanel from "./ProjectSubstitutionsPanel";
 import { designateCoordinator, getTaskContext, removeCoordinator } from "../../api/tasks";
 import {
   classifyProjectTask, createCommercialAuthorization, createDeliveryAuthorization,
@@ -56,7 +57,7 @@ export default function ProjectsPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
-  async function refresh() {
+  const refresh = useCallback(async () => {
     setLoading(true);
     try {
       const [projectRows, clientRows] = await Promise.all([
@@ -96,9 +97,9 @@ export default function ProjectsPage() {
     } catch (err) {
       setError(err.response?.data?.detail || "No se pudieron cargar los proyectos.");
     } finally { setLoading(false); }
-  }
+  }, [canCreate, user?.role]);
 
-  useEffect(() => { refresh(); }, [canCreate]);
+  useEffect(() => { refresh(); }, [refresh]);
 
   async function assignCoordinator(projectId) {
     setError("");
@@ -419,7 +420,8 @@ export default function ProjectsPage() {
         <div style={{ display: "flex", gap: 6 }}><select aria-label={`Coordinación de ${project.name}`} value={coordinatorSelection[project.id] || ""} onChange={(event) => setCoordinatorSelection({ ...coordinatorSelection, [project.id]: event.target.value })} style={fieldStyle}><option value="">Seleccionar L3</option>{taskContext.coordinators?.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" disabled={!coordinatorSelection[project.id]} onClick={() => assignCoordinator(project.id)} style={{ ...fieldStyle, cursor: "pointer" }}>Designar</button></div>
       </td>}</tr>;
     })}</tbody></table></div>}
-    {cancellationProjects.map((project) => <ProjectCancellationPanel key={`cancellation-${project.id}`} project={project} canRequest={canRequestCancellation} canEvaluate={canEvaluateCancellation} canResolve={canResolveCancellation} />)}
+    {cancellationProjects.map((project) => <ProjectCancellationPanel key={`cancellation-${project.id}`} project={project} user={user} canRequest={canRequestCancellation} canEvaluate={canEvaluateCancellation} canResolve={canResolveCancellation} />)}
+    {user?.role === "L3" && projects.filter((project) => scopedProjects.has(project.id)).map((project) => <ProjectSubstitutionsPanel key={`substitutions-${project.id}`} project={project} taskContext={taskContext} />)}
     {can(user, "projects", "associateContractedServices") && projects.filter((project) => scopedProjects.has(project.id)).map((project) => <ProjectServicesPanel key={`services-${project.id}`} project={project} canManage={project.status !== "Entregado"} />)}
     {canStartValidation && projects.some((project) => project.status === "En ejecución" && scopedProjects.has(project.id)) && <section style={{ marginTop: 28 }}>
       <h2>Ingreso a validación técnica</h2>
@@ -500,7 +502,6 @@ export default function ProjectsPage() {
       <p style={{ color: "#aab2c5" }}>L3 autoriza el cierre ordinario si la evaluación técnica, las tareas y la habilitación comercial específica están vigentes y corresponden al alcance.</p>
       {projects.filter((project) => project.status === "En validación técnica" && scopedProjects.has(project.id)).map((project) => {
         const input = readyInputs[project.id] || {};
-        const context = deliveryContexts[project.id];
         const now = Date.now();
         const candidates = (deliveryAuthorizations[project.id] || []).filter((item) => !item.events?.length && item.conditions_accredited && new Date(item.effective_at).getTime() <= now && (!item.expires_at || new Date(item.expires_at).getTime() > now));
         return <article key={project.id} style={{ border: "1px solid #34394a", borderRadius: 8, padding: 16, margin: "12px 0" }}><h3>{project.name}</h3>

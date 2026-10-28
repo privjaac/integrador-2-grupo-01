@@ -222,6 +222,13 @@ class ProjectSubstitutionApiTests(TransactionTestCase):
         )
         self.assertEqual(response.status_code, 403, response.text)
 
+    def test_l1_substitution_context_is_available_only_to_l1(self):
+        response = self.api.get('/api/projects/substitutions/context', headers=self.tokens['L1'])
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn(self.coordination.id, [item['id'] for item in response.json()['coordinations']])
+        denied = self.api.get('/api/projects/substitutions/context', headers=self.tokens['L2'])
+        self.assertEqual(denied.status_code, 403)
+
     def test_l3_supervises_an_uncovered_l4_scope_without_inheriting_l4_review(self):
         from clients.models import ProjectLeadership, TeamMembership
 

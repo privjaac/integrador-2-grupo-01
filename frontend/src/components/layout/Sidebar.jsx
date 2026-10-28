@@ -64,6 +64,13 @@ const NAV_ITEMS = [
         icon: <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M8 2v4m8-4v4M3 10h18" /></svg>,
       },
       {
+        path: "/proyectos/excepcionales",
+        label: "Actuaciones excepcionales",
+        module: "projects",
+        action: "resolveExceptionalCancellation",
+        icon: <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path d="M12 3v18M3 12h18" /><circle cx="12" cy="12" r="9" /></svg>,
+      },
+      {
         path: "/tareas",
         label: "Tareas",
         module: "tasks",

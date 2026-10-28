@@ -155,6 +155,9 @@ ROUTE_CAPABILITIES = {
     'decide_project_resumption_exceptionally': 'projects.resolveExceptionalResumption',
     'list_project_resumptions': 'projects.view',
     'list_project_substitutions': 'projects.viewSubstitutions',
+    'list_l1_substitution_context': 'projects.viewSubstitutions',
+    'list_l1_exceptional_cancellations': 'projects.resolveExceptionalCancellation',
+    'list_l1_exceptional_resumptions': 'projects.resolveExceptionalResumption',
     'create_project_substitution': 'projects.manageSubstitutions',
     'end_project_substitution': 'projects.manageSubstitutions',
     # Tasks and project coordination.

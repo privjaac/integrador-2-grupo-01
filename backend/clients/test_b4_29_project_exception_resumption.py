@@ -14,7 +14,7 @@ from api.routers.auth import hash_password
 from clients.models import (
     Client, Collaborator, Project, ProjectCancellation, ProjectCancellationEvent,
     OrganizationalSubstitution, ProjectCoordination, ProjectEvent, ProjectResumptionEvent,
-    Role, Task, WebCatalog,
+    ProjectResumption, Role, Task, WebCatalog,
 )
 
 test_api = FastAPI()
@@ -230,6 +230,82 @@ class ProjectExceptionAndResumptionApiTests(TransactionTestCase):
             },
         )
         self.assertEqual(response.status_code, 403, response.text)
+
+    def test_l1_exceptional_worklists_are_scoped_to_l1_competence(self):
+        pending = ProjectCancellation.objects.create(
+            project=self.project, opened_by=self.actors['L2'], cancelled_scope='Alcance',
+            reason='Solicitud excepcional', evidence='Solicitud',
+        )
+        ProjectCancellationEvent.objects.create(
+            cancellation=pending, event_type='evaluacion_tecnica', actor=self.actors['L3'],
+            reason='Riesgo excepcional', evidence='Informe',
+            data={'l1_intervention_required': True, 'l1_exception_reason': 'Circunstancia extraordinaria'},
+        )
+        ProjectCancellationEvent.objects.create(
+            cancellation=pending, event_type='escalamiento_l1', actor=self.actors['L2'],
+            reason='Fuera de competencia ordinaria', evidence='Evaluación comercial',
+            data={'source': 'evaluacion_comercial_l2', 'within_l2_competence': False},
+        )
+        response = self.api.get('/api/projects/exceptional-cancellations', headers=self.tokens['L1'])
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn(pending.id, [item['id'] for item in response.json()])
+        denied = self.api.get('/api/projects/exceptional-cancellations', headers=self.tokens['L2'])
+        self.assertEqual(denied.status_code, 403)
+
+        cancellation, _planned = self.cancellation(exceptional=True)
+        self.make_effective(cancellation)
+        resumption = ProjectResumption.objects.create(cancellation=cancellation, project=self.project)
+        ProjectResumptionEvent.objects.create(
+            resumption=resumption, event_type='evaluacion_tecnica', actor=self.actors['L3'],
+            reason='Viable', evidence='Revisión técnica', data={'feasibility': 'sí'},
+        )
+        ProjectResumptionEvent.objects.create(
+            resumption=resumption, event_type='decision_comercial_aprobada', actor=self.actors['L2'],
+            reason='Aprobada', evidence='Compromiso vigente', data={'conditions': 'Seguimiento'},
+        )
+        queue = self.api.get('/api/projects/exceptional-resumptions', headers=self.tokens['L1'])
+        self.assertEqual(queue.status_code, 200, queue.text)
+        queued = next(item for item in queue.json() if item['id'] == resumption.id)
+        self.assertEqual(queued['cancellation']['id'], cancellation.id)
+        self.assertIn('decision_l1_autorizada', [event['event_type'] for event in queued['cancellation']['events']])
+
+    def test_l1_escalation_cannot_be_added_after_l2_final_decision(self):
+        cancellation, _planned = self.cancellation()
+        evaluated = self.api.post(
+            f'/api/projects/{self.project.id}/cancellations/{cancellation.id}/technical-evaluation',
+            headers=self.tokens['L3'], json={
+                'affected_tasks_assessment': 'Sin impacto pendiente',
+                'obligations_assessment': 'Obligaciones revisadas', 'evidence': 'Informe técnico',
+                'l1_intervention_required': False,
+            },
+        )
+        self.assertEqual(evaluated.status_code, 200, evaluated.text)
+        commercial = self.api.post(
+            f'/api/projects/{self.project.id}/cancellations/{cancellation.id}/commercial-evaluation',
+            headers=self.tokens['L2'], json={
+                'within_l2_competence': True, 'commercial_consequences': 'Sin saldo pendiente',
+                'effectivity_conditions': 'Constancia registrada', 'evidence': 'Informe comercial',
+            },
+        )
+        self.assertEqual(commercial.status_code, 200, commercial.text)
+        decided = self.api.post(
+            f'/api/projects/{self.project.id}/cancellations/{cancellation.id}/decision',
+            headers=self.tokens['L2'], json={
+                'authorized': False, 'reason': 'Caso denegado', 'evidence': 'Resolución L2',
+            },
+        )
+        self.assertEqual(decided.status_code, 200, decided.text)
+        before = cancellation.events.count()
+        escalated = self.api.post(
+            f'/api/projects/{self.project.id}/cancellations/{cancellation.id}/escalations/l1',
+            headers=self.tokens['L2'], json={
+                'is_urgent': True, 'reason': 'Escalamiento posterior',
+                'source_origin': 'Proceso externo', 'source_reference': 'REF-POST-DECISION',
+                'received_at': timezone.now().isoformat(), 'evidence': 'Constancia de recepción',
+            },
+        )
+        self.assertEqual(escalated.status_code, 409, escalated.text)
+        self.assertEqual(cancellation.events.count(), before)
 
     def test_ordinary_resumption_records_a_separate_fact_and_preserves_tasks(self):
         cancellation, _planned = self.cancellation()

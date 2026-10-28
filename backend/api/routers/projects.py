@@ -115,6 +115,69 @@ def list_project_substitutions(project_id: int, user: dict = Depends(get_current
     )]
 
 
+@router.get('/substitutions/context')
+def list_l1_substitution_context(user: dict = Depends(get_current_user)):
+    actor = active_l1_actor(user)
+    coordinations = ProjectCoordination.objects.filter(
+        is_active=True, coordinator__role__level='L3',
+    ).select_related('project', 'coordinator').order_by('project_id', 'id')
+    return {
+        'coordinations': [{
+            'id': item.id, 'project_id': item.project_id,
+            'project_name': item.project.name, 'coordinator_id': item.coordinator_id,
+            'coordinator_name': f'{item.coordinator.first_name} {item.coordinator.last_name}',
+            'coordinator_active': item.coordinator.is_active,
+        } for item in coordinations],
+        'substitutes': [{
+            'id': item.id, 'name': f'{item.first_name} {item.last_name}',
+        } for item in Collaborator.objects.filter(
+            is_active=True, role__level='L3',
+        ).exclude(pk=actor.pk).order_by('first_name', 'last_name')],
+    }
+
+
+@router.get('/exceptional-cancellations')
+def list_l1_exceptional_cancellations(user: dict = Depends(get_current_user)):
+    active_l1_actor(user)
+    items = ProjectCancellation.objects.select_related('project', 'opened_by').prefetch_related(
+        'events__actor',
+    ).order_by('opened_at', 'id')
+    result = []
+    for item in items:
+        events = list(item.events.all())
+        if not l1_exception_is_accredited(item) or not cancellation_is_open(item):
+            continue
+        if any(event.event_type in {'decision_l1_autorizada', 'decision_l1_denegada'} for event in events):
+            continue
+        result.append({
+            'project_name': item.project.name, 'project_status': item.project.status,
+            **cancellation_response(item),
+        })
+    return result
+
+
+@router.get('/exceptional-resumptions')
+def list_l1_exceptional_resumptions(user: dict = Depends(get_current_user)):
+    active_l1_actor(user)
+    items = ProjectResumption.objects.select_related('project', 'cancellation').prefetch_related(
+        'events__actor', 'cancellation__events__actor',
+    ).order_by('created_at', 'id')
+    result = []
+    for item in items:
+        events = list(item.events.all())
+        l1_required = item.cancellation.events.filter(event_type='decision_l1_autorizada').exists()
+        has_l2_approval = any(event.event_type == 'decision_comercial_aprobada' for event in events)
+        already_decided = any(event.event_type in {'decision_l1_aprobada', 'decision_l1_denegada'} for event in events)
+        if not (l1_required and has_l2_approval and not already_decided):
+            continue
+        result.append({
+            **resumption_response(item), 'project_name': item.project.name,
+            'project_status': item.project.status,
+            'cancellation': cancellation_response(item.cancellation),
+        })
+    return result
+
+
 @router.post('/{project_id}/substitutions', status_code=status.HTTP_201_CREATED)
 def create_project_substitution(
     project_id: int, payload: OrganizationalSubstitutionCreate,
@@ -1689,7 +1752,10 @@ def record_project_cancellation_l1_escalation(
             if cancellation is None:
                 raise HTTPException(status_code=404, detail='Solicitud de cancelación no encontrada')
             latest = cancellation_latest_event(cancellation)
-            if latest is None or latest.event_type in {'denegada', 'efectiva'}:
+            if latest is None or latest.event_type in {
+                'autorizada', 'denegada', 'decision_l1_autorizada',
+                'decision_l1_denegada', 'efectiva',
+            }:
                 raise HTTPException(status_code=409, detail='El caso ya no admite nuevos escalamientos')
             duplicate = any(
                 item.data.get('source_reference') == payload.source_reference

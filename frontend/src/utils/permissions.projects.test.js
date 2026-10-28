@@ -50,3 +50,16 @@ test("B4-23 ordinary project cancellation is limited to its approved capabilitie
   assert.equal(can({ role: "L2", permissions: ["projects.view"] }, "projects", "requestProjectCancellation"), false);
   assert.equal(can({ role: "L3", permissions: ["projects.view"] }, "projects", "evaluateProjectCancellation"), false);
 });
+
+test("B4-28 and B4-29 expose substitution and exceptional work only to their approved levels", () => {
+  for (const role of ["L1", "L2", "L3", "L4", "L5"]) {
+    assert.equal(can(user(role), "projects", "manageSubstitutions"), ["L1", "L3"].includes(role));
+    assert.equal(can(user(role), "projects", "viewSubstitutions"), ["L1", "L2", "L3"].includes(role));
+    assert.equal(can(user(role), "projects", "resolveExceptionalCancellation"), role === "L1");
+    assert.equal(can(user(role), "projects", "resolveExceptionalResumption"), role === "L1");
+  }
+  assert.equal(canAccessRoute(user("L1"), "/proyectos/excepcionales"), true);
+  assert.equal(canAccessRoute(user("L2"), "/proyectos/excepcionales"), false);
+  assert.equal(canAccessRoute(user("L3"), "/proyectos/excepcionales"), false);
+  assert.equal(canAccessRoute(user("L1"), "/proyectos"), false);
+});
