@@ -29,6 +29,16 @@ const TIMER2_DURATION = 24 * 60 * 60 * 1000;
 const TOKEN_REFRESH_MS = 25 * 60 * 1000;
 const CHECK_INTERVAL = 60 * 1000;
 
+function safeUserSummary(data) {
+  return {
+    id: data.id, cupe: data.cupe, username: data.username,
+    first_name: data.first_name, last_name: data.last_name, email: data.email,
+    role: data.role, role_name: data.role_name, role_id: data.role_id,
+    role_active: data.role_active, is_active: data.is_active,
+    permissions: data.permissions,
+  };
+}
+
 export function AuthProvider({ children }) {
   const [token, setToken] = useState(null);
   const [user, setUser] = useState(null);
@@ -85,9 +95,15 @@ export function AuthProvider({ children }) {
         refresh_token: savedRefresh,
       });
       const { access_token, refresh_token: newRefresh } = res.data;
+      const profile = await axiosInstance.get("/api/users/me", {
+        headers: { Authorization: `Bearer ${access_token}` },
+      });
+      const currentUser = safeUserSummary(profile.data);
       setToken(access_token);
+      setUser(currentUser);
       window.__elisa_token__ = access_token;
       if (newRefresh) localStorage.setItem(KEY_REFRESH, newRefresh);
+      localStorage.setItem(KEY_USER, JSON.stringify(currentUser));
       return access_token;
     } catch {
       await logout({ localOnly: true });
@@ -189,6 +205,8 @@ export function AuthProvider({ children }) {
             role: userData.role,
             role_name: userData.role_name,
             is_active: userData.is_active,
+            role_id: userData.role_id,
+            permissions: userData.permissions,
           }),
         );
       } catch {
@@ -268,10 +286,15 @@ export function AuthProvider({ children }) {
           refresh_token: savedRefresh,
         });
         const { access_token, refresh_token: newRefresh } = res.data;
+        const profile = await axiosInstance.get("/api/users/me", {
+          headers: { Authorization: `Bearer ${access_token}` },
+        });
+        const currentUser = { ...parsedUser, ...safeUserSummary(profile.data) };
         setToken(access_token);
-        setUser(parsedUser);
+        setUser(currentUser);
         window.__elisa_token__ = access_token;
         if (newRefresh) localStorage.setItem(KEY_REFRESH, newRefresh);
+        localStorage.setItem(KEY_USER, JSON.stringify(currentUser));
         startCycles();
       } catch {
         logout({ localOnly: true });

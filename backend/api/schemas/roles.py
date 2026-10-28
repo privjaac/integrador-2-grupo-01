@@ -10,7 +10,7 @@
 # Hay schemas para editar y consultar los cinco niveles fijos.
 # ==============================================================================
 
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 
 from pydantic import BaseModel, Field
 from api.schemas.safe_input import SafeInputModel
@@ -23,10 +23,20 @@ from datetime import datetime
 # El nivel jerárquico no puede modificarse.
 # ------------------------------------------------------------------------------
 class RoleUpdate(SafeInputModel):
-    non_nullable_update_fields = frozenset({'name', 'description'})
+    non_nullable_update_fields = frozenset({'name', 'description', 'permissions', 'is_active'})
 
     name: Optional[Annotated[str, Field(min_length=1, max_length=50)]] = None
-    description: Optional[str] = None
+    description: Optional[Annotated[str, Field(max_length=1000)]] = None
+    permissions: Optional[list[str]] = None
+    is_active: Optional[bool] = None
+
+
+class RoleCreate(SafeInputModel):
+    name: str = Field(min_length=2, max_length=50)
+    level: Literal['L1', 'L2', 'L3', 'L4', 'L5']
+    description: str = Field(default='', max_length=1000)
+    permissions: list[str] = Field(default_factory=list)
+    is_active: bool = True
 
 
 # ------------------------------------------------------------------------------
@@ -43,6 +53,9 @@ class RoleResponse(BaseModel):
     can_create_users: bool
     min_role_create: Optional[int]
     description: str
+    is_active: bool
+    permissions: list[str]
+    permissions_editable: bool = True
     collaborators_count: int = 0   # Cuántos colaboradores tienen este rol
     created_at: datetime
 

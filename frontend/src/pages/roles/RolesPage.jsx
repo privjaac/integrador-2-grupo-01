@@ -1,705 +1,161 @@
-// ==============================================================================
-// ROLESPAGE.JSX v6 — Hexágonos por nivel como en el mockup HTML
-//
-// Colores por nivel (según mockup):
-//   L1 → rojo/danger   (el más alto, más visible)
-//   L2 → púrpura
-//   L3 → azul
-//   L4 → cyan
-//   L5 → gris
-//   L6+ → gris oscuro
-// ==============================================================================
-
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "../../hooks/useAuth";
 import { can } from "../../utils/permissions";
-import { getRoles, updateRole } from "../../api/roles";
-import Table from "../../components/ui/Table";
-import Badge from "../../components/ui/Badge";
-import Button from "../../components/ui/Button";
-import Input from "../../components/ui/Input";
-import Modal from "../../components/ui/Modal";
-import LoadingSpinner from "../../components/ui/LoadingSpinner";
+import { createRole, deleteRole, getPermissionCatalog, getRoles, updateRole } from "../../api/roles";
 
-const INITIAL_ROLE_FORM = {
-  name: "",
-  can_create_users: false,
-  min_role_create: "",
-  description: "",
+const panelStyle = {
+  padding: 20, borderRadius: 10, color: "#e8edf5", background: "#111427",
+  border: "1px solid rgba(63,229,229,.18)",
+};
+const fieldStyle = {
+  boxSizing: "border-box", width: "100%", padding: 10, color: "white",
+  background: "#090d19", border: "1px solid #48516a", borderRadius: 6,
 };
 
-// Colores de hexágono según nivel — igual que el mockup
-const HEX_COLORS = {
-  1: {
-    background: "linear-gradient(135deg, #ff3366, #ff6688)",
-    color: "#05060f",
-  },
-  2: {
-    background: "linear-gradient(135deg, #8235f2, #a066ff)",
-    color: "white",
-  },
-  3: {
-    background: "linear-gradient(135deg, #4540d9, #6b6fff)",
-    color: "white",
-  },
-  4: {
-    background: "linear-gradient(135deg, #3fe5e5, #44ddff)",
-    color: "#05060f",
-  },
-  5: {
-    background: "linear-gradient(135deg, #8892a4, #aabbcc)",
-    color: "#05060f",
-  },
-};
-
-// Componente hexágono reutilizable
-function RoleHex({ hierarchy, size = 48 }) {
-  const colors = HEX_COLORS[hierarchy] || {
-    background: "linear-gradient(135deg, #374151, #4b5563)",
-    color: "#c5cdd8",
-  };
-  return (
-    <div
-      style={{
-        width: `${size}px`,
-        height: `${size}px`,
-        background: colors.background,
-        clipPath:
-          "polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        fontFamily: "'Orbitron', monospace",
-        fontSize: size > 40 ? "12px" : "10px",
-        fontWeight: 700,
-        color: colors.color,
-        flexShrink: 0,
-      }}
-    >
-      L{hierarchy}
-    </div>
-  );
-}
+const EMPTY_FORM = { name: "", level: "L5", description: "", permissions: [], is_active: true };
 
 export default function RolesPage() {
   const { user } = useAuth();
-
   const [roles, setRoles] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
-  const [editingRole, setEditingRole] = useState(null);
-  const [formData, setFormData] = useState(INITIAL_ROLE_FORM);
-  const [errors, setErrors] = useState({});
-  const [isSaving, setIsSaving] = useState(false);
-  const [errorModal, setErrorModal] = useState({ isOpen: false, message: "" });
-  const [successModal, setSuccessModal] = useState({
-    isOpen: false,
-    message: "",
-  });
+  const [catalog, setCatalog] = useState([]);
+  const [editing, setEditing] = useState(null);
+  const [showEditor, setShowEditor] = useState(false);
+  const [form, setForm] = useState(EMPTY_FORM);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
 
-  const loadRoles = async () => {
-    setIsLoading(true);
+  const mayCreate = can(user, "roles", "create");
+  const mayEdit = can(user, "roles", "edit");
+  const mayDelete = can(user, "roles", "delete");
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
     try {
-      setRoles(await getRoles());
-    } catch (err) {
-      setErrorModal({
-        isOpen: true,
-        message: err.userMessage || "Error al cargar roles.",
-      });
+      const [roleRows, permissionRows] = await Promise.all([getRoles(), getPermissionCatalog()]);
+      setRoles(roleRows);
+      setCatalog(permissionRows);
+      setError("");
+    } catch (e) {
+      setError(e.userMessage || e.response?.data?.detail || "No se pudieron cargar los roles.");
     } finally {
-      setIsLoading(false);
+      setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    loadRoles();
   }, []);
 
-  const nextHierarchy =
-    roles.length > 0 ? Math.max(...roles.map((r) => r.hierarchy)) + 1 : 1;
+  useEffect(() => { refresh(); }, [refresh]);
 
-  const roleOptions = roles
-    .filter((r) => r.hierarchy > 1)
-    .map((r) => ({
-      value: String(r.hierarchy),
-      label: `L${r.hierarchy} — ${r.name}`,
-    }));
+  const levelPermissions = useMemo(
+    () => catalog.filter((item) => item.levels.includes(form.level)),
+    [catalog, form.level],
+  );
 
-  const handleEditRole = (role) => {
-    setEditingRole(role);
-    setFormData({
-      name: role.name,
-      can_create_users: role.can_create_users,
-      min_role_create: role.min_role_create ? String(role.min_role_create) : "",
-      description: role.description || "",
+  function startCreate() {
+    setShowEditor(true);
+    setEditing(null);
+    setForm({ ...EMPTY_FORM, level: user?.role || "L5" });
+    setNotice(""); setError("");
+  }
+
+  function startEdit(role) {
+    setShowEditor(true);
+    setEditing(role);
+    setForm({
+      name: role.name, level: role.level, description: role.description || "",
+      permissions: [...(role.permissions || [])], is_active: role.is_active,
     });
-    setErrors({});
-    setShowForm(true);
-  };
-  const handleCloseForm = () => {
-    setShowForm(false);
-    setEditingRole(null);
-    setFormData(INITIAL_ROLE_FORM);
-    setErrors({});
-  };
+    setNotice(""); setError("");
+  }
 
-  const handleChange = (e) => {
-    const { name, value, type, checked } = e.target;
-    setFormData((prev) => ({
-      ...prev,
-      [name]: type === "checkbox" ? checked : value,
+  function togglePermission(key) {
+    setForm((current) => ({
+      ...current,
+      permissions: current.permissions.includes(key)
+        ? current.permissions.filter((item) => item !== key)
+        : [...current.permissions, key],
     }));
-    if (errors[name]) setErrors((prev) => ({ ...prev, [name]: "" }));
-  };
+  }
 
-  const validateForm = () => {
-    const newErrors = {};
-    if (!formData.name.trim() || formData.name.trim().length < 2)
-      newErrors.name = "El nombre debe tener al menos 2 caracteres.";
-    if (formData.can_create_users && !formData.min_role_create)
-      newErrors.min_role_create = "Seleccioná desde qué nivel puede crear.";
-    if (!formData.description.trim())
-      newErrors.description = "La descripción es requerida.";
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!validateForm()) return;
-    setIsSaving(true);
+  async function saveRole(event) {
+    event.preventDefault(); setSaving(true); setError(""); setNotice("");
     try {
       const payload = {
-        name: formData.name,
-        hierarchy: editingRole ? editingRole.hierarchy : nextHierarchy,
-        can_create_users: formData.can_create_users,
-        min_role_create:
-          formData.can_create_users && formData.min_role_create
-            ? Number(formData.min_role_create)
-            : null,
-        description: formData.description,
+        name: form.name.trim(), description: form.description.trim(),
+        permissions: form.permissions, is_active: form.is_active,
       };
-      await updateRole(editingRole.id, payload);
-      setSuccessModal({
-        isOpen: true,
-        message: `Rol "${payload.name}" actualizado.`,
-      });
-      handleCloseForm();
-      loadRoles();
-    } catch (err) {
-      setErrorModal({
-        isOpen: true,
-        message:
-          err.userMessage || err.response?.data?.detail || "Error al guardar.",
-      });
-    } finally {
-      setIsSaving(false);
-    }
-  };
+      if (editing) await updateRole(editing.id, payload);
+      else await createRole({ ...payload, level: form.level });
+      setEditing(null); setShowEditor(false); setForm(EMPTY_FORM); setNotice("Rol guardado correctamente.");
+      await refresh();
+    } catch (e) {
+      setError(e.userMessage || e.response?.data?.detail || "No se pudo guardar el rol.");
+    } finally { setSaving(false); }
+  }
+
+  async function removeRole(role) {
+    if (!window.confirm(`¿Eliminar el rol “${role.name}”? Se conservará su registro de auditoría.`)) return;
+    setError("");
+    try { await deleteRole(role.id); setNotice("Rol eliminado; su historial se conserva."); await refresh(); }
+    catch (e) { setError(e.userMessage || e.response?.data?.detail || "No se pudo eliminar el rol."); }
+  }
+
+  async function toggleActive(role) {
+    const next = !role.is_active;
+    if (role.level === "L1" && !next) return;
+    setError("");
+    try { await updateRole(role.id, { is_active: next }); setNotice(next ? "Rol activado." : "Rol desactivado."); await refresh(); }
+    catch (e) { setError(e.userMessage || e.response?.data?.detail || "No se pudo cambiar el estado del rol."); }
+  }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
-      {/* Header */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "flex-start",
-          justifyContent: "space-between",
-          gap: "1rem",
-          flexWrap: "wrap",
-        }}
-      >
-        <div>
-          <h2
-            style={{
-              fontFamily: "'Rajdhani', sans-serif",
-              fontSize: "1.25rem",
-              fontWeight: 700,
-              color: "white",
-              letterSpacing: "0.05em",
-              margin: 0,
-            }}
-          >
-            Roles y jerarquías
-          </h2>
-          <p
-            style={{
-              color: "#8892a4",
-              fontSize: "14px",
-              margin: "0.25rem 0 0 0",
-            }}
-          >
-            Define los niveles de acceso del equipo ELOMUX
-          </p>
-        </div>
-      </div>
+    <main style={{ display: "grid", gap: 18 }}>
+      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+        <div><h1 style={{ color: "white", margin: 0 }}>Roles y permisos</h1>
+          <p style={{ color: "#9aa5bb" }}>Roles organizacionales asociados a los niveles funcionales fijos L1–L5.</p></div>
+        {mayCreate && <button type="button" onClick={startCreate}>Nuevo rol</button>}
+      </header>
+      {error && <p role="alert" style={{ color: "#ff718c" }}>{error}</p>}
+      {notice && <p role="status" style={{ color: "#3fe5e5" }}>{notice}</p>}
 
-      {/* Tabla + Panel */}
-      <div style={{ display: "flex", gap: "1.5rem", alignItems: "flex-start" }}>
-        {/* Tabla */}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          {isLoading ? (
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "center",
-                padding: "4rem 0",
-              }}
-            >
-              <LoadingSpinner size="md" />
-            </div>
-          ) : (
-            <Table aria-label="Roles">
-              <Table.Head>
-                <Table.Row>
-                  <Table.HeadCell>Nivel</Table.HeadCell>
-                  <Table.HeadCell>Rol</Table.HeadCell>
-                  <Table.HeadCell>Puede crear desde</Table.HeadCell>
-                  <Table.HeadCell>Descripción</Table.HeadCell>
-                  {can(user, "roles", "edit") && (
-                    <Table.HeadCell>Acciones</Table.HeadCell>
-                  )}
-                </Table.Row>
-              </Table.Head>
-              <Table.Body>
-                {roles.length === 0 ? (
-                  <Table.Empty colSpan={5} message="No hay roles registrados" />
-                ) : (
-                  roles.map((role, idx) => (
-                    <Table.Row key={role.id} index={idx}>
-                      {/* Hexágono del nivel */}
-                      <Table.Cell>
-                        <RoleHex hierarchy={role.hierarchy} size={48} />
-                      </Table.Cell>
-
-                      {/* Nombre */}
-                      <Table.Cell>
-                        <p
-                          style={{ fontWeight: 600, color: "white", margin: 0 }}
-                        >
-                          {role.name}
-                        </p>
-                      </Table.Cell>
-
-                      {/* Puede crear desde */}
-                      <Table.Cell>
-                        {role.can_create_users && role.min_role_create ? (
-                          <div>
-                            <Badge status="activo" dot={false}>
-                              Sí
-                            </Badge>
-                            <p
-                              style={{
-                                color: "#8892a4",
-                                fontSize: "11px",
-                                fontFamily: "'Share Tech Mono', monospace",
-                                margin: "0.3rem 0 0 0",
-                              }}
-                            >
-                              Desde L{role.min_role_create} en adelante
-                            </p>
-                          </div>
-                        ) : (
-                          <Badge status="inactivo" dot={false}>
-                            No
-                          </Badge>
-                        )}
-                      </Table.Cell>
-
-                      {/* Descripción */}
-                      <Table.Cell>
-                        <p
-                          style={{
-                            color: "#8892a4",
-                            fontSize: "13px",
-                            maxWidth: "280px",
-                            margin: 0,
-                            whiteSpace: "nowrap",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                          }}
-                          title={role.description}
-                        >
-                          {role.description}
-                        </p>
-                      </Table.Cell>
-
-                      {/* Acciones — L1 Superadmin no se puede editar */}
-                      {can(user, "roles", "edit") && (
-                        <Table.Cell>
-                          {role.hierarchy !== 1 ? (
-                            <button
-                              onClick={() => handleEditRole(role)}
-                              title="Editar rol"
-                              style={{
-                                padding: "0.375rem",
-                                borderRadius: "0.375rem",
-                                background: "transparent",
-                                border: "none",
-                                color: "#8892a4",
-                                cursor: "pointer",
-                              }}
-                              onMouseEnter={(e) =>
-                                (e.currentTarget.style.backgroundColor =
-                                  "rgba(63,229,229,0.1)")
-                              }
-                              onMouseLeave={(e) =>
-                                (e.currentTarget.style.backgroundColor =
-                                  "transparent")
-                              }
-                            >
-                              <svg
-                                width="16"
-                                height="16"
-                                fill="none"
-                                viewBox="0 0 24 24"
-                                stroke="currentColor"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth={1.5}
-                                  d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-                                />
-                              </svg>
-                            </button>
-                          ) : (
-                            <span
-                              style={{
-                                fontFamily: "'Share Tech Mono', monospace",
-                                fontSize: "10px",
-                                color: "#374151",
-                                letterSpacing: "0.05em",
-                              }}
-                            >
-                              protegido
-                            </span>
-                          )}
-                        </Table.Cell>
-                      )}
-                    </Table.Row>
-                  ))
-                )}
-              </Table.Body>
-            </Table>
-          )}
-        </div>
-
-        {/* Panel lateral */}
-        {showForm && can(user, "roles", "create") && (
-          <div
-            style={{
-              width: "340px",
-              flexShrink: 0,
-              borderRadius: "0.5rem",
-              backgroundColor: "#111427",
-              border: "1px solid rgba(63,229,229,0.2)",
-              overflow: "hidden",
-            }}
-          >
-            {/* Header del panel */}
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                padding: "1.25rem 1.5rem",
-                borderBottom: "1px solid rgba(63,229,229,0.1)",
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "0.875rem",
-                }}
-              >
-                {/* Hexágono preview del nuevo nivel */}
-                <RoleHex
-                  hierarchy={
-                    editingRole ? editingRole.hierarchy : nextHierarchy
-                  }
-                  size={36}
-                />
-                <h3
-                  style={{
-                    fontFamily: "'Rajdhani', sans-serif",
-                    color: "#3fe5e5",
-                    fontSize: "16px",
-                    fontWeight: 600,
-                    margin: 0,
-                  }}
-                >
-                  {editingRole ? `Editar: ${editingRole.name}` : "Nuevo rol"}
-                </h3>
-              </div>
-              <button
-                onClick={handleCloseForm}
-                style={{
-                  padding: "0.375rem",
-                  borderRadius: "0.375rem",
-                  background: "transparent",
-                  border: "none",
-                  color: "#8892a4",
-                  cursor: "pointer",
-                }}
-                onMouseEnter={(e) =>
-                  (e.currentTarget.style.backgroundColor =
-                    "rgba(255,255,255,0.05)")
-                }
-                onMouseLeave={(e) =>
-                  (e.currentTarget.style.backgroundColor = "transparent")
-                }
-              >
-                <svg
-                  width="16"
-                  height="16"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M6 18L18 6M6 6l12 12"
-                  />
-                </svg>
-              </button>
-            </div>
-
-            {/* Formulario */}
-            <form
-              onSubmit={handleSubmit}
-              noValidate
-              style={{
-                padding: "1.5rem",
-                display: "flex",
-                flexDirection: "column",
-                gap: "1.25rem",
-              }}
-            >
-              <Input
-                label="Nombre del rol"
-                name="name"
-                value={formData.name}
-                onChange={handleChange}
-                error={errors.name}
-                placeholder="Ej: Tech Lead"
-                required
-              />
-
-              {/* Nivel — solo lectura con hexágono */}
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "0.5rem",
-                }}
-              >
-                <label
-                  style={{
-                    fontFamily: "'Rajdhani', sans-serif",
-                    fontSize: "14px",
-                    fontWeight: 500,
-                    color: "#c5cdd8",
-                  }}
-                >
-                  Nivel jerárquico
-                </label>
-                <div
-                  style={{
-                    padding: "0.875rem 1rem",
-                    borderRadius: "0.375rem",
-                    backgroundColor: "rgba(63,229,229,0.05)",
-                    border: "1px solid rgba(63,229,229,0.2)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
-                  <RoleHex
-                    hierarchy={
-                      editingRole ? editingRole.hierarchy : nextHierarchy
-                    }
-                    size={52}
-                  />
-                </div>
-                <p
-                  style={{
-                    fontFamily: "'Rajdhani', sans-serif",
-                    fontSize: "12px",
-                    color: "#8892a4",
-                    margin: 0,
-                  }}
-                >
-                  {editingRole
-                    ? "El nivel jerárquico no puede modificarse una vez creado."
-                    : `Se asigna automáticamente — el nivel máximo actual es L${nextHierarchy - 1}.`}
-                </p>
-              </div>
-
-              {/* Puede crear usuarios */}
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "0.5rem",
-                }}
-              >
-                <label
-                  style={{
-                    fontFamily: "'Rajdhani', sans-serif",
-                    fontSize: "14px",
-                    fontWeight: 500,
-                    color: "#c5cdd8",
-                  }}
-                >
-                  Permisos de creación (fijos para cada nivel)
-                </label>
-                <label
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "0.875rem",
-                    padding: "0.875rem 1rem",
-                    borderRadius: "0.375rem",
-                    cursor: "pointer",
-                    backgroundColor: formData.can_create_users
-                      ? "rgba(63,229,229,0.08)"
-                      : "#1a1d30",
-                    border: `1px solid ${formData.can_create_users ? "rgba(63,229,229,0.3)" : "rgba(63,229,229,0.1)"}`,
-                    transition: "all 0.2s",
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    name="can_create_users"
-                    checked={formData.can_create_users}
-                    disabled
-                    style={{
-                      accentColor: "#3fe5e5",
-                      width: "16px",
-                      height: "16px",
-                      flexShrink: 0,
-                    }}
-                  />
-                  <span
-                    style={{
-                      fontSize: "14px",
-                      color: "white",
-                      fontFamily: "'Rajdhani', sans-serif",
-                      fontWeight: 500,
-                    }}
-                  >
-                    Puede crear usuarios
-                  </span>
-                </label>
-              </div>
-
-              {formData.can_create_users && (
-                <Input
-                  type="select"
-                  label="Puede crear usuarios desde el nivel"
-                  name="min_role_create"
-                  value={formData.min_role_create}
-                  onChange={handleChange}
-                  disabled
-                  error={errors.min_role_create}
-                  placeholder="Seleccioná el nivel inicial..."
-                  options={roleOptions}
-                  hint="Podrá crear usuarios de ese nivel y los inferiores. L1 solo puede ser creado por otro Superadmin."
-                  required
-                />
-              )}
-
-              <Input
-                type="textarea"
-                label="Descripción del rol"
-                name="description"
-                value={formData.description}
-                onChange={handleChange}
-                error={errors.description}
-                placeholder="Qué responsabilidades tiene este rol..."
-                rows={3}
-                required
-              />
-
-              <div
-                style={{
-                  display: "flex",
-                  gap: "0.75rem",
-                  paddingTop: "0.25rem",
-                }}
-              >
-                <Button
-                  variant="secondary"
-                  onClick={handleCloseForm}
-                  disabled={isSaving}
-                  style={{ flex: 1 }}
-                >
-                  Cancelar
-                </Button>
-                <Button
-                  type="submit"
-                  variant="primary"
-                  isLoading={isSaving}
-                  style={{ flex: 1 }}
-                >
-                  {editingRole ? "Guardar cambios" : `Crear L${nextHierarchy}`}
-                </Button>
-              </div>
-            </form>
-          </div>
+      <section style={panelStyle} aria-label="Roles existentes">
+        {loading ? <p>Cargando…</p> : roles.length === 0 ? <p>No existen roles registrados.</p> : (
+          <div style={{ overflowX: "auto" }}><table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead><tr>{["Nombre", "Nivel", "Estado", "Permisos", "Colaboradores", "Acciones"].map((h) => <th key={h} style={{ textAlign: "left", padding: 10 }}>{h}</th>)}</tr></thead>
+            <tbody>{roles.map((role) => <tr key={role.id}>
+              <td style={{ padding: 10 }}>{role.name}<small style={{ display: "block", color: "#9aa5bb" }}>{role.description}</small></td>
+              <td style={{ padding: 10 }}>{role.level}</td>
+              <td style={{ padding: 10 }}>{role.is_active ? "Activo" : "Inactivo"}</td>
+              <td style={{ padding: 10, minWidth: 220 }}>{role.permissions?.length ? role.permissions.join(", ") : "Sin permisos"}</td>
+              <td style={{ padding: 10 }}>{role.collaborators_count}</td>
+              <td style={{ padding: 10, display: "flex", gap: 8 }}>
+                {mayEdit && <button type="button" onClick={() => startEdit(role)}>Editar</button>}
+                {mayEdit && role.level !== "L1" && <button type="button" onClick={() => toggleActive(role)}>{role.is_active ? "Desactivar" : "Activar"}</button>}
+                {mayDelete && role.level !== "L1" && role.collaborators_count === 0 && <button type="button" onClick={() => removeRole(role)}>Eliminar</button>}
+              </td>
+            </tr>)}</tbody>
+          </table></div>
         )}
-      </div>
+      </section>
 
-      {/* Modales */}
-      <Modal
-        isOpen={errorModal.isOpen}
-        onClose={() => setErrorModal({ isOpen: false, message: "" })}
-        variant="error"
-        size="sm"
-      >
-        <Modal.Header
-          title="Error"
-          onClose={() => setErrorModal({ isOpen: false, message: "" })}
-        />
-        <Modal.Body>
-          <p style={{ textAlign: "center" }}>{errorModal.message}</p>
-        </Modal.Body>
-        <Modal.Footer>
-          <Button
-            variant="secondary"
-            onClick={() => setErrorModal({ isOpen: false, message: "" })}
-          >
-            Cerrar
-          </Button>
-        </Modal.Footer>
-      </Modal>
-
-      <Modal
-        isOpen={successModal.isOpen}
-        onClose={() => setSuccessModal({ isOpen: false, message: "" })}
-        variant="success"
-        size="sm"
-      >
-        <Modal.Header
-          title="¡Listo!"
-          onClose={() => setSuccessModal({ isOpen: false, message: "" })}
-        />
-        <Modal.Body>
-          <p style={{ textAlign: "center" }}>{successModal.message}</p>
-        </Modal.Body>
-        <Modal.Footer>
-          <Button
-            variant="primary"
-            onClick={() => setSuccessModal({ isOpen: false, message: "" })}
-          >
-            Aceptar
-          </Button>
-        </Modal.Footer>
-      </Modal>
-    </div>
+      {showEditor && (editing ? mayEdit : mayCreate) && (
+        <form onSubmit={saveRole} style={{ ...panelStyle, display: "grid", gap: 14 }}>
+          <h2 style={{ margin: 0 }}>{editing ? `Editar ${editing.name}` : "Crear rol organizacional"}</h2>
+          <label>Nombre<input style={fieldStyle} required minLength={2} maxLength={50} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
+          <label>Nivel funcional<select style={fieldStyle} value={form.level} disabled={Boolean(editing)} onChange={(e) => setForm({ ...form, level: e.target.value, permissions: [] })}>{["L1", "L2", "L3", "L4", "L5"].map((level) => <option key={level}>{level}</option>)}</select></label>
+          <label>Descripción<textarea style={fieldStyle} maxLength={1000} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
+          {editing && editing.level !== "L1" && <label><input type="checkbox" checked={form.is_active} onChange={(e) => setForm({ ...form, is_active: e.target.checked })} /> Rol activo</label>}
+          <fieldset disabled={Boolean(editing && !editing.permissions_editable)} style={{ border: "1px solid #48516a", borderRadius: 8, display: "grid", gap: 8 }}>
+            <legend>Permisos disponibles para {form.level}</legend>
+            {editing && !editing.permissions_editable && <p>Los permisos del rol L1 existente se conservan; aquí solo se editan nombre y descripción.</p>}
+            {levelPermissions.length === 0 ? <p>Sin permisos disponibles para el nivel seleccionado.</p> : levelPermissions.map((item) => (
+              <label key={item.key}><input type="checkbox" checked={form.permissions.includes(item.key)} onChange={() => togglePermission(item.key)} /> {item.key}</label>
+            ))}
+          </fieldset>
+          <p style={{ color: "#9aa5bb" }}>Los permisos solo reducen las capacidades del nivel y se validan también en el servidor.</p>
+          <div style={{ display: "flex", gap: 8 }}><button disabled={saving}>{saving ? "Guardando…" : "Guardar"}</button><button type="button" onClick={() => { setEditing(null); setShowEditor(false); setForm(EMPTY_FORM); }}>Cancelar</button></div>
+        </form>
+      )}
+    </main>
   );
 }

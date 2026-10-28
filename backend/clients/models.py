@@ -17,6 +17,7 @@
 # ==============================================================================
 
 from django.db import models
+from django.db.models.functions import Lower
 import uuid
 
 
@@ -48,7 +49,11 @@ class Role(models.Model):
     description = models.TextField(blank=True, default='')
 
     # Nivel del rol (L1 a L5)
-    level = models.CharField(max_length=2, choices=LEVEL_CHOICES, unique=True)
+    level = models.CharField(max_length=2, choices=LEVEL_CHOICES)
+    is_active = models.BooleanField(default=True)
+    # NULL preserves the pre-existing five-level policy; an explicit list is
+    # the selected subset for an organizational role.
+    permissions = models.JSONField(blank=True, null=True, default=None)
 
     # Fecha de creación — automática
     created_at = models.DateTimeField(auto_now_add=True)
@@ -56,9 +61,31 @@ class Role(models.Model):
     class Meta:
         db_table = 'roles'
         ordering = ['level']
+        constraints = [
+            models.UniqueConstraint(Lower('name'), name='role_name_case_insensitive_unique'),
+        ]
 
     def __str__(self):
         return f"{self.level} - {self.name}"
+
+
+class RoleHistory(models.Model):
+    ACTION_CHOICES = [
+        ('created', 'Creación'), ('updated', 'Modificación'),
+        ('deactivated', 'Desactivación'), ('deleted', 'Eliminación'),
+    ]
+    role = models.ForeignKey(Role, on_delete=models.SET_NULL, null=True, blank=True, related_name='history')
+    role_id_snapshot = models.IntegerField()
+    role_name_snapshot = models.CharField(max_length=50)
+    actor = models.ForeignKey('clients.Collaborator', on_delete=models.PROTECT, related_name='role_changes')
+    action = models.CharField(max_length=16, choices=ACTION_CHOICES)
+    before_data = models.JSONField(null=True, blank=True)
+    after_data = models.JSONField(null=True, blank=True)
+    recorded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'role_history'
+        ordering = ['-recorded_at', '-id']
 
 
 # ------------------------------------------------------------------------------

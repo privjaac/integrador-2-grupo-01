@@ -32,7 +32,7 @@ import os
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'core.settings')
 django.setup()
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -40,6 +40,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer
 from django.conf import settings
 from api.safe_response import SafeJSONResponse
+from api.dependencies import require_route_permission
 
 # ------------------------------------------------------------------------------
 # IMPORTAR TODOS LOS ROUTERS
@@ -141,61 +142,71 @@ app.include_router(
 app.include_router(
     clients.router,
     prefix='/api/clients',
-    tags=['Clientes']
+    tags=['Clientes'],
+    dependencies=[Depends(require_route_permission)],
 )
 
 app.include_router(
     users.router,
     prefix='/api/users',
-    tags=['Colaboradores']
+    tags=['Colaboradores'],
+    dependencies=[Depends(require_route_permission)],
 )
 
 app.include_router(
     roles.router,
     prefix='/api/roles',
-    tags=['Roles']
+    tags=['Roles'],
+    dependencies=[Depends(require_route_permission)],
 )
 
 app.include_router(
     web_types.router,
     prefix='/api/web-types',
-    tags=['Tipos de Web']
+    tags=['Tipos de Web'],
+    dependencies=[Depends(require_route_permission)],
 )
 
 app.include_router(
     web_features.router,
     prefix='/api/web-features',
-    tags=['Funcionalidades']
+    tags=['Funcionalidades'],
+    dependencies=[Depends(require_route_permission)],
 )
 
 app.include_router(
     client_features.router,
     prefix='/api/client-features',
-    tags=['Funcionalidades de Clientes']
+    tags=['Funcionalidades de Clientes'],
+    dependencies=[Depends(require_route_permission)],
 )
 
 app.include_router(
     cupe_log.router,
     prefix='/api/cupe-log',
-    tags=['Historial CUPE']
+    tags=['Historial CUPE'],
+    dependencies=[Depends(require_route_permission)],
 )
 
 app.include_router(
     projects.router,
     prefix='/api/projects',
-    tags=['Proyectos']
+    tags=['Proyectos'],
+    dependencies=[Depends(require_route_permission)],
 )
 
 app.include_router(
     tasks.router,
     prefix='/api/tasks',
     tags=['Tareas'],
+    dependencies=[Depends(require_route_permission)],
 )
 
 app.include_router(
     dashboard.router,
     prefix='/api/dashboard',
     tags=['Dashboard'],
+    dependencies=[Depends(require_route_permission)],
 )
 
 

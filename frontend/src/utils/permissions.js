@@ -48,35 +48,35 @@ export const ROLES = {
     level: 1,
     label: "Superadmin",
     // Superadmin accede a todas las rutas del sistema
-    routes: ["/dashboard", "/clientes", "/usuarios", "/roles", "/catalogo"],
+    routes: ["/dashboard", "/clientes", "/usuarios", "/roles", "/catalogo", "/proyectos", "/tareas"],
   },
 
   L2: {
     level: 2,
     label: "Scrum Master",
     // Scrum Master ve todo excepto gestión de roles
-    routes: ["/dashboard", "/clientes", "/proyectos", "/usuarios", "/catalogo", "/tareas"],
+    routes: ["/dashboard", "/clientes", "/proyectos", "/usuarios", "/roles", "/catalogo", "/tareas"],
   },
 
   L3: {
     level: 3,
     label: "Tech Lead",
     // Tech Lead gestiona clientes, usuarios y catálogo
-    routes: ["/dashboard", "/clientes", "/proyectos", "/usuarios", "/catalogo", "/tareas"],
+    routes: ["/dashboard", "/clientes", "/proyectos", "/usuarios", "/roles", "/catalogo", "/tareas"],
   },
 
   L4: {
     level: 4,
     label: "Líder",
     // Líder gestiona clientes y usuarios
-    routes: ["/usuarios", "/tareas"],
+    routes: ["/usuarios", "/roles", "/tareas"],
   },
 
   L5: {
     level: 5,
     label: "Developer",
     // Developer solo accede a clientes
-    routes: ["/tareas"],
+    routes: ["/roles", "/tareas"],
   },
 };
 
@@ -169,8 +169,8 @@ const PERMISSIONS = {
 
   // ── MÓDULO ROLES ─────────────────────────────────────────────────────────
   roles: {
-    // Solo L1 y L2 pueden ver la sección de roles
-    view: ["L1", "L2"],
+    // PB-ROL-001/003: cualquier colaborador autenticado puede consultar roles.
+    view: ["L1", "L2", "L3", "L4", "L5"],
     // Solo L1 puede crear roles
     create: ["L1"],
     // Solo L1 puede editar roles
@@ -251,6 +251,9 @@ export function can(user, module, action) {
   if (!allowedRoles) return false;
 
   // Verifica si el rol del usuario está en la lista de roles permitidos
+  if (Array.isArray(user.permissions)) {
+    return user.permissions.includes(`${module}.${action}`);
+  }
   return allowedRoles.includes(user.role);
 }
 
@@ -294,7 +297,31 @@ export function canAccessRoute(user, route) {
   // Si no hay usuario, no hay acceso
   if (!user || !user.role) return false;
 
-  // Busca el rol en la definición de roles
+  const routePermission = {
+    "/dashboard": ["dashboard", "view"],
+    "/clientes": ["clients", "view"],
+    "/proyectos": ["projects", "view"],
+    "/tareas": ["tasks", "view"],
+    "/usuarios": ["users", "view"],
+    "/roles": ["roles", "view"],
+    "/catalogo": ["catalog", "view"],
+  };
+  const matchingPath = Object.keys(routePermission).find(
+    (path) => route === path || route.startsWith(`${path}/`),
+  );
+  if (matchingPath) {
+    const [module, action] = routePermission[matchingPath];
+    // L2 enters the task workspace for coordination operations even though
+    // the task read/list capability itself remains limited to L3–L5.
+    if (matchingPath === "/tareas") {
+      return can(user, "tasks", "view")
+        || can(user, "tasks", "designate")
+        || can(user, "tasks", "reviewCancellationCommercial");
+    }
+    return can(user, module, action);
+  }
+
+  // Busca el rol en la definición de roles para clientes antiguos/sin permisos serializados.
   const roleDef = ROLES[user.role];
 
   // Si el rol no existe en la definición, no hay acceso
@@ -330,7 +357,7 @@ export function getAccessibleRoutes(user) {
 
   if (!roleDef) return [];
 
-  return roleDef.routes;
+  return roleDef.routes.filter((route) => canAccessRoute(user, route));
 }
 
 // ------------------------------------------------------------------------------
@@ -405,10 +432,16 @@ export function canManageUser(currentUser, targetRole) {
 //           Ej: [{ value: 'L3', label: 'Tech Lead' }, ...]
 // ------------------------------------------------------------------------------
 
-export function getCreatableRoles(user) {
+export function getCreatableRoles(user, availableRoles = null) {
   if (!user || !user.role) return [];
 
   const currentLevel = getRoleLevel(user);
+
+  if (Array.isArray(availableRoles)) {
+    return availableRoles
+      .filter((role) => role.is_active !== false && (Number(role.hierarchy) > currentLevel || (user.role === "L1" && Number(role.hierarchy) === 1)))
+      .map((role) => ({ value: String(role.id), label: `L${role.hierarchy} — ${role.name}` }));
+  }
 
   // La excepción L1→L1 aplica únicamente a la creación; en los demás casos
   // se conserva la matriz de HU-24 por nivel funcional.

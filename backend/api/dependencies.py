@@ -9,13 +9,14 @@
 # de forma estándar en todos los endpoints.
 # ==============================================================================
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from django.db import connections
 from api.routers.auth import decode_token
 from clients.models import Collaborator
 from clients.models import CollaboratorSession
 from django.utils import timezone
+from api.role_permissions import effective_permissions, permission_for_route
 
 # HTTPBearer lee automáticamente el header Authorization: Bearer <token>
 # y extrae el token — no hay que hacerlo manualmente
@@ -54,6 +55,7 @@ def get_current_user(
             id=collaborator_id,
             username=payload.get('sub'),
             is_active=True,
+            role__is_active=True,
         ).first()
     finally:
         connections.close_all()
@@ -67,4 +69,27 @@ def get_current_user(
         **payload,
         'collaborator_id': collaborator.id,
         'role': collaborator.role.level if collaborator.role else None,
+        'role_id': collaborator.role_id,
+        'permissions': effective_permissions(collaborator.role),
     }
+
+
+def require_route_permission(request: Request, user: dict = Depends(get_current_user)) -> None:
+    """Apply the configured role subset before each protected API operation."""
+    route_name = getattr(request.scope.get('route'), 'name', None)
+    # A collaborator may always retrieve their own identity after login.
+    if route_name in {'get_me', 'resolve_client_request'}:
+        return
+    if route_name == 'get_task_context':
+        if any(permission.startswith('tasks.') for permission in user.get('permissions', [])):
+            return
+        raise HTTPException(status_code=403, detail='El rol organizacional no tiene este permiso')
+    permission = permission_for_route(route_name)
+    if permission is None:
+        raise HTTPException(status_code=403, detail='El rol organizacional no tiene este permiso')
+    require_user_permission(user, *permission.rsplit('.', 1))
+
+
+def require_user_permission(user: dict, module: str, action: str) -> None:
+    if f'{module}.{action}' not in user.get('permissions', []):
+        raise HTTPException(status_code=403, detail='El rol organizacional no tiene este permiso')

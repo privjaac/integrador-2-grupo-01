@@ -27,6 +27,7 @@ from django.db.models import Q
 # antes de ejecutar cada endpoint. Si el token es inválido → 401.
 from api.dependencies import get_current_user
 from api.routers.auth import hash_password
+from api.role_permissions import effective_permissions
 from api.schemas.users import CollaboratorCreate, CollaboratorUpdate, CollaboratorResponse, CollaboratorList
 from clients.models import Collaborator, Role
 
@@ -105,6 +106,8 @@ def collaborator_to_response(collaborator: Collaborator) -> dict:
         'role_name': collaborator.role.name if collaborator.role else None,
         'role_level': collaborator.role.level if collaborator.role else None,
         'role': collaborator.role.level if collaborator.role else None,
+        'role_active': collaborator.role.is_active if collaborator.role else False,
+        'permissions': effective_permissions(collaborator.role),
         'area': collaborator.area,
         'work_area': collaborator.area,
         'is_active': collaborator.is_active,
@@ -249,21 +252,22 @@ def create_collaborator(
             detail=f'El documento {data.document_number} ya está registrado'
         )
 
-    # Verificar que el rol exista
-    try:
-        role = Role.objects.get(id=data.role_id)
-    except Role.DoesNotExist:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f'Rol con id {data.role_id} no encontrado'
-        )
-    require_lower_role(user, role, allow_l1_creation=True)
-
     # Crear el colaborador con la contraseña encriptada
     # hash_password convierte la contraseña en texto plano a bcrypt
     # Nunca guardamos la contraseña original — solo el hash
     try:
         with transaction.atomic():
+            # Serialize account creation with role deactivation/deletion so a
+            # role cannot become inactive between validation and assignment.
+            role = Role.objects.select_for_update().filter(
+                id=data.role_id, is_active=True,
+            ).first()
+            if role is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f'Rol con id {data.role_id} no encontrado'
+                )
+            require_lower_role(user, role, allow_l1_creation=True)
             collaborator = Collaborator.objects.create(
                 first_name=data.first_name,
                 last_name=data.last_name,
@@ -352,7 +356,7 @@ def update_collaborator(
         # Si viene un nuevo rol, buscar el objeto Role
         elif field == 'role_id':
             try:
-                role = Role.objects.get(id=value)
+                role = Role.objects.get(id=value, is_active=True)
             except Role.DoesNotExist:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,

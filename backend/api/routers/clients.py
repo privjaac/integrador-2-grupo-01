@@ -30,7 +30,7 @@ from django.core.validators import validate_email
 from datetime import date, timedelta
 from dateutil.relativedelta import relativedelta
 
-from api.dependencies import get_current_user
+from api.dependencies import get_current_user, require_user_permission
 from api.schemas.clients import (ClientCreate, ClientUpdate, ClientResponse, ClientList, ContractedServiceWrite,
                                  CustomerPaymentWrite, PaymentAdjustmentWrite)
 from clients.models import (
@@ -547,6 +547,9 @@ def resolve_client_request(request_id: int, payload: dict = Body(...), user: dic
             client = Client.objects.select_for_update().get(pk=item.client_id)
         except ClientChangeRequest.DoesNotExist:
             raise HTTPException(status_code=404, detail='Solicitud no encontrada')
+        require_user_permission(
+            user, 'clients', 'resolveDeactivation' if item.request_type == 'baja' else 'resolveChange',
+        )
         allowed = role in ('L1', 'L2') if item.request_type == 'modificacion' else role == 'L1'
         if not allowed:
             raise HTTPException(status_code=403, detail='No tienes competencia para resolver esta solicitud')

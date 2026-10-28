@@ -12,11 +12,13 @@ import {
 let mockUsers = normalizeList(usersMock, "collaborators");
 
 async function toBackendPayload(payload) {
-  const { role, work_area, ...fields } = payload;
+  const { role, role_id, work_area, ...fields } = payload;
   if (work_area !== undefined) fields.area = work_area;
-  if (role !== undefined) {
+  if (role_id !== undefined) {
+    fields.role_id = Number(role_id);
+  } else if (role !== undefined) {
     const roles = await getRoles();
-    const match = roles.find((item) => item.level === role);
+    const match = roles.find((item) => item.level === role || String(item.id) === String(role));
     if (!match) throw createApiError("El rol seleccionado no existe en el servidor.");
     fields.role_id = match.id;
   }

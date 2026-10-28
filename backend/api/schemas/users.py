@@ -103,6 +103,8 @@ class CollaboratorResponse(BaseModel):
     role_name: Optional[str]    # Nombre del rol, ej: 'Developer'
     role_level: Optional[str]   # Nivel del rol, ej: 'L5'
     role: Optional[str] = None
+    role_active: bool = True
+    permissions: list[str] = Field(default_factory=list)
     area: Optional[str]
     work_area: Optional[str] = None
     is_active: bool

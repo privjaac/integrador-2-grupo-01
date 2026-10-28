@@ -11,6 +11,7 @@ import {
   updateCollaborator,
   getCollaboratorById,
 } from "../../api/users";
+import { getRoles } from "../../api/roles";
 import Button from "../../components/ui/Button";
 import Input from "../../components/ui/Input";
 import { useToast } from "../../components/ui/Toast";
@@ -98,8 +99,16 @@ export default function UserForm() {
   const { showToast } = useToast();
   const isEditMode = Boolean(id);
   const action = isEditMode ? "edit" : "create";
-  const creatableRoles = getCreatableRoles(user);
+  const [availableRoles, setAvailableRoles] = useState([]);
+  const creatableRoles = getCreatableRoles(user, availableRoles);
   const [targetCollaborator, setTargetCollaborator] = useState(null);
+
+  useEffect(() => {
+    if (isEditMode) return;
+    getRoles().then(setAvailableRoles).catch((error) => showToast(
+      "error", "ERROR AL CARGAR ROLES", error.userMessage || "No se pudieron cargar los roles activos.",
+    ));
+  }, [isEditMode, showToast]);
 
   useEffect(() => {
     if (!can(user, "users", action)) {

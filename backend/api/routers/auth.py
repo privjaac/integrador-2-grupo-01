@@ -66,6 +66,8 @@ def login(data: LoginRequest):
         raise HTTPException(status_code=401, detail='Usuario o contraseña incorrectos')
     if not collaborator.is_active:
         raise HTTPException(status_code=403, detail='Tu cuenta está inactiva. Contacta al administrador.')
+    if collaborator.role is None or not collaborator.role.is_active:
+        raise HTTPException(status_code=403, detail='El rol organizacional de tu cuenta está inactivo.')
     session_id, jti = uuid.uuid4(), secrets.token_urlsafe(32)
     access, refresh, expiry = _token_pair(collaborator, session_id, jti)
     CollaboratorSession.objects.create(id=session_id, collaborator=collaborator, refresh_jti=jti, expires_at=expiry)
@@ -87,7 +89,9 @@ def refresh_token(data: RefreshRequest):
         if (not session or session.revoked_at or session.expires_at <= timezone.now()
                 or session.refresh_jti != payload['jti'] or session.collaborator_id != collaborator_id):
             raise HTTPException(status_code=401, detail='Sesión inválida o revocada')
-        collaborator = Collaborator.objects.select_related('role').filter(id=collaborator_id, is_active=True).first()
+        collaborator = Collaborator.objects.select_related('role').filter(
+            id=collaborator_id, is_active=True, role__is_active=True,
+        ).first()
         if not collaborator:
             raise HTTPException(status_code=401, detail='Usuario no encontrado o inactivo')
         new_jti = secrets.token_urlsafe(32)

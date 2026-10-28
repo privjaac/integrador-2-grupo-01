@@ -42,10 +42,10 @@ class Command(BaseCommand):
         with transaction.atomic():
             for level, name, description in DEFAULT_ROLES:
                 Role.objects.get_or_create(
-                    level=level,
+                    level=level, permissions__isnull=True,
                     defaults={'name': name, 'description': description},
                 )
-            superadmin_role = Role.objects.get(level='L1')
+            superadmin_role = Role.objects.get(level='L1', permissions__isnull=True)
             admin = Collaborator.objects.create(
                 username=options['username'],
                 email=options['email'],
