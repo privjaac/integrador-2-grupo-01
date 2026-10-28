@@ -40,3 +40,13 @@ test("B4-10 task classification, technical evaluation and delivery authorization
     assert.equal(can(user(role), "projects", "authorizeProjectDelivery"), role === "L2");
   }
 });
+
+test("B4-23 ordinary project cancellation is limited to its approved capabilities", () => {
+  for (const role of ["L1", "L2", "L3", "L4", "L5"]) {
+    assert.equal(can(user(role), "projects", "requestProjectCancellation"), role === "L2");
+    assert.equal(can(user(role), "projects", "evaluateProjectCancellation"), role === "L3");
+    assert.equal(can(user(role), "projects", "resolveProjectCancellation"), role === "L2");
+  }
+  assert.equal(can({ role: "L2", permissions: ["projects.view"] }, "projects", "requestProjectCancellation"), false);
+  assert.equal(can({ role: "L3", permissions: ["projects.view"] }, "projects", "evaluateProjectCancellation"), false);
+});

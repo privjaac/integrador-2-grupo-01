@@ -653,6 +653,77 @@ class ProjectEvent(models.Model):
         ordering = ['occurred_at', 'id']
 
 
+class ProjectCancellation(models.Model):
+    """A full-project cancellation workflow, separate from ordinary project status."""
+
+    project = models.ForeignKey(Project, on_delete=models.PROTECT, related_name='cancellations')
+    opened_by = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='project_cancellations_opened',
+    )
+    opened_at = models.DateTimeField(auto_now_add=True)
+    cancelled_scope = models.TextField()
+    reason = models.TextField()
+    evidence = models.TextField()
+
+    class Meta:
+        db_table = 'project_cancellations'
+        ordering = ['opened_at', 'id']
+
+
+class ProjectCancellationEvent(models.Model):
+    EVENT_CHOICES = [
+        ('solicitada', 'Cancelación solicitada'),
+        ('evaluacion_tecnica', 'Evaluación técnica'),
+        ('autorizada', 'Cancelación autorizada'),
+        ('denegada', 'Cancelación denegada'),
+        ('efectiva', 'Cancelación efectiva'),
+    ]
+
+    cancellation = models.ForeignKey(
+        ProjectCancellation, on_delete=models.PROTECT, related_name='events',
+    )
+    event_type = models.CharField(max_length=24, choices=EVENT_CHOICES)
+    actor = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='project_cancellation_events',
+    )
+    reason = models.TextField()
+    evidence = models.TextField()
+    data = models.JSONField(default=dict)
+    effective_at = models.DateTimeField(null=True, blank=True)
+    occurred_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'project_cancellation_events'
+        ordering = ['occurred_at', 'id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['cancellation'], condition=models.Q(event_type='evaluacion_tecnica'),
+                name='project_cancel_single_technical_eval',
+            ),
+            models.UniqueConstraint(
+                fields=['cancellation'], condition=models.Q(event_type__in=['autorizada', 'denegada']),
+                name='project_cancel_single_decision',
+            ),
+            models.UniqueConstraint(
+                fields=['cancellation'], condition=models.Q(event_type='efectiva'),
+                name='project_cancel_single_effectivity',
+            ),
+            models.CheckConstraint(
+                condition=(models.Q(event_type='efectiva', effective_at__isnull=False)
+                           | (~models.Q(event_type='efectiva') & models.Q(effective_at__isnull=True))),
+                name='project_cancel_effectivity_consistent',
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValueError('El historial de cancelación de proyectos es inmutable')
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError('El historial de cancelación de proyectos es inmutable')
+
+
 class ProjectTaskClassification(models.Model):
     """Immutable audit revisions for L3's delivery-scope classification of tasks."""
 

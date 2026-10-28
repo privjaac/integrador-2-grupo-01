@@ -323,3 +323,88 @@ class ProjectStartReadiness(SafeInputModel):
         if not value.strip():
             raise ValueError('El dato de preparación técnica no puede estar vacío')
         return value
+
+
+class ProjectCancellationCreate(SafeInputModel):
+    cancelled_scope: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    evidence: str = Field(min_length=1)
+
+    @field_validator('cancelled_scope', 'reason', 'evidence')
+    @classmethod
+    def reject_blank_cancellation_details(cls, value):
+        if not value.strip():
+            raise ValueError('La solicitud de cancelación requiere alcance, motivo y evidencia')
+        return value.strip()
+
+
+class ProjectCancellationTechnicalEvaluation(SafeInputModel):
+    affected_tasks_assessment: str = Field(min_length=1)
+    obligations_assessment: str = Field(min_length=1)
+    evidence: str = Field(min_length=1)
+
+    @field_validator('affected_tasks_assessment', 'obligations_assessment', 'evidence')
+    @classmethod
+    def reject_blank_technical_cancellation_details(cls, value):
+        if not value.strip():
+            raise ValueError('La evaluación técnica debe documentar tareas, obligaciones y evidencia')
+        return value.strip()
+
+
+class ProjectCancellationDecision(SafeInputModel):
+    authorized: bool
+    reason: str = Field(min_length=1)
+    evidence: str = Field(min_length=1)
+    commercial_consequences: str | None = None
+    effectivity_conditions: str | None = None
+    planned_effective_at: datetime | None = None
+
+    @field_validator('reason', 'evidence')
+    @classmethod
+    def reject_blank_cancellation_decision_details(cls, value):
+        if not value.strip():
+            raise ValueError('La decisión debe incluir motivo y evidencia')
+        return value.strip()
+
+    @field_validator('commercial_consequences', 'effectivity_conditions')
+    @classmethod
+    def normalize_optional_cancellation_details(cls, value):
+        if value is not None and not value.strip():
+            raise ValueError('El dato no puede estar vacío')
+        return value.strip() if value is not None else value
+
+    @field_validator('planned_effective_at')
+    @classmethod
+    def require_aware_cancellation_date(cls, value):
+        if value is not None and value.utcoffset() is None:
+            raise ValueError('La fecha efectiva debe incluir zona horaria')
+        return value
+
+    @model_validator(mode='after')
+    def validate_cancellation_decision(self):
+        if self.authorized and not all((
+            self.commercial_consequences, self.effectivity_conditions, self.planned_effective_at,
+        )):
+            raise ValueError('Autorizar requiere evaluación comercial, condiciones y fecha prevista de efectividad')
+        if not self.authorized and (self.commercial_consequences or self.effectivity_conditions or self.planned_effective_at):
+            raise ValueError('Una denegación no puede registrar autorización ni condiciones de efectividad')
+        return self
+
+
+class ProjectCancellationEffectivity(SafeInputModel):
+    conditions_satisfied: bool
+    reason: str = Field(min_length=1)
+    evidence: str = Field(min_length=1)
+
+    @field_validator('reason', 'evidence')
+    @classmethod
+    def reject_blank_effectivity_details(cls, value):
+        if not value.strip():
+            raise ValueError('La efectividad requiere motivo y evidencia')
+        return value.strip()
+
+    @model_validator(mode='after')
+    def require_satisfied_conditions(self):
+        if not self.conditions_satisfied:
+            raise ValueError('La cancelación no puede hacerse efectiva con condiciones pendientes')
+        return self

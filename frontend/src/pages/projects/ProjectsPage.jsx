@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { getClients } from "../../api/clients";
 import ProjectServicesPanel from "./ProjectServicesPanel";
+import ProjectCancellationPanel from "./ProjectCancellationPanel";
 import { designateCoordinator, getTaskContext, removeCoordinator } from "../../api/tasks";
 import {
   classifyProjectTask, createCommercialAuthorization, createDeliveryAuthorization,
@@ -29,6 +30,9 @@ export default function ProjectsPage() {
   const canRecordDelivery = can(user, "projects", "recordProjectDelivery");
   const canFormalizeDelivery = can(user, "projects", "formalizeProjectDelivery");
   const canReviewDeliveryVersion = can(user, "projects", "reviewProjectDeliveryVersion");
+  const canRequestCancellation = can(user, "projects", "requestProjectCancellation");
+  const canEvaluateCancellation = can(user, "projects", "evaluateProjectCancellation");
+  const canResolveCancellation = can(user, "projects", "resolveProjectCancellation");
   const [projects, setProjects] = useState([]);
   const [clients, setClients] = useState([]);
   const [commercialAuthorizations, setCommercialAuthorizations] = useState({});
@@ -338,6 +342,9 @@ export default function ProjectsPage() {
   const scopedProjects = user?.role === "L3"
     ? new Set((taskContext.projects || []).map((item) => item.id))
     : new Set();
+  const cancellationProjects = canRequestCancellation || canResolveCancellation
+    ? projects
+    : canEvaluateCancellation ? projects.filter((project) => scopedProjects.has(project.id)) : [];
 
   const validationFields = [
     ["scope_within_current_commitment", "El alcance está incluido en el compromiso vigente"],
@@ -412,6 +419,7 @@ export default function ProjectsPage() {
         <div style={{ display: "flex", gap: 6 }}><select aria-label={`Coordinación de ${project.name}`} value={coordinatorSelection[project.id] || ""} onChange={(event) => setCoordinatorSelection({ ...coordinatorSelection, [project.id]: event.target.value })} style={fieldStyle}><option value="">Seleccionar L3</option>{taskContext.coordinators?.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" disabled={!coordinatorSelection[project.id]} onClick={() => assignCoordinator(project.id)} style={{ ...fieldStyle, cursor: "pointer" }}>Designar</button></div>
       </td>}</tr>;
     })}</tbody></table></div>}
+    {cancellationProjects.map((project) => <ProjectCancellationPanel key={`cancellation-${project.id}`} project={project} canRequest={canRequestCancellation} canEvaluate={canEvaluateCancellation} canResolve={canResolveCancellation} />)}
     {can(user, "projects", "associateContractedServices") && projects.filter((project) => scopedProjects.has(project.id)).map((project) => <ProjectServicesPanel key={`services-${project.id}`} project={project} canManage={project.status !== "Entregado"} />)}
     {canStartValidation && projects.some((project) => project.status === "En ejecución" && scopedProjects.has(project.id)) && <section style={{ marginTop: 28 }}>
       <h2>Ingreso a validación técnica</h2>

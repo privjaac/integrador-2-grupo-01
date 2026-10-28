@@ -14,7 +14,7 @@ from api.schemas.tasks import (
 )
 from clients.models import (
     Collaborator, Project, ProjectCoordination, ProjectLeadership, Task,
-    TaskComment, TaskEvent, TeamMembership,
+    ProjectCancellationEvent, TaskComment, TaskEvent, TeamMembership,
 )
 
 CANCELABLE_TASK_STATUSES = {'Pendiente', 'Asignada', 'En proceso', 'En revisión', 'Observada'}
@@ -28,6 +28,19 @@ CANCELLATION_EVENT_TYPES = {
 }
 
 router = APIRouter()
+
+
+def lock_project_for_task_action(project_id: int, *, allow_cancelled: bool = False) -> Project:
+    project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
+    if project is None:
+        raise HTTPException(404, 'Proyecto no encontrado')
+    cancelled = ProjectCancellationEvent.objects.filter(
+        cancellation__project_id=project_id, event_type='efectiva',
+        effective_at__lte=timezone.now(),
+    ).exists()
+    if cancelled and not allow_cancelled:
+        raise HTTPException(409, 'El alcance del proyecto tiene una cancelación efectiva')
+    return project
 
 
 def actor(user: dict) -> Collaborator:
@@ -424,12 +437,13 @@ def lock_l4_leaderships(project_id: int, leader_id: int) -> tuple[list[ProjectCo
     return coordinations, leaderships
 
 
-def lock_task_for_l5(task_id: int, collaborator_id: int) -> Task:
+def lock_task_for_l5(task_id: int, collaborator_id: int, *, allow_cancelled: bool = False) -> Task:
     candidate = Task.objects.filter(pk=task_id).values(
         'project_id', 'responsible_id', 'assignee_id',
     ).first()
     if candidate is None or candidate['assignee_id'] != collaborator_id:
         raise HTTPException(404, 'Tarea no encontrada en tu ámbito')
+    lock_project_for_task_action(candidate['project_id'], allow_cancelled=allow_cancelled)
     _coordinations, leaderships = lock_l4_leaderships(
         candidate['project_id'], candidate['responsible_id'],
     )
@@ -454,6 +468,7 @@ def lock_task_for_l4_review(task_id: int, collaborator_id: int) -> Task:
     ).first()
     if candidate is None or candidate['responsible_id'] != collaborator_id or not candidate['assignee_id']:
         raise HTTPException(404, 'Tarea no encontrada en tu responsabilidad')
+    lock_project_for_task_action(candidate['project_id'])
     _coordinations, leaderships = lock_l4_leaderships(
         candidate['project_id'], collaborator_id,
     )
@@ -480,6 +495,7 @@ def lock_task_for_reassignment(
     ).first()
     if candidate is None or candidate['assignee_id'] is None:
         raise HTTPException(404, 'Tarea asignada no encontrada en tu ámbito')
+    lock_project_for_task_action(candidate['project_id'])
     coordinations = lock_project_coordinations(candidate['project_id'])
     actor_role = Collaborator.objects.select_related('role').filter(pk=actor_id).values_list(
         'role__level', flat=True,
@@ -537,6 +553,7 @@ def lock_task_for_executor_removal(task_id: int, actor_id: int) -> Task:
     ).first()
     if candidate is None or candidate['assignee_id'] is None:
         raise HTTPException(404, 'Tarea con ejecutor no encontrada en tu ámbito')
+    lock_project_for_task_action(candidate['project_id'])
     coordinations = lock_project_coordinations(candidate['project_id'])
     actor_role = Collaborator.objects.select_related('role').filter(pk=actor_id).values_list(
         'role__level', flat=True,
@@ -578,6 +595,7 @@ def lock_task_for_block_action(task_id: int, actor_id: int, actor_role: str) -> 
     ).first()
     if candidate is None:
         raise HTTPException(404, 'Tarea no encontrada en tu ámbito')
+    lock_project_for_task_action(candidate['project_id'])
     coordinations = lock_project_coordinations(candidate['project_id'])
     if actor_role == 'L3':
         if not any(item.coordinator_id == actor_id for item in coordinations):
@@ -614,6 +632,7 @@ def lock_task_for_l3_reopen(task_id: int, coordinator_id: int) -> Task:
     candidate = Task.objects.filter(pk=task_id).values('project_id', 'status').first()
     if candidate is None:
         raise HTTPException(404, 'Tarea no encontrada en tu coordinación')
+    lock_project_for_task_action(candidate['project_id'])
     coordinations = lock_project_coordinations(candidate['project_id'])
     if not any(item.coordinator_id == coordinator_id for item in coordinations):
         raise HTTPException(404, 'Tarea no encontrada en tu coordinación vigente')
@@ -631,6 +650,7 @@ def lock_task_for_cancellation(task_id: int, actor_id: int, actor_role: str) -> 
     ).first()
     if candidate is None:
         raise HTTPException(404, 'Tarea no encontrada en tu ámbito')
+    lock_project_for_task_action(candidate['project_id'], allow_cancelled=True)
     coordinations = lock_project_coordinations(candidate['project_id'])
     if actor_role == 'L3':
         if not any(item.coordinator_id == actor_id for item in coordinations):
@@ -1029,6 +1049,7 @@ def create_task_comment(
         raise HTTPException(422, 'El comentario no puede estar vacío')
 
     with transaction.atomic():
+        lock_project_for_task_action(candidate['project_id'], allow_cancelled=True)
         # Lock organizational relationships before the task, matching task mutations.
         coordination_ids = list(ProjectCoordination.objects.select_for_update(of=('self',)).filter(
             project_id=candidate['project_id'],
@@ -1091,6 +1112,7 @@ def create_task(payload: TaskCreate, user: dict = Depends(get_current_user)):
     current_actor = actor(user)
     try:
         with transaction.atomic():
+            project = lock_project_for_task_action(project.id)
             assignee = None
             if role == 'L3':
                 coordinator = ProjectCoordination.objects.select_for_update(of=('self',)).filter(
@@ -1147,6 +1169,7 @@ def assign_task(task_id: int, payload: TaskAssign, user: dict = Depends(get_curr
     current_actor = actor(user)
     try:
         with transaction.atomic():
+            lock_project_for_task_action(project_id)
             _coordinations, leaderships = lock_l4_leaderships(project_id, user['collaborator_id'])
             if not leaderships:
                 raise HTTPException(404, 'Tarea no encontrada en tu ámbito')
@@ -1348,7 +1371,7 @@ def report_task_incident(
     current_actor = actor(user)
     try:
         with transaction.atomic():
-            task = lock_task_for_l5(task_id, user['collaborator_id'])
+            task = lock_task_for_l5(task_id, user['collaborator_id'], allow_cancelled=True)
             if task.status not in {'Asignada', 'En proceso', 'En revisión', 'Observada'}:
                 raise HTTPException(409, 'La tarea no está en una fase operativa para informar una incidencia')
             TaskEvent.objects.create(

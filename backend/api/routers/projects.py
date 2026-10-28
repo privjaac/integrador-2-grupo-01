@@ -1,3 +1,6 @@
+import json
+from datetime import datetime
+
 from django.db import IntegrityError, transaction
 from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
@@ -7,6 +10,8 @@ from api.dependencies import get_current_user
 from api.router import APIRouter
 from api.schemas.projects import (
     ProjectCommercialAuthorizationCreate, ProjectCommercialAuthorizationWithdrawal,
+    ProjectCancellationCreate, ProjectCancellationDecision,
+    ProjectCancellationEffectivity, ProjectCancellationTechnicalEvaluation,
     ProjectCreate, ProjectDeliveryAuthorizationCreate, ProjectExecutionReturn,
     ProjectDeliveryCreate, ProjectDeliveryFormalizeInput, ProjectDeliveryTechnicalReviewInput,
     ProjectReadyForDeliveryInput, ProjectResponse, ProjectStartReadiness,
@@ -16,6 +21,7 @@ from api.schemas.projects import (
 from api.schemas.clients import ProjectServiceLinkInput
 from clients.models import (
     Client, Collaborator, Project, ProjectCommercialAuthorization,
+    ProjectCancellation, ProjectCancellationEvent,
     ProjectCommercialAuthorizationEvent, ProjectCoordination, ProjectDeliveryAuthorization,
     ProjectDeliveryAuthorizationEvent, ProjectDelivery, ProjectDeliveryTechnicalReview,
     ProjectDeliveryTransition, ProjectEvent, ProjectTaskClassification, ProjectTechnicalEvaluation,
@@ -67,7 +73,60 @@ def lock_coordinated_project(project_id: int, actor: Collaborator) -> Project:
     ).order_by('id').first()
     if coordination is None:
         raise HTTPException(status_code=404, detail='Proyecto fuera de tu coordinación vigente')
+    ensure_project_not_cancelled(project_id)
     return project
+
+
+def ensure_project_not_cancelled(project_id: int) -> None:
+    if ProjectCancellationEvent.objects.filter(
+        cancellation__project_id=project_id, event_type='efectiva',
+        effective_at__lte=timezone.now(),
+    ).exists():
+        raise HTTPException(status_code=409, detail='El alcance del proyecto tiene una cancelación efectiva')
+
+
+def cancellation_latest_event(cancellation: ProjectCancellation):
+    return cancellation.events.order_by('-occurred_at', '-id').first()
+
+
+def cancellation_is_open(cancellation: ProjectCancellation) -> bool:
+    latest = cancellation_latest_event(cancellation)
+    return latest is None or latest.event_type not in {'denegada', 'efectiva'}
+
+
+def cancellation_response(cancellation: ProjectCancellation) -> dict:
+    return {
+        'id': cancellation.id,
+        'project_id': cancellation.project_id,
+        'opened_by_id': cancellation.opened_by_id,
+        'opened_by_name': f'{cancellation.opened_by.first_name} {cancellation.opened_by.last_name}',
+        'opened_at': cancellation.opened_at.isoformat(),
+        'cancelled_scope': cancellation.cancelled_scope,
+        'reason': cancellation.reason,
+        'evidence': cancellation.evidence,
+        'events': [
+            {
+                'event_type': item.event_type,
+                'actor_id': item.actor_id,
+                'actor_name': f'{item.actor.first_name} {item.actor.last_name}',
+                'reason': item.reason,
+                'evidence': item.evidence,
+                'data': item.data,
+                'effective_at': item.effective_at.isoformat() if item.effective_at else None,
+                'occurred_at': item.occurred_at.isoformat(),
+            }
+            for item in cancellation.events.select_related('actor').all()
+        ],
+    }
+
+
+def project_cancellation_audit(project: Project, actor: Collaborator, event_type: str, reason: str, data: dict):
+    snapshot = project.status
+    ProjectEvent.objects.create(
+        event_type=event_type, project=project, actor=actor,
+        previous_status=snapshot, new_status=snapshot,
+        reason=reason, evidence=json.dumps(data, ensure_ascii=False),
+    )
 
 
 def normalized_scope(value: str) -> str:
@@ -246,6 +305,12 @@ def enter_technical_validation(
 
     try:
         with transaction.atomic():
+            project = Project.objects.select_for_update(of=('self',)).select_related('client').filter(
+                pk=project_id,
+            ).first()
+            if project is None:
+                raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+            ensure_project_not_cancelled(project_id)
             coordination_ids = list(ProjectCoordination.objects.filter(
                 project_id=project_id, coordinator=actor, is_active=True,
                 coordinator__is_active=True, coordinator__role__level='L3',
@@ -260,11 +325,6 @@ def enter_technical_validation(
             ).order_by('id'))
             if not locked_coordinations:
                 raise HTTPException(status_code=404, detail='Proyecto fuera de tu coordinación vigente')
-            project = Project.objects.select_for_update(of=('self',)).select_related('client').filter(
-                pk=project_id,
-            ).first()
-            if project is None:
-                raise HTTPException(status_code=404, detail='Proyecto no encontrado')
             if project.status != 'En ejecución':
                 raise HTTPException(status_code=409, detail='El proyecto debe estar En ejecución')
             if not all((
@@ -326,6 +386,10 @@ def return_project_to_execution(
 
     try:
         with transaction.atomic():
+            project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
+            if project is None:
+                raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+            ensure_project_not_cancelled(project_id)
             coordination_ids = list(ProjectCoordination.objects.filter(
                 project_id=project_id, coordinator=actor, is_active=True,
                 coordinator__is_active=True, coordinator__role__level='L3',
@@ -340,9 +404,6 @@ def return_project_to_execution(
             ).order_by('id'))
             if not locked_coordinations:
                 raise HTTPException(status_code=404, detail='Proyecto fuera de tu coordinación vigente')
-            project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
-            if project is None:
-                raise HTTPException(status_code=404, detail='Proyecto no encontrado')
             if project.status != 'En validación técnica':
                 raise HTTPException(status_code=409, detail='El proyecto debe estar En validación técnica')
             previous_status = project.status
@@ -437,6 +498,7 @@ def authorize_project_start(
             project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
             if project is None:
                 raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+            ensure_project_not_cancelled(project_id)
             replaced = None
             if payload.replaces_authorization_id is not None:
                 replaced = ProjectCommercialAuthorization.objects.select_for_update(of=('self',)).filter(
@@ -486,6 +548,7 @@ def withdraw_project_start_authorization(
             project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
             if project is None:
                 raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+            ensure_project_not_cancelled(project_id)
             authorization = ProjectCommercialAuthorization.objects.select_for_update(of=('self',)).filter(
                 pk=authorization_id, project=project,
             ).first()
@@ -766,6 +829,7 @@ def create_delivery_authorization(
             project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
             if project is None:
                 raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+            ensure_project_not_cancelled(project_id)
             if payload.effective_at < timezone.now():
                 raise HTTPException(status_code=422, detail='No se admiten habilitaciones de entrega retroactivas')
             scope_snapshot = project_scope_snapshot(project)
@@ -810,6 +874,7 @@ def withdraw_delivery_authorization(
             project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
             if project is None:
                 raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+            ensure_project_not_cancelled(project_id)
             authorization = ProjectDeliveryAuthorization.objects.select_for_update(of=('self',)).filter(
                 pk=authorization_id, project=project,
             ).first()
@@ -930,6 +995,7 @@ def record_project_delivery(
             project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
             if project is None:
                 raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+            ensure_project_not_cancelled(project_id)
             if project.status not in {'En ejecución', 'En validación técnica', 'Listo para entrega'}:
                 raise HTTPException(status_code=409, detail='No se pueden registrar entregas en el estado actual')
             if payload.delivery_type == 'integral' and project.status != 'Listo para entrega':
@@ -1019,6 +1085,7 @@ def formalize_project_delivery(
             project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
             if project is None:
                 raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+            ensure_project_not_cancelled(project_id)
             if project.status != 'Listo para entrega':
                 raise HTTPException(status_code=409, detail='El proyecto debe estar Listo para entrega')
             scope_snapshot = project_scope_snapshot(project)
@@ -1137,6 +1204,12 @@ def start_project(project_id: int, payload: ProjectStartReadiness, user: dict = 
     now = timezone.now()
     try:
         with transaction.atomic():
+            project = Project.objects.select_for_update(of=('self',)).select_related('client').filter(
+                pk=project_id,
+            ).first()
+            if project is None:
+                raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+            ensure_project_not_cancelled(project_id)
             coordination_ids = list(ProjectCoordination.objects.filter(
                 project_id=project_id, coordinator=actor, is_active=True,
                 coordinator__is_active=True, coordinator__role__level='L3',
@@ -1151,11 +1224,6 @@ def start_project(project_id: int, payload: ProjectStartReadiness, user: dict = 
             ).order_by('id'))
             if not locked_coordinations:
                 raise HTTPException(status_code=404, detail='Proyecto fuera de tu coordinación vigente')
-            project = Project.objects.select_for_update(of=('self',)).select_related('client').filter(
-                pk=project_id,
-            ).first()
-            if project is None:
-                raise HTTPException(status_code=404, detail='Proyecto no encontrado')
             if project.status != 'Planificado':
                 raise HTTPException(status_code=409, detail='El proyecto debe estar Planificado')
             authorization = active_commercial_authorizations(project_id, now).select_for_update(of=('self',)).filter(
@@ -1186,6 +1254,199 @@ def start_project(project_id: int, payload: ProjectStartReadiness, user: dict = 
         raise HTTPException(status_code=409, detail='No se pudo registrar el inicio por un cambio concurrente')
 
     return to_response(Project.objects.select_related('client').get(pk=project_id))
+
+
+@router.get('/{project_id}/cancellations')
+def list_project_cancellations(project_id: int, user: dict = Depends(get_current_user)):
+    role = user.get('role')
+    if role not in {'L2', 'L3'}:
+        raise HTTPException(status_code=403, detail='No tienes permiso para consultar cancelaciones de proyectos')
+    project = Project.objects.filter(pk=project_id).first()
+    if project is None:
+        raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+    if role == 'L3' and not ProjectCoordination.objects.filter(
+        project_id=project_id, coordinator_id=user.get('collaborator_id'), is_active=True,
+        coordinator__is_active=True, coordinator__role__level='L3',
+    ).exists():
+        raise HTTPException(status_code=404, detail='Proyecto fuera de tu coordinación vigente')
+    return [cancellation_response(item) for item in ProjectCancellation.objects.filter(
+        project_id=project_id,
+    ).select_related('opened_by').prefetch_related('events__actor')]
+
+
+@router.post('/{project_id}/cancellations', status_code=status.HTTP_201_CREATED)
+def open_project_cancellation(
+    project_id: int, payload: ProjectCancellationCreate, user: dict = Depends(get_current_user),
+):
+    actor = active_l2_actor(user)
+    try:
+        with transaction.atomic():
+            project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
+            if project is None:
+                raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+            if project.status == 'Entregado':
+                raise HTTPException(status_code=409, detail='La cancelación integral de un proyecto Entregado requiere tratamiento funcional específico')
+            ensure_project_not_cancelled(project_id)
+            expected_scope = project_scope_snapshot(project)
+            if normalized_scope(payload.cancelled_scope) != normalized_scope(expected_scope):
+                raise HTTPException(status_code=409, detail='Esta operación solo admite la cancelación integral del alcance vigente del proyecto')
+            open_cases = [item for item in ProjectCancellation.objects.filter(project=project).prefetch_related('events')
+                          if cancellation_is_open(item)]
+            if open_cases:
+                raise HTTPException(status_code=409, detail='Ya existe una solicitud de cancelación pendiente o autorizada')
+            cancellation = ProjectCancellation.objects.create(
+                project=project, opened_by=actor, cancelled_scope=expected_scope,
+                reason=payload.reason, evidence=payload.evidence,
+            )
+            ProjectCancellationEvent.objects.create(
+                cancellation=cancellation, event_type='solicitada', actor=actor,
+                reason=payload.reason, evidence=payload.evidence,
+                data={'cancelled_scope': expected_scope, 'scope_type': 'project_full'},
+            )
+            project_cancellation_audit(project, actor, 'cancelacion_solicitada', payload.reason, {
+                'cancellation_id': cancellation.id, 'scope_type': 'project_full',
+                'cancelled_scope': expected_scope, 'evidence': payload.evidence,
+            })
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail='No se pudo registrar la solicitud de cancelación')
+    return cancellation_response(ProjectCancellation.objects.select_related('opened_by').prefetch_related(
+        'events__actor',
+    ).get(pk=cancellation.pk))
+
+
+@router.post('/{project_id}/cancellations/{cancellation_id}/technical-evaluation')
+def evaluate_project_cancellation(
+    project_id: int, cancellation_id: int, payload: ProjectCancellationTechnicalEvaluation,
+    user: dict = Depends(get_current_user),
+):
+    actor = active_l3_actor(user)
+    try:
+        with transaction.atomic():
+            project = lock_coordinated_project(project_id, actor)
+            cancellation = ProjectCancellation.objects.select_for_update(of=('self',)).filter(
+                pk=cancellation_id, project=project,
+            ).first()
+            if cancellation is None:
+                raise HTTPException(status_code=404, detail='Solicitud de cancelación no encontrada')
+            if cancellation_latest_event(cancellation).event_type != 'solicitada':
+                raise HTTPException(status_code=409, detail='La solicitud ya recibió una evaluación o decisión')
+            task_snapshot, _tasks = current_task_snapshot(project.id, lock=True)
+            event = ProjectCancellationEvent.objects.create(
+                cancellation=cancellation, event_type='evaluacion_tecnica', actor=actor,
+                reason=payload.affected_tasks_assessment,
+                evidence=payload.evidence,
+                data={
+                    'affected_tasks_assessment': payload.affected_tasks_assessment,
+                    'obligations_assessment': payload.obligations_assessment,
+                    'task_snapshot': task_snapshot,
+                },
+            )
+            project_cancellation_audit(project, actor, 'cancelacion_evaluacion_tecnica', event.reason, {
+                'cancellation_id': cancellation.id,
+                'obligations_assessment': payload.obligations_assessment,
+                'evidence': payload.evidence, 'task_snapshot': task_snapshot,
+            })
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail='No se pudo registrar la evaluación técnica')
+    return cancellation_response(ProjectCancellation.objects.select_related('opened_by').prefetch_related(
+        'events__actor',
+    ).get(pk=cancellation_id))
+
+
+@router.post('/{project_id}/cancellations/{cancellation_id}/decision')
+def decide_project_cancellation(
+    project_id: int, cancellation_id: int, payload: ProjectCancellationDecision,
+    user: dict = Depends(get_current_user),
+):
+    actor = active_l2_actor(user)
+    try:
+        with transaction.atomic():
+            project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
+            if project is None:
+                raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+            cancellation = ProjectCancellation.objects.select_for_update(of=('self',)).filter(
+                pk=cancellation_id, project=project,
+            ).first()
+            if cancellation is None:
+                raise HTTPException(status_code=404, detail='Solicitud de cancelación no encontrada')
+            latest = cancellation_latest_event(cancellation)
+            if latest is None or latest.event_type != 'evaluacion_tecnica':
+                raise HTTPException(status_code=409, detail='L3 debe evaluar primero las consecuencias técnicas')
+            if not payload.authorized:
+                event_type = 'denegada'
+                data = {'commercial_consequences': 'No se autorizó la cancelación ordinaria'}
+            else:
+                ensure_project_not_cancelled(project_id)
+                if ProjectCancellation.objects.filter(project=project).exclude(pk=cancellation_id).filter(
+                    events__event_type='efectiva', events__effective_at__lte=timezone.now(),
+                ).exists():
+                    raise HTTPException(status_code=409, detail='El proyecto ya tiene una cancelación efectiva')
+                if payload.planned_effective_at < timezone.now():
+                    raise HTTPException(status_code=422, detail='La fecha prevista de efectividad no puede ser anterior a la autorización')
+                event_type = 'autorizada'
+                data = {
+                    'commercial_consequences': payload.commercial_consequences,
+                    'effectivity_conditions': payload.effectivity_conditions,
+                    'planned_effective_at': payload.planned_effective_at.isoformat(),
+                    'authority': 'L2 ordinary cancellation',
+                }
+            event = ProjectCancellationEvent.objects.create(
+                cancellation=cancellation, event_type=event_type, actor=actor,
+                reason=payload.reason, evidence=payload.evidence, data=data,
+            )
+            project_cancellation_audit(project, actor, f'cancelacion_{event_type}', payload.reason, {
+                'cancellation_id': cancellation.id, **data, 'evidence': payload.evidence,
+            })
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail='No se pudo registrar la decisión comercial')
+    return cancellation_response(ProjectCancellation.objects.select_related('opened_by').prefetch_related(
+        'events__actor',
+    ).get(pk=cancellation_id))
+
+
+@router.post('/{project_id}/cancellations/{cancellation_id}/effectivity')
+def record_project_cancellation_effectivity(
+    project_id: int, cancellation_id: int, payload: ProjectCancellationEffectivity,
+    user: dict = Depends(get_current_user),
+):
+    actor = active_l2_actor(user)
+    try:
+        with transaction.atomic():
+            project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
+            if project is None:
+                raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+            cancellation = ProjectCancellation.objects.select_for_update(of=('self',)).filter(
+                pk=cancellation_id, project=project,
+            ).first()
+            if cancellation is None:
+                raise HTTPException(status_code=404, detail='Solicitud de cancelación no encontrada')
+            latest = cancellation_latest_event(cancellation)
+            if latest is None or latest.event_type != 'autorizada':
+                raise HTTPException(status_code=409, detail='Solo una cancelación autorizada puede hacerse efectiva')
+            effective_at = timezone.now()
+            planned = datetime.fromisoformat(latest.data['planned_effective_at'])
+            if planned > effective_at:
+                raise HTTPException(status_code=409, detail='La fecha prevista todavía no ha llegado')
+            event = ProjectCancellationEvent.objects.create(
+                cancellation=cancellation, event_type='efectiva', actor=actor,
+                reason=payload.reason, evidence=payload.evidence,
+                effective_at=effective_at,
+                data={
+                    'conditions_satisfied': payload.conditions_satisfied,
+                    'authorization_event_id': latest.id,
+                    'cancelled_scope': cancellation.cancelled_scope,
+                },
+            )
+            project_cancellation_audit(project, actor, 'cancelacion_efectiva', payload.reason, {
+                'cancellation_id': cancellation.id, 'effective_at': effective_at.isoformat(),
+                'authorization_event_id': latest.id, 'conditions_satisfied': True,
+                'evidence': payload.evidence,
+            })
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail='No se pudo registrar la efectividad de la cancelación')
+    return cancellation_response(ProjectCancellation.objects.select_related('opened_by').prefetch_related(
+        'events__actor',
+    ).get(pk=cancellation_id))
 
 
 @router.post('/', response_model=ProjectResponse, status_code=status.HTTP_201_CREATED)

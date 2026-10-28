@@ -3,6 +3,7 @@ from django.db.models.deletion import ProtectedError
 from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 from datetime import timedelta
+import time
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -13,6 +14,7 @@ from api.routers.auth import hash_password
 from fastapi.testclient import TestClient
 from clients.models import (Client, Collaborator, Project, ProjectCommercialAuthorization,
                             ProjectCommercialAuthorizationEvent, ProjectCoordination,
+                            ProjectCancellation, ProjectCancellationEvent,
                             ProjectDeliveryAuthorization, ProjectDeliveryAuthorizationEvent,
                             ProjectDelivery, ProjectDeliveryTechnicalReview, ProjectDeliveryTransition,
                             ProjectEvent, ProjectTaskClassification, ProjectTechnicalEvaluation,
@@ -396,6 +398,243 @@ class ProjectApiTests(TransactionTestCase):
             coordinator=Collaborator.objects.get(username='project-api-L3'),
             assigned_by=Collaborator.objects.get(username='project-api-L2'),
         )
+
+    def open_project_cancellation(self, project, **overrides):
+        payload = {
+            'cancelled_scope': project.scope,
+            'reason': 'El cliente solicita terminar integralmente el proyecto',
+            'evidence': 'Solicitud comercial DOC-CANCEL-01',
+        }
+        payload.update(overrides)
+        return self.api.post(
+            f'/api/projects/{project.id}/cancellations', headers=self.tokens['L2'], json=payload,
+        )
+
+    def test_project_cancellation_requires_l2_scope_l3_review_and_effective_conditions(self):
+        project = Project.objects.create(
+            client=self.client_record, name='Cancelación ordinaria', scope='Módulos A y B',
+            status='En ejecución',
+        )
+        self.coordinate_l3(project)
+        cancellation_task = Task.objects.create(
+            project=project, title='Tarea conserva estado',
+            created_by=Collaborator.objects.get(username='project-api-L2'),
+            responsible=Collaborator.objects.get(username='project-api-L4'),
+        )
+
+        wrong_scope = self.open_project_cancellation(project, cancelled_scope='Solo módulo A')
+        self.assertEqual(wrong_scope.status_code, 409, wrong_scope.text)
+        self.assertEqual(ProjectCancellation.objects.count(), 0)
+        forbidden_request = self.api.post(
+            f'/api/projects/{project.id}/cancellations', headers=self.tokens['L3'],
+            json={'cancelled_scope': project.scope, 'reason': 'Solicitar', 'evidence': 'Evidencia'},
+        )
+        self.assertEqual(forbidden_request.status_code, 403)
+        invalid_scope_actor = Collaborator.objects.create(
+            first_name='Proyecto', last_name='L2 restringido', document_number='PROJECT-API-L2-RESTRICTED',
+            email='project-api-l2-restricted@example.com', username='project-api-L2-restricted',
+            password_hash=hash_password('test'), role=Role.objects.create(
+                name='Rol L2 sin permiso de cancelación', level='L2',
+                permissions=['projects.view'],
+            ),
+        )
+        restricted_token = self.api.post('/api/auth/login', json={
+            'username': invalid_scope_actor.username, 'password': 'test',
+        }).json()['access_token']
+        restricted = self.api.post(
+            f'/api/projects/{project.id}/cancellations',
+            headers={'Authorization': f'Bearer {restricted_token}'},
+            json={'cancelled_scope': project.scope, 'reason': 'Solicitar', 'evidence': 'Evidencia'},
+        )
+        self.assertEqual(restricted.status_code, 403)
+        self.assertEqual(ProjectCancellation.objects.count(), 0)
+
+        requested = self.open_project_cancellation(project)
+        self.assertEqual(requested.status_code, 201, requested.text)
+        cancellation_id = requested.json()['id']
+        denied_without_review = self.api.post(
+            f'/api/projects/{project.id}/cancellations/{cancellation_id}/decision',
+            headers=self.tokens['L2'], json={
+                'authorized': True, 'reason': 'Autorizar', 'evidence': 'Acta',
+                'commercial_consequences': 'Evaluadas', 'effectivity_conditions': 'Acta firmada',
+                'planned_effective_at': timezone.now().isoformat(),
+            },
+        )
+        self.assertEqual(denied_without_review.status_code, 409)
+
+        no_coordination = Project.objects.create(
+            client=self.client_record, name='Proyecto fuera de coordinación', scope='Alcance completo',
+        )
+        no_coordination_case = self.open_project_cancellation(no_coordination)
+        self.assertEqual(no_coordination_case.status_code, 201, no_coordination_case.text)
+        outside_scope = self.api.post(
+            f"/api/projects/{no_coordination.id}/cancellations/{no_coordination_case.json()['id']}/technical-evaluation",
+            headers=self.tokens['L3'], json={
+                'affected_tasks_assessment': 'Tareas revisadas',
+                'obligations_assessment': 'Obligaciones identificadas', 'evidence': 'Informe técnico',
+            },
+        )
+        self.assertEqual(outside_scope.status_code, 404)
+        self.assertEqual(ProjectCancellationEvent.objects.filter(
+            cancellation_id=no_coordination_case.json()['id'], event_type='evaluacion_tecnica',
+        ).count(), 0)
+
+        evaluated = self.api.post(
+            f'/api/projects/{project.id}/cancellations/{cancellation_id}/technical-evaluation',
+            headers=self.tokens['L3'], json={
+                'affected_tasks_assessment': 'Se identificaron y conservaron los estados de las tareas',
+                'obligations_assessment': 'Compromisos y obligaciones residuales evaluados',
+                'evidence': 'Informe técnico de cancelación',
+            },
+        )
+        self.assertEqual(evaluated.status_code, 200, evaluated.text)
+        self.assertEqual(project.status, 'En ejecución')
+        self.assertIn('task_snapshot', evaluated.json()['events'][-1]['data'])
+
+        planned_effective_at = timezone.now() + timedelta(seconds=2)
+        decided = self.api.post(
+            f'/api/projects/{project.id}/cancellations/{cancellation_id}/decision',
+            headers=self.tokens['L2'], json={
+                'authorized': True, 'reason': 'Formalización comercial ordinaria',
+                'evidence': 'Acta comercial AC-01',
+                'commercial_consequences': 'Compromisos revisados; no se ordenan pagos ni devoluciones',
+                'effectivity_conditions': 'La condición documentada está satisfecha',
+                'planned_effective_at': planned_effective_at.isoformat(),
+            },
+        )
+        self.assertEqual(decided.status_code, 200, decided.text)
+        too_early = self.api.post(
+            f'/api/projects/{project.id}/cancellations/{cancellation_id}/effectivity',
+            headers=self.tokens['L2'], json={
+                'conditions_satisfied': False, 'reason': 'Condición pendiente', 'evidence': 'Pendiente',
+            },
+        )
+        self.assertEqual(too_early.status_code, 422)
+        self.assertEqual(ProjectCancellationEvent.objects.filter(
+            cancellation_id=cancellation_id, event_type='efectiva',
+        ).count(), 0)
+
+        time.sleep(max(0, (planned_effective_at - timezone.now()).total_seconds()))
+        effective = self.api.post(
+            f'/api/projects/{project.id}/cancellations/{cancellation_id}/effectivity',
+            headers=self.tokens['L2'], json={
+                'conditions_satisfied': True, 'reason': 'Condiciones acreditadas',
+                'evidence': 'Constancia de cumplimiento de condiciones',
+            },
+        )
+        self.assertEqual(effective.status_code, 200, effective.text)
+        project.refresh_from_db()
+        self.assertEqual(project.status, 'En ejecución')
+        effective_event = ProjectCancellationEvent.objects.get(
+            cancellation_id=cancellation_id, event_type='efectiva',
+        )
+        self.assertEqual(effective_event.actor.username, 'project-api-L2')
+        self.assertLessEqual(effective_event.effective_at, effective_event.occurred_at)
+        timeline = list(ProjectEvent.objects.filter(project=project).order_by('id'))
+        self.assertEqual([event.event_type for event in timeline], [
+            'cancelacion_solicitada', 'cancelacion_evaluacion_tecnica',
+            'cancelacion_autorizada', 'cancelacion_efectiva',
+        ])
+        self.assertTrue(all(event.previous_status == event.new_status == 'En ejecución' for event in timeline))
+
+        blocked_transition = self.api.post(
+            f'/api/projects/{project.id}/technical-validation', headers=self.tokens['L3'], json={
+                'scope_within_current_commitment': True, 'criteria_identifiable': True,
+                'results_and_evidence_available': True, 'validation_conditions_ready': True,
+                'responsible_parties_identified': True, 'dependencies_ready': True,
+                'pending_obligations_assessed': True, 'reason': 'Continuar', 'evidence': 'Evidencia',
+            },
+        )
+        self.assertEqual(blocked_transition.status_code, 409)
+        blocked_task = self.api.post(
+            '/api/tasks/', headers=self.tokens['L3'],
+            json={'project_id': project.id, 'title': 'No iniciar alcance cancelado', 'status': 'Pendiente'},
+        )
+        self.assertEqual(blocked_task.status_code, 409, blocked_task.text)
+        blocked_block = self.api.post(
+            f'/api/tasks/{cancellation_task.id}/block', headers=self.tokens['L3'],
+            json={'reason': 'Prueba tras efectividad', 'evidence': 'EV-BLOCK'},
+        )
+        self.assertEqual(blocked_block.status_code, 409, blocked_block.text)
+        cancellation_task.refresh_from_db()
+        self.assertFalse(cancellation_task.is_blocked)
+        self.assertFalse(TaskEvent.objects.filter(task=cancellation_task, event_type='bloqueo_declarado').exists())
+        repeated = self.api.post(
+            f'/api/projects/{project.id}/cancellations/{cancellation_id}/effectivity',
+            headers=self.tokens['L2'], json={
+                'conditions_satisfied': True, 'reason': 'Repetición', 'evidence': 'Otra evidencia',
+            },
+        )
+        self.assertEqual(repeated.status_code, 409)
+        self.assertEqual(ProjectCancellationEvent.objects.filter(
+            cancellation_id=cancellation_id, event_type='efectiva',
+        ).count(), 1)
+
+    def test_project_cancellation_future_effectivity_and_denial_preserve_history(self):
+        project = Project.objects.create(
+            client=self.client_record, name='Cancelación futura', scope='Alcance completo',
+        )
+        self.coordinate_l3(project)
+        requested = self.open_project_cancellation(project)
+        cancellation_id = requested.json()['id']
+        self.api.post(
+            f'/api/projects/{project.id}/cancellations/{cancellation_id}/technical-evaluation',
+            headers=self.tokens['L3'], json={
+                'affected_tasks_assessment': 'Tareas analizadas',
+                'obligations_assessment': 'Obligaciones conservadas', 'evidence': 'EV-1',
+            },
+        )
+        future = self.api.post(
+            f'/api/projects/{project.id}/cancellations/{cancellation_id}/decision',
+            headers=self.tokens['L2'], json={
+                'authorized': True, 'reason': 'Autorizar fecha futura', 'evidence': 'AC-2',
+                'commercial_consequences': 'Evaluadas', 'effectivity_conditions': 'Fecha acordada',
+                'planned_effective_at': (timezone.now() + timedelta(hours=1)).isoformat(),
+            },
+        )
+        self.assertEqual(future.status_code, 200, future.text)
+        premature = self.api.post(
+            f'/api/projects/{project.id}/cancellations/{cancellation_id}/effectivity',
+            headers=self.tokens['L2'], json={
+                'conditions_satisfied': True, 'reason': 'Intento prematuro', 'evidence': 'EV-2',
+            },
+        )
+        self.assertEqual(premature.status_code, 409)
+        self.assertFalse(ProjectCancellationEvent.objects.filter(
+            cancellation_id=cancellation_id, event_type='efectiva',
+        ).exists())
+
+        denied_project = Project.objects.create(
+            client=self.client_record, name='Cancelación denegada', scope='Alcance completo',
+        )
+        self.coordinate_l3(denied_project)
+        denied_case = self.open_project_cancellation(denied_project)
+        self.api.post(
+            f"/api/projects/{denied_project.id}/cancellations/{denied_case.json()['id']}/technical-evaluation",
+            headers=self.tokens['L3'], json={
+                'affected_tasks_assessment': 'Tareas evaluadas',
+                'obligations_assessment': 'Obligaciones evaluadas', 'evidence': 'EV-DENY',
+            },
+        )
+        denial = self.api.post(
+            f"/api/projects/{denied_project.id}/cancellations/{denied_case.json()['id']}/decision",
+            headers=self.tokens['L2'], json={
+                'authorized': False, 'reason': 'No corresponde cancelar', 'evidence': 'Análisis comercial',
+            },
+        )
+        self.assertEqual(denial.status_code, 200, denial.text)
+        self.assertEqual(ProjectCancellation.objects.filter(project=denied_project).count(), 1)
+        denied_events = list(ProjectCancellationEvent.objects.filter(
+            cancellation_id=denied_case.json()['id'],
+        ).order_by('id'))
+        self.assertEqual([event.event_type for event in denied_events], [
+            'solicitada', 'evaluacion_tecnica', 'denegada',
+        ])
+        self.assertEqual(denied_events[-1].actor.username, 'project-api-L2')
+        self.assertEqual(ProjectEvent.objects.filter(project=denied_project).count(), 3)
+        self.assertFalse(ProjectCancellationEvent.objects.filter(
+            cancellation_id=denied_case.json()['id'], event_type='efectiva',
+        ).exists())
 
     def test_l2_authorization_and_scoped_l3_start_are_explicit_and_historical(self):
         project = Project.objects.create(client=self.client_record, name='Inicio B4-09')

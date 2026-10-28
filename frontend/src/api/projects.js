@@ -117,3 +117,34 @@ export async function unlinkContractedService(projectId, linkId, payload) {
   const { data } = await axiosInstance.post(`/api/projects/${projectId}/contracted-services/${linkId}/withdrawal`, payload);
   return data;
 }
+
+export async function getProjectCancellations(projectId) {
+  const { data } = await axiosInstance.get(`/api/projects/${projectId}/cancellations`);
+  return data;
+}
+
+export async function openProjectCancellation(projectId, payload) {
+  const { data } = await axiosInstance.post(`/api/projects/${projectId}/cancellations`, payload);
+  return data;
+}
+
+export async function evaluateProjectCancellation(projectId, cancellationId, payload) {
+  const { data } = await axiosInstance.post(
+    `/api/projects/${projectId}/cancellations/${cancellationId}/technical-evaluation`, payload,
+  );
+  return data;
+}
+
+export async function decideProjectCancellation(projectId, cancellationId, payload) {
+  const { data } = await axiosInstance.post(
+    `/api/projects/${projectId}/cancellations/${cancellationId}/decision`, payload,
+  );
+  return data;
+}
+
+export async function recordProjectCancellationEffectivity(projectId, cancellationId, payload) {
+  const { data } = await axiosInstance.post(
+    `/api/projects/${projectId}/cancellations/${cancellationId}/effectivity`, payload,
+  );
+  return data;
+}
