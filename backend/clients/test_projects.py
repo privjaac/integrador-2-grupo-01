@@ -733,6 +733,7 @@ class ProjectApiTests(TransactionTestCase):
         commercial = self.evaluate_project_cancellation_commercially(project, cancellation_id)
         self.assertEqual(commercial.status_code, 200, commercial.text)
         escalation_payload = {
+            'is_urgent': True,
             'reason': 'Comunicación solicita intervención L1',
             'source_origin': 'Documento recibido e incorporado al expediente',
             'source_reference': 'DOC-L1-2026-01',
@@ -740,6 +741,13 @@ class ProjectApiTests(TransactionTestCase):
             'evidence': 'Expediente/ANEXO-L1-01',
         }
         route = f'/api/projects/{project.id}/cancellations/{cancellation_id}/escalations/l1'
+        non_urgent = self.api.post(route, headers=self.tokens['L2'], json={
+            **escalation_payload, 'is_urgent': False, 'source_reference': 'DOC-L1-NOT-URGENT',
+        })
+        self.assertEqual(non_urgent.status_code, 422, non_urgent.text)
+        self.assertFalse(ProjectCancellationEvent.objects.filter(
+            cancellation_id=cancellation_id, event_type='escalamiento_l1',
+        ).exists())
         escalated = self.api.post(route, headers=self.tokens['L2'], json=escalation_payload)
         self.assertEqual(escalated.status_code, 200, escalated.text)
         event = ProjectCancellationEvent.objects.get(cancellation_id=cancellation_id, event_type='escalamiento_l1')
@@ -798,6 +806,7 @@ class ProjectApiTests(TransactionTestCase):
             f'/api/projects/{project.id}/cancellations/{cancellation_id}/escalations/l1',
             headers=self.tokens['L2'], json={
                 'reason': 'Llegó solicitud formal de intervención L1',
+                'is_urgent': True,
                 'source_origin': 'Expediente del proyecto', 'source_reference': 'DOC-ORDER-01',
                 'received_at': timezone.now().isoformat(), 'evidence': 'EXP-ORDER-ANEXO-01',
             },

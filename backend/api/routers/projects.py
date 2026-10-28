@@ -1467,6 +1467,7 @@ def record_project_cancellation_l1_escalation(
                 reason=payload.reason, evidence=payload.evidence,
                 data={
                     'requests_l1_intervention': True,
+                    'is_urgent': payload.is_urgent,
                     'source_origin': payload.source_origin,
                     'source_reference': payload.source_reference,
                     'received_at': payload.received_at.isoformat(),

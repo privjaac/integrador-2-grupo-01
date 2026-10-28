@@ -383,6 +383,7 @@ class ProjectCancellationCommercialEvaluation(SafeInputModel):
 
 
 class ProjectCancellationL1Escalation(SafeInputModel):
+    is_urgent: Literal[True]
     reason: str = Field(min_length=1)
     source_origin: str = Field(min_length=1, max_length=200)
     source_reference: str = Field(min_length=1, max_length=200)
