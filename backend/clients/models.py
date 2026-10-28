@@ -743,6 +743,8 @@ class ProjectCancellationEvent(models.Model):
         ('autorizada', 'Cancelación autorizada'),
         ('denegada', 'Cancelación denegada'),
         ('efectiva', 'Cancelación efectiva'),
+        ('decision_l1_autorizada', 'Cancelación excepcional autorizada por L1'),
+        ('decision_l1_denegada', 'Cancelación excepcional denegada por L1'),
     ]
 
     cancellation = models.ForeignKey(
@@ -774,6 +776,11 @@ class ProjectCancellationEvent(models.Model):
                 fields=['cancellation'], condition=models.Q(event_type='efectiva'),
                 name='project_cancel_single_effectivity',
             ),
+            models.UniqueConstraint(
+                fields=['cancellation'],
+                condition=models.Q(event_type__in=['decision_l1_autorizada', 'decision_l1_denegada']),
+                name='project_cancel_single_l1_decision',
+            ),
             models.CheckConstraint(
                 condition=(models.Q(event_type='efectiva', effective_at__isnull=False)
                            | (~models.Q(event_type='efectiva') & models.Q(effective_at__isnull=True))),
@@ -788,6 +795,75 @@ class ProjectCancellationEvent(models.Model):
 
     def delete(self, *args, **kwargs):
         raise ValueError('El historial de cancelación de proyectos es inmutable')
+
+
+class ProjectResumption(models.Model):
+    """Independent resumption record linked to an effective cancellation."""
+
+    cancellation = models.OneToOneField(
+        ProjectCancellation, on_delete=models.PROTECT, related_name='resumption',
+    )
+    project = models.ForeignKey(Project, on_delete=models.PROTECT, related_name='resumptions')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'project_resumptions'
+        ordering = ['created_at', 'id']
+
+
+class ProjectResumptionEvent(models.Model):
+    EVENT_CHOICES = [
+        ('evaluacion_tecnica', 'Evaluación técnica L3'),
+        ('decision_comercial_aprobada', 'Decisión comercial aprobada por L2'),
+        ('decision_comercial_denegada', 'Decisión comercial denegada por L2'),
+        ('decision_l1_aprobada', 'Decisión L1 aprobada'),
+        ('decision_l1_denegada', 'Decisión L1 denegada'),
+        ('reanudacion_registrada', 'Reanudación registrada'),
+    ]
+
+    resumption = models.ForeignKey(
+        ProjectResumption, on_delete=models.PROTECT, related_name='events',
+    )
+    event_type = models.CharField(max_length=32, choices=EVENT_CHOICES)
+    actor = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='project_resumption_events',
+    )
+    reason = models.TextField()
+    evidence = models.TextField()
+    data = models.JSONField(default=dict)
+    occurred_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'project_resumption_events'
+        ordering = ['occurred_at', 'id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['resumption'], condition=models.Q(event_type='evaluacion_tecnica'),
+                name='project_resume_single_technical_eval',
+            ),
+            models.UniqueConstraint(
+                fields=['resumption'], condition=models.Q(event_type__in=[
+                    'decision_comercial_aprobada', 'decision_comercial_denegada',
+                ]), name='project_resume_single_l2_decision',
+            ),
+            models.UniqueConstraint(
+                fields=['resumption'], condition=models.Q(event_type__in=[
+                    'decision_l1_aprobada', 'decision_l1_denegada',
+                ]), name='project_resume_single_l1_decision',
+            ),
+            models.UniqueConstraint(
+                fields=['resumption'], condition=models.Q(event_type='reanudacion_registrada'),
+                name='project_resume_single_registration',
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValueError('El historial de reanudación de proyectos es inmutable')
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError('El historial de reanudación de proyectos es inmutable')
 
 
 class ProjectTaskClassification(models.Model):

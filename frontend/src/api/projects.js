@@ -148,3 +148,8 @@ export async function recordProjectCancellationEffectivity(projectId, cancellati
   );
   return data;
 }
+
+export async function getProjectResumptions(projectId) {
+  const { data } = await axiosInstance.get(`/api/projects/${projectId}/resumptions`);
+  return data;
+}

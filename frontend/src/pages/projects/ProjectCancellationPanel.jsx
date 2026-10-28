@@ -10,6 +10,8 @@ const labels = {
   evaluacion_tecnica: "Evaluación técnica L3",
   autorizada: "Autorización ordinaria L2",
   denegada: "Denegación L2",
+  decision_l1_autorizada: "Autorización excepcional L1",
+  decision_l1_denegada: "Denegación excepcional L1",
   efectiva: "Cancelación efectiva",
 };
 
@@ -35,7 +37,7 @@ export default function ProjectCancellationPanel({ project, canRequest, canEvalu
 
   const current = [...cancellations].reverse().find((item) => {
     const last = item.events.at(-1)?.event_type;
-    return !["denegada", "efectiva"].includes(last);
+    return !["denegada", "decision_l1_denegada", "efectiva"].includes(last);
   });
   const latestEvent = current?.events.at(-1);
   const isEffective = cancellations.some((item) => item.events.some((event) => event.event_type === "efectiva"));

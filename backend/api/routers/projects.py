@@ -13,6 +13,8 @@ from api.schemas.projects import (
     ProjectCancellationCreate, ProjectCancellationDecision,
     ProjectCancellationEffectivity, ProjectCancellationTechnicalEvaluation,
     ProjectCancellationCommercialEvaluation, ProjectCancellationL1Escalation,
+    ProjectCancellationL1Decision, ProjectResumptionTechnicalEvaluation,
+    ProjectResumptionDecision,
     ProjectCreate, ProjectDeliveryAuthorizationCreate, ProjectExecutionReturn,
     ProjectDeliveryCreate, ProjectDeliveryFormalizeInput, ProjectDeliveryTechnicalReviewInput,
     ProjectReadyForDeliveryInput, ProjectResponse, ProjectStartReadiness,
@@ -28,6 +30,7 @@ from clients.models import (
     ProjectDeliveryAuthorizationEvent, ProjectDelivery, ProjectDeliveryTechnicalReview,
     ProjectDeliveryTransition, ProjectEvent, ProjectTaskClassification, ProjectTechnicalEvaluation,
     Task, TaskEvent, ContractedService, ProjectContractedService,
+    ProjectResumption, ProjectResumptionEvent,
     OrganizationalSubstitution, ProjectLeadership,
 )
 
@@ -244,11 +247,76 @@ def lock_coordinated_project(project_id: int, actor: Collaborator) -> Project:
 
 
 def ensure_project_not_cancelled(project_id: int) -> None:
-    if ProjectCancellationEvent.objects.filter(
+    effective = current_effective_cancellation(project_id)
+    if effective is None:
+        return
+    resumed = ProjectResumptionEvent.objects.filter(
+        resumption__project_id=project_id,
+        resumption__cancellation=effective.cancellation,
+        event_type='reanudacion_registrada', occurred_at__gt=effective.occurred_at,
+    ).exists()
+    if not resumed:
+        raise HTTPException(status_code=409, detail='El alcance del proyecto tiene una cancelación efectiva')
+
+
+def current_effective_cancellation(project_id: int) -> ProjectCancellationEvent | None:
+    return ProjectCancellationEvent.objects.filter(
         cancellation__project_id=project_id, event_type='efectiva',
         effective_at__lte=timezone.now(),
+    ).order_by('-effective_at', '-id').first()
+
+
+def require_current_cancellation_for_resumption(
+    project_id: int, cancellation: ProjectCancellation,
+) -> ProjectCancellationEvent:
+    effective = current_effective_cancellation(project_id)
+    if effective is None or effective.cancellation_id != cancellation.id:
+        raise HTTPException(status_code=409, detail='La cancelación ya no es la vigente para reanudar este proyecto')
+    if ProjectResumptionEvent.objects.filter(
+        resumption__project_id=project_id,
+        resumption__cancellation=cancellation,
+        event_type='reanudacion_registrada', occurred_at__gt=effective.occurred_at,
     ).exists():
-        raise HTTPException(status_code=409, detail='El alcance del proyecto tiene una cancelación efectiva')
+        raise HTTPException(status_code=409, detail='La cancelación ya fue reanudada')
+    return effective
+
+
+def l1_exception_is_accredited(cancellation: ProjectCancellation) -> bool:
+    events = list(cancellation.events.order_by('occurred_at', 'id'))
+    technical = next((item for item in events if item.event_type == 'evaluacion_tecnica'), None)
+    commercial_exception = any(
+        item.event_type == 'escalamiento_l1'
+        and item.data.get('source') == 'evaluacion_comercial_l2'
+        and item.data.get('within_l2_competence') is False
+        for item in events
+    )
+    formal_escalation = any(
+        item.event_type == 'escalamiento_l1'
+        and item.data.get('requests_l1_intervention') is True
+        and item.data.get('is_urgent') is True
+        and item.data.get('source_origin') and item.data.get('source_reference')
+        and item.data.get('received_at') and item.evidence.strip()
+        for item in events
+    )
+    return bool(
+        (technical and technical.data.get('l1_intervention_required') is True)
+        or commercial_exception or formal_escalation
+    )
+
+
+def require_l1_exception_evaluations(cancellation: ProjectCancellation) -> tuple[dict, dict]:
+    if not l1_exception_is_accredited(cancellation):
+        raise HTTPException(status_code=409, detail='No existe una excepción L1 acreditada para esta cancelación')
+    events = list(cancellation.events.order_by('occurred_at', 'id'))
+    technical = next((item for item in events if item.event_type == 'evaluacion_tecnica'), None)
+    commercial = next((
+        item for item in reversed(events)
+        if item.event_type == 'evaluacion_comercial'
+        or (item.event_type == 'escalamiento_l1' and item.data.get('source') == 'evaluacion_comercial_l2')
+    ), None)
+    if technical is None or commercial is None:
+        raise HTTPException(status_code=409, detail='Se requieren las evaluaciones técnica L3 y comercial L2 antes de decidir')
+    return technical.data, commercial.data
 
 
 def cancellation_latest_event(cancellation: ProjectCancellation):
@@ -257,7 +325,9 @@ def cancellation_latest_event(cancellation: ProjectCancellation):
 
 def cancellation_is_open(cancellation: ProjectCancellation) -> bool:
     latest = cancellation_latest_event(cancellation)
-    return latest is None or latest.event_type not in {'denegada', 'efectiva'}
+    return latest is None or latest.event_type not in {
+        'denegada', 'decision_l1_denegada', 'efectiva',
+    }
 
 
 def require_accredited_ordinary_cancellation_competence(cancellation: ProjectCancellation) -> dict:
@@ -1666,6 +1736,8 @@ def decide_project_cancellation(
                 'evaluacion_tecnica', 'evaluacion_comercial', 'escalamiento_l1',
             }:
                 raise HTTPException(status_code=409, detail='L3 debe evaluar primero las consecuencias técnicas')
+            if l1_exception_is_accredited(cancellation):
+                raise HTTPException(status_code=409, detail='El caso requiere intervención L1 y no puede resolverse por L2')
             if not payload.authorized:
                 event_type = 'denegada'
                 data = {'commercial_consequences': 'No se autorizó la cancelación ordinaria'}
@@ -1724,11 +1796,16 @@ def record_project_cancellation_effectivity(
                 raise HTTPException(status_code=404, detail='Solicitud de cancelación no encontrada')
             latest = cancellation_latest_event(cancellation)
             if latest is None or latest.event_type != 'autorizada':
-                raise HTTPException(status_code=409, detail='Solo una cancelación autorizada puede hacerse efectiva')
-            require_accredited_ordinary_cancellation_competence(cancellation)
+                if latest is None or latest.event_type != 'decision_l1_autorizada':
+                    raise HTTPException(status_code=409, detail='Solo una cancelación autorizada puede hacerse efectiva')
+            if latest.event_type == 'autorizada':
+                require_accredited_ordinary_cancellation_competence(cancellation)
+                planned_effective_at = datetime.fromisoformat(latest.data['planned_effective_at'])
+            else:
+                require_l1_exception_evaluations(cancellation)
+                planned_effective_at = datetime.fromisoformat(latest.data['planned_effective_at'])
             effective_at = timezone.now()
-            planned = datetime.fromisoformat(latest.data['planned_effective_at'])
-            if planned > effective_at:
+            if planned_effective_at > effective_at:
                 raise HTTPException(status_code=409, detail='La fecha prevista todavía no ha llegado')
             event = ProjectCancellationEvent.objects.create(
                 cancellation=cancellation, event_type='efectiva', actor=actor,
@@ -1747,6 +1824,245 @@ def record_project_cancellation_effectivity(
             })
     except IntegrityError:
         raise HTTPException(status_code=409, detail='No se pudo registrar la efectividad de la cancelación')
+    return cancellation_response(ProjectCancellation.objects.select_related('opened_by').prefetch_related(
+        'events__actor',
+    ).get(pk=cancellation_id))
+
+
+def resumption_response(resumption: ProjectResumption) -> dict:
+    return {
+        'id': resumption.id,
+        'project_id': resumption.project_id,
+        'cancellation_id': resumption.cancellation_id,
+        'events': [
+            {
+                'event_type': item.event_type, 'actor_id': item.actor_id,
+                'actor_name': f'{item.actor.first_name} {item.actor.last_name}',
+                'reason': item.reason, 'evidence': item.evidence,
+                'data': item.data, 'occurred_at': item.occurred_at.isoformat(),
+            }
+            for item in resumption.events.select_related('actor').all()
+        ],
+    }
+
+
+@router.get('/{project_id}/resumptions')
+def list_project_resumptions(project_id: int, user: dict = Depends(get_current_user)):
+    require_project_reader(user)
+    if not Project.objects.filter(pk=project_id).exists():
+        raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+    if user.get('role') == 'L3' and not ProjectCoordination.objects.filter(
+        project_id=project_id, coordinator_id=user.get('collaborator_id'), is_active=True,
+        coordinator__is_active=True, coordinator__role__level='L3',
+    ).exists():
+        raise HTTPException(status_code=404, detail='Proyecto fuera de tu coordinación vigente')
+    return [resumption_response(item) for item in ProjectResumption.objects.filter(
+        project_id=project_id,
+    ).select_related('cancellation').prefetch_related('events__actor')]
+
+
+def cancellation_requires_l1_resumption(cancellation: ProjectCancellation) -> bool:
+    return cancellation.events.filter(
+        event_type='decision_l1_autorizada',
+    ).exists()
+
+
+@router.post('/{project_id}/cancellations/{cancellation_id}/resumption/technical-evaluation', status_code=status.HTTP_201_CREATED)
+def evaluate_project_resumption(
+    project_id: int, cancellation_id: int, payload: ProjectResumptionTechnicalEvaluation,
+    user: dict = Depends(get_current_user),
+):
+    actor = active_l3_actor(user)
+    try:
+        with transaction.atomic():
+            project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
+            if project is None:
+                raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+            coordination = ProjectCoordination.objects.select_for_update(of=('self',)).filter(
+                project=project, coordinator=actor, is_active=True,
+                coordinator__is_active=True, coordinator__role__level='L3',
+            ).first()
+            if coordination is None:
+                raise HTTPException(status_code=404, detail='Proyecto fuera de tu coordinación vigente')
+            cancellation = ProjectCancellation.objects.select_for_update(of=('self',)).filter(
+                pk=cancellation_id, project=project,
+            ).first()
+            if cancellation is None:
+                raise HTTPException(status_code=409, detail='La reanudación requiere una cancelación efectiva vigente')
+            require_current_cancellation_for_resumption(project_id, cancellation)
+            if ProjectResumption.objects.filter(cancellation=cancellation).exists():
+                raise HTTPException(status_code=409, detail='La cancelación ya tiene un expediente de reanudación')
+            resumption = ProjectResumption.objects.create(cancellation=cancellation, project=project)
+            ProjectResumptionEvent.objects.create(
+                resumption=resumption, event_type='evaluacion_tecnica', actor=actor,
+                reason=payload.feasibility, evidence=payload.evidence,
+                data={'feasibility': payload.feasibility, 'pending_work': payload.pending_work},
+            )
+            project_cancellation_audit(project, actor, 'reevaluacion_tecnica_reanudacion', payload.feasibility, {
+                'cancellation_id': cancellation.id, 'resumption_id': resumption.id,
+                'pending_work': payload.pending_work, 'evidence': payload.evidence,
+            })
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail='No se pudo registrar la evaluación de reanudación')
+    return resumption_response(ProjectResumption.objects.get(pk=resumption.pk))
+
+
+@router.post('/resumptions/{resumption_id}/commercial-decision')
+def decide_project_resumption_commercially(
+    resumption_id: int, payload: ProjectResumptionDecision, user: dict = Depends(get_current_user),
+):
+    actor = active_l2_actor(user)
+    try:
+        with transaction.atomic():
+            candidate = ProjectResumption.objects.filter(pk=resumption_id).values('project_id').first()
+            if candidate is None:
+                raise HTTPException(status_code=404, detail='Expediente de reanudación no encontrado')
+            project = Project.objects.select_for_update(of=('self',)).get(pk=candidate['project_id'])
+            resumption = ProjectResumption.objects.select_for_update(of=('self',)).select_related(
+                'cancellation',
+            ).get(pk=resumption_id)
+            if not resumption.events.filter(event_type='evaluacion_tecnica').exists():
+                raise HTTPException(status_code=409, detail='Se requiere evaluación técnica L3')
+            require_current_cancellation_for_resumption(project.id, resumption.cancellation)
+            if resumption.events.filter(event_type__in=[
+                'decision_comercial_aprobada', 'decision_comercial_denegada',
+            ]).exists():
+                raise HTTPException(status_code=409, detail='La decisión comercial ya fue registrada')
+            require_current_cancellation_for_resumption(project.id, resumption.cancellation)
+            event_type = 'decision_comercial_aprobada' if payload.authorized else 'decision_comercial_denegada'
+            event = ProjectResumptionEvent.objects.create(
+                resumption=resumption, event_type=event_type, actor=actor,
+                reason=payload.reason, evidence=payload.evidence,
+                data={'conditions': payload.conditions},
+            )
+            project_cancellation_audit(project, actor, f'reanudacion_{event_type}', payload.reason, {
+                'resumption_id': resumption.id, 'cancellation_id': resumption.cancellation_id,
+                'conditions': payload.conditions, 'evidence': payload.evidence,
+            })
+            if payload.authorized and not cancellation_requires_l1_resumption(resumption.cancellation):
+                register_resumption(project, resumption, actor, event)
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail='No se pudo registrar la decisión comercial de reanudación')
+    return resumption_response(ProjectResumption.objects.get(pk=resumption_id))
+
+
+def register_resumption(project: Project, resumption: ProjectResumption, actor: Collaborator, decision_event):
+    if resumption.events.filter(event_type='reanudacion_registrada').exists():
+        raise HTTPException(status_code=409, detail='La reanudación ya fue registrada')
+    effective = require_current_cancellation_for_resumption(project.id, resumption.cancellation)
+    if effective.effective_at is None or effective.effective_at > timezone.now():
+        raise HTTPException(status_code=409, detail='No existe una cancelación efectiva que pueda reanudarse')
+    ProjectResumptionEvent.objects.create(
+        resumption=resumption, event_type='reanudacion_registrada', actor=actor,
+        reason='Reanudación autorizada conforme a las evaluaciones registradas',
+        evidence=decision_event.evidence,
+        data={
+            'cancellation_effectivity_event_id': effective.id,
+            'decision_event_id': decision_event.id,
+            'project_status_preserved': project.status,
+            'automatic_task_or_financial_effects': False,
+        },
+    )
+    project_cancellation_audit(project, actor, 'reanudacion_registrada', 'Reanudación autorizada', {
+        'resumption_id': resumption.id, 'cancellation_id': resumption.cancellation_id,
+        'decision_event_id': decision_event.id, 'project_status_preserved': project.status,
+    })
+
+
+@router.post('/resumptions/{resumption_id}/exceptional-decision')
+def decide_project_resumption_exceptionally(
+    resumption_id: int, payload: ProjectResumptionDecision, user: dict = Depends(get_current_user),
+):
+    actor = active_l1_actor(user)
+    try:
+        with transaction.atomic():
+            candidate = ProjectResumption.objects.filter(pk=resumption_id).values('project_id').first()
+            if candidate is None:
+                raise HTTPException(status_code=404, detail='Expediente de reanudación no encontrado')
+            project = Project.objects.select_for_update(of=('self',)).get(pk=candidate['project_id'])
+            resumption = ProjectResumption.objects.select_for_update(of=('self',)).select_related(
+                'cancellation',
+            ).get(pk=resumption_id)
+            require_current_cancellation_for_resumption(project.id, resumption.cancellation)
+            if not cancellation_requires_l1_resumption(resumption.cancellation):
+                raise HTTPException(status_code=409, detail='Esta reanudación no requiere decisión L1')
+            if not resumption.events.filter(event_type='evaluacion_tecnica').exists() or not resumption.events.filter(
+                event_type='decision_comercial_aprobada',
+            ).exists():
+                raise HTTPException(status_code=409, detail='Se requieren evaluación L3 y decisión comercial L2 aprobatoria')
+            if resumption.events.filter(event_type__in=['decision_l1_aprobada', 'decision_l1_denegada']).exists():
+                raise HTTPException(status_code=409, detail='La decisión L1 ya fue registrada')
+            event_type = 'decision_l1_aprobada' if payload.authorized else 'decision_l1_denegada'
+            event = ProjectResumptionEvent.objects.create(
+                resumption=resumption, event_type=event_type, actor=actor,
+                reason=payload.reason, evidence=payload.evidence,
+                data={'conditions': payload.conditions, 'authority': 'L1 exceptional resumption'},
+            )
+            project_cancellation_audit(project, actor, f'reanudacion_{event_type}', payload.reason, {
+                'resumption_id': resumption.id, 'cancellation_id': resumption.cancellation_id,
+                'conditions': payload.conditions, 'evidence': payload.evidence,
+            })
+            if payload.authorized:
+                register_resumption(project, resumption, actor, event)
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail='No se pudo registrar la decisión excepcional de reanudación')
+    return resumption_response(ProjectResumption.objects.get(pk=resumption_id))
+
+
+@router.post('/{project_id}/cancellations/{cancellation_id}/exceptional-decision')
+def decide_project_cancellation_exceptionally(
+    project_id: int, cancellation_id: int, payload: ProjectCancellationL1Decision,
+    user: dict = Depends(get_current_user),
+):
+    actor = active_l1_actor(user)
+    try:
+        with transaction.atomic():
+            project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
+            if project is None:
+                raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+            cancellation = ProjectCancellation.objects.select_for_update(of=('self',)).filter(
+                pk=cancellation_id, project=project,
+            ).first()
+            if cancellation is None:
+                raise HTTPException(status_code=404, detail='Solicitud de cancelación no encontrada')
+            latest = cancellation_latest_event(cancellation)
+            if latest is None or latest.event_type not in {'evaluacion_tecnica', 'evaluacion_comercial', 'escalamiento_l1'}:
+                raise HTTPException(status_code=409, detail='El caso no admite decisión excepcional L1')
+            if any(item.event_type in {'autorizada', 'denegada', 'decision_l1_autorizada', 'decision_l1_denegada', 'efectiva'}
+                   for item in cancellation.events.all()):
+                raise HTTPException(status_code=409, detail='El caso ya fue decidido')
+            technical, commercial = require_l1_exception_evaluations(cancellation)
+            if payload.authorized and cancellation.events.filter(event_type='escalamiento_l1').exists() and not l1_exception_is_accredited(cancellation):
+                raise HTTPException(status_code=409, detail='El escalamiento no acredita una intervención L1')
+            if payload.authorized and payload.planned_effective_at < timezone.now():
+                raise HTTPException(status_code=422, detail='La fecha prevista no puede ser anterior a la decisión')
+            event_type = 'decision_l1_autorizada' if payload.authorized else 'decision_l1_denegada'
+            data = {
+                'authority': 'L1 exceptional cancellation',
+                'technical_evaluation_event_id': next(
+                    item.id for item in cancellation.events.all() if item.event_type == 'evaluacion_tecnica'
+                ),
+                'commercial_evaluation_event_id': next(
+                    item.id for item in reversed(list(cancellation.events.all()))
+                    if item.event_type == 'evaluacion_comercial'
+                    or (item.event_type == 'escalamiento_l1' and item.data.get('source') == 'evaluacion_comercial_l2')
+                ),
+                'commercial_consequences': commercial.get('commercial_consequences'),
+                'effectivity_conditions': commercial.get('effectivity_conditions'),
+            }
+            if payload.authorized:
+                ensure_project_not_cancelled(project_id)
+                data['planned_effective_at'] = payload.planned_effective_at.isoformat()
+                data['preserves_restriction_until_resumption'] = True
+            ProjectCancellationEvent.objects.create(
+                cancellation=cancellation, event_type=event_type, actor=actor,
+                reason=payload.reason, evidence=payload.evidence, data=data,
+            )
+            project_cancellation_audit(project, actor, f'cancelacion_{event_type}', payload.reason, {
+                'cancellation_id': cancellation.id, **data, 'evidence': payload.evidence,
+            })
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail='No se pudo registrar la decisión excepcional L1')
     return cancellation_response(ProjectCancellation.objects.select_related('opened_by').prefetch_related(
         'events__actor',
     ).get(pk=cancellation_id))

@@ -15,7 +15,8 @@ from api.schemas.tasks import (
 )
 from clients.models import (
     Collaborator, Project, ProjectCoordination, ProjectLeadership, Task,
-    ProjectCancellationEvent, TaskComment, TaskEvent, TeamMembership,
+    ProjectCancellationEvent, TaskComment, TaskEvent, TeamMembership, OrganizationalSubstitution,
+    ProjectResumptionEvent,
 )
 
 CANCELABLE_TASK_STATUSES = {'Pendiente', 'Asignada', 'En proceso', 'En revisión', 'Observada'}
@@ -35,11 +36,16 @@ def lock_project_for_task_action(project_id: int, *, allow_cancelled: bool = Fal
     project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
     if project is None:
         raise HTTPException(404, 'Proyecto no encontrado')
-    cancelled = ProjectCancellationEvent.objects.filter(
+    effective = ProjectCancellationEvent.objects.filter(
         cancellation__project_id=project_id, event_type='efectiva',
         effective_at__lte=timezone.now(),
-    ).exists()
-    if cancelled and not allow_cancelled:
+    ).order_by('-effective_at', '-id').first()
+    resumed = bool(effective and ProjectResumptionEvent.objects.filter(
+        resumption__project_id=project_id,
+        resumption__cancellation=effective.cancellation,
+        event_type='reanudacion_registrada', occurred_at__gt=effective.occurred_at,
+    ).exists())
+    if effective and not resumed and not allow_cancelled:
         raise HTTPException(409, 'El alcance del proyecto tiene una cancelación efectiva')
     return project
 

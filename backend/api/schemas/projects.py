@@ -462,3 +462,59 @@ class ProjectCancellationEffectivity(SafeInputModel):
         if not self.conditions_satisfied:
             raise ValueError('La cancelación no puede hacerse efectiva con condiciones pendientes')
         return self
+
+
+class ProjectCancellationL1Decision(SafeInputModel):
+    authorized: bool
+    reason: str = Field(min_length=1)
+    evidence: str = Field(min_length=1)
+    planned_effective_at: datetime | None = None
+
+    @field_validator('reason', 'evidence')
+    @classmethod
+    def require_l1_decision_details(cls, value):
+        if not value.strip():
+            raise ValueError('La decisión L1 requiere motivo y evidencia')
+        return value.strip()
+
+    @field_validator('planned_effective_at')
+    @classmethod
+    def require_aware_l1_date(cls, value):
+        if value is not None and value.utcoffset() is None:
+            raise ValueError('La fecha prevista debe incluir zona horaria')
+        return value
+
+    @model_validator(mode='after')
+    def validate_l1_outcome(self):
+        if self.authorized and self.planned_effective_at is None:
+            raise ValueError('La autorización L1 requiere fecha prevista de efectividad')
+        if not self.authorized and self.planned_effective_at is not None:
+            raise ValueError('La denegación L1 no puede fijar fecha de efectividad')
+        return self
+
+
+class ProjectResumptionTechnicalEvaluation(SafeInputModel):
+    feasibility: str = Field(min_length=1)
+    pending_work: str = Field(min_length=1)
+    evidence: str = Field(min_length=1)
+
+    @field_validator('feasibility', 'pending_work', 'evidence')
+    @classmethod
+    def require_resumption_technical_details(cls, value):
+        if not value.strip():
+            raise ValueError('La evaluación técnica requiere viabilidad, trabajo pendiente y evidencia')
+        return value.strip()
+
+
+class ProjectResumptionDecision(SafeInputModel):
+    authorized: bool
+    reason: str = Field(min_length=1)
+    conditions: str = Field(min_length=1)
+    evidence: str = Field(min_length=1)
+
+    @field_validator('reason', 'conditions', 'evidence')
+    @classmethod
+    def require_resumption_decision_details(cls, value):
+        if not value.strip():
+            raise ValueError('La decisión requiere motivo, condiciones y evidencia')
+        return value.strip()
