@@ -60,6 +60,7 @@ from api.routers import (
     projects,
     tasks,
     dashboard,
+    collaborator_payments,
 )
 
 
@@ -150,6 +151,13 @@ app.include_router(
     users.router,
     prefix='/api/users',
     tags=['Colaboradores'],
+    dependencies=[Depends(require_route_permission)],
+)
+
+app.include_router(
+    collaborator_payments.router,
+    prefix='/api/collaborators/payments',
+    tags=['Pagos a colaboradores'],
     dependencies=[Depends(require_route_permission)],
 )
 

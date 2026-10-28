@@ -73,14 +73,11 @@ export default function ProtectedRoute({ children }) {
   // Ejemplo: un Developer (L5) intenta acceder a /roles directamente
   // escribiendo la URL → lo redirige a /clientes silenciosamente.
   //
-  // Solo verifica rutas principales (primer segmento de la URL).
-  // Las sub-rutas (ej: /clientes/5/editar) se verifican en el componente
-  // con can() de permissions.js.
+  // Verifica la ruta completa para respetar capacidades específicas de
+  // subrutas, además de las rutas principales y sus subrutas existentes.
   // --------------------------------------------------------------------------
 
-  const basePath = "/" + location.pathname.split("/")[1];
-
-  if (!canAccessRoute(user, basePath)) {
+  if (!canAccessRoute(user, location.pathname)) {
     return <Navigate to="/clientes" replace />;
   }
 

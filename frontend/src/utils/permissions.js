@@ -167,6 +167,11 @@ const PERMISSIONS = {
     delete: [],
   },
 
+  collaboratorPayments: {
+    view: ["L1", "L2"],
+    record: ["L1", "L2"],
+  },
+
   // ── MÓDULO ROLES ─────────────────────────────────────────────────────────
   roles: {
     // PB-ROL-001/003: cualquier colaborador autenticado puede consultar roles.
@@ -303,6 +308,7 @@ export function canAccessRoute(user, route) {
     "/proyectos": ["projects", "view"],
     "/tareas": ["tasks", "view"],
     "/usuarios": ["users", "view"],
+    "/colaboradores/pagos": ["collaboratorPayments", "view"],
     "/roles": ["roles", "view"],
     "/catalogo": ["catalog", "view"],
   };

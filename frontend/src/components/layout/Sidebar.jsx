@@ -95,6 +95,12 @@ const NAV_ITEMS = [
         ),
       },
       {
+        path: "/colaboradores/pagos",
+        label: "Pagos a colaboradores",
+        module: "collaboratorPayments",
+        icon: <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><rect x="2" y="5" width="20" height="14" rx="2" /><path d="M2 10h20M7 15h3" /></svg>,
+      },
+      {
         path: "/roles",
         label: "Roles",
         module: "roles",

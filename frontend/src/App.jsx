@@ -21,6 +21,7 @@ const ClientsPage = lazy(() => import("./pages/clients/ClientsPage"));
 const ClientDetail = lazy(() => import("./pages/clients/ClientDetail"));
 const ClientForm = lazy(() => import("./pages/clients/ClientForm"));
 const UsersPage = lazy(() => import("./pages/users/UsersPage"));
+const CollaboratorPaymentsPage = lazy(() => import("./pages/users/CollaboratorPaymentsPage"));
 const CollaboratorDetail = lazy(() => import("./pages/users/CollaboratorDetail"));
 const UserForm = lazy(() => import("./pages/users/UserForm"));
 const RolesPage = lazy(() => import("./pages/roles/RolesPage"));
@@ -55,6 +56,7 @@ export default function App() {
             <Route path="/clientes/:id" element={<ClientDetail />} />
             <Route path="/clientes/:id/editar" element={<ClientForm />} />
             <Route path="/usuarios" element={<UsersPage />} />
+            <Route path="/colaboradores/pagos" element={<CollaboratorPaymentsPage />} />
             <Route path="/usuarios/nuevo" element={<UserForm />} />
             <Route path="/usuarios/:id" element={<CollaboratorDetail />} />
             <Route path="/usuarios/:id/editar" element={<UserForm />} />

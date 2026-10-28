@@ -524,6 +524,12 @@ export default function UsersPage() {
                 : `${totalItems} colaborador${totalItems !== 1 ? "es" : ""} encontrado${totalItems !== 1 ? "s" : ""}`}
             </p>
           </div>
+          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+          {can(user, "collaboratorPayments", "view") && (
+            <Button variant="secondary" size="lg" onClick={() => navigate("/colaboradores/pagos")}>
+              Pagos
+            </Button>
+          )}
           {can(user, "users", "create") && (
             <Button
               variant="primary"
@@ -547,6 +553,7 @@ export default function UsersPage() {
               Nuevo colaborador
             </Button>
           )}
+          </div>
         </div>
 
         {/* Fila 1 — filtros base */}

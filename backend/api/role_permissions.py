@@ -53,6 +53,8 @@ CAPABILITY_LEVELS = {
     'users.edit': {'L1', 'L2'},
     'users.activate': {'L1', 'L2'},
     'users.deactivate': {'L1', 'L2'},
+    'collaboratorPayments.view': {'L1', 'L2'},
+    'collaboratorPayments.record': {'L1', 'L2'},
     'roles.view': {'L1', 'L2', 'L3', 'L4', 'L5'},
     'roles.create': {'L1'},
     'roles.edit': {'L1'},
@@ -142,6 +144,9 @@ ROUTE_CAPABILITIES = {
     'get_collaborators': 'users.view', 'get_collaborator': 'users.view',
     'create_collaborator': 'users.create', 'update_collaborator': 'users.edit',
     'delete_collaborator': 'users.deactivate',
+    'list_collaborator_payments': 'collaboratorPayments.view',
+    'get_payment_collaborators': 'collaboratorPayments.view',
+    'record_collaborator_payment': 'collaboratorPayments.record',
     # Role administration and catalogue.
     'get_roles': 'roles.view', 'get_role': 'roles.view', 'get_permission_catalog': 'roles.view',
     'get_role_history': 'roles.view', 'create_role': 'roles.create',

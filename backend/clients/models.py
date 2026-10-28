@@ -1193,6 +1193,30 @@ class CustomerPaymentAdjustment(models.Model):
         ]
 
 
+class CollaboratorPayment(models.Model):
+    """Immutable record of a completed payment made to a collaborator."""
+    collaborator = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='payments_received',
+    )
+    payment_date = models.DateField()
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    concept = models.CharField(max_length=150)
+    observation = models.CharField(max_length=300, blank=True, default='')
+    reference = models.CharField(max_length=24, unique=True, null=True, blank=True)
+    request_key = models.UUIDField(unique=True)
+    registered_by = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='collaborator_payments_recorded',
+    )
+    registered_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'collaborator_payments'
+        ordering = ['-payment_date', '-registered_at', '-id']
+        constraints = [
+            models.CheckConstraint(condition=models.Q(amount__gt=0), name='collaborator_payment_amount_positive'),
+        ]
+
+
 # ------------------------------------------------------------------------------
 # CUPELOG — Historial de cambios de CUPE
 #
