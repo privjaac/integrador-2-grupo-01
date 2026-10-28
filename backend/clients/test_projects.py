@@ -505,6 +505,12 @@ class ProjectApiTests(TransactionTestCase):
         self.assertEqual(project.status, 'En ejecución')
         self.assertIn('task_snapshot', evaluated.json()['events'][-1]['data'])
 
+        incomplete_commercial = self.evaluate_project_cancellation_commercially(
+            project, cancellation_id, effectivity_conditions=' ',
+        )
+        self.assertEqual(incomplete_commercial.status_code, 422, incomplete_commercial.text)
+        self.assertEqual(ProjectCancellationEvent.objects.filter(cancellation_id=cancellation_id).count(), 2)
+
         unrelated_task = Task.objects.create(
             project=project, title='Aviso urgente ajeno al caso',
             created_by=Collaborator.objects.get(username='project-api-L2'),
