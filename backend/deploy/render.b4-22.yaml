@@ -1,0 +1,32 @@
+# Opt-in Blueprint for the B4-22 reminder job. Select this file explicitly in
+# Render only after supplying the database connection settings and confirming
+# the job's region. This file does not activate a service by itself.
+previews:
+  generation: off
+
+services:
+  - type: cron
+    name: elisa-b4-22-task-deadline-reminders
+    runtime: docker
+    dockerfilePath: backend/Dockerfile.notifications
+    dockerContext: backend
+    dockerCommand: python manage.py process_task_deadline_notifications
+    schedule: '*/15 * * * *'
+    autoDeployTrigger: off
+    envVars:
+      - key: SECRET_KEY
+        sync: false
+      - key: DB_NAME
+        sync: false
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_MASTER_HOST
+        sync: false
+      - key: DB_MASTER_PORT
+        sync: false
+      - key: DB_REPLICA_ENABLED
+        value: 'False'
+      - key: DEBUG
+        value: 'False'

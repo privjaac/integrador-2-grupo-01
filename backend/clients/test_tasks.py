@@ -1,5 +1,7 @@
 from datetime import timedelta
 from io import StringIO
+import sched
+import time
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -1562,6 +1564,126 @@ class TaskWorkflowApiTests(TransactionTestCase):
         call_command('process_task_deadline_notifications', stdout=second)
         self.assertIn('ya existentes: 3', second.getvalue())
         self.assertEqual(InternalNotification.objects.count(), 3)
+
+    def test_deadline_command_check_verifies_java_without_database_writes(self):
+        from unittest.mock import patch
+
+        output = StringIO()
+        with patch(
+            'clients.management.commands.process_task_deadline_notifications.Task.objects.filter',
+            side_effect=AssertionError('check mode must not query tasks'),
+        ):
+            call_command('process_task_deadline_notifications', '--check', stdout=output)
+        self.assertIn('status=ok mode=check', output.getvalue())
+        self.assertIn('run_id=', output.getvalue())
+        self.assertEqual(InternalNotification.objects.count(), 0)
+
+    def test_external_scheduler_invokes_deadline_command_successively(self):
+        now = timezone.now()
+        task = Task.objects.create(
+            project=self.project, title='Recordatorio programado', status='Pendiente',
+            created_by=self.people['L3'], responsible=self.people['L4'],
+            due_at=now + timedelta(hours=12),
+        )
+        scheduler = sched.scheduler(time.monotonic, time.sleep)
+        outputs = []
+
+        def invoke_command():
+            output = StringIO()
+            call_command('process_task_deadline_notifications', stdout=output)
+            outputs.append(output.getvalue())
+
+        scheduler.enter(0, 1, invoke_command)
+        scheduler.enter(0.05, 1, invoke_command)
+        scheduler.run()
+
+        self.assertEqual(len(outputs), 2)
+        first_id = outputs[0].split('run_id=', 1)[1].split()[0]
+        second_id = outputs[1].split('run_id=', 1)[1].split()[0]
+        self.assertNotEqual(first_id, second_id)
+        self.assertIn('status=ok', outputs[0])
+        self.assertIn('Avisos creados: 1', outputs[0])
+        self.assertIn('status=ok', outputs[1])
+        self.assertIn('ya existentes: 1', outputs[1])
+        self.assertEqual(InternalNotification.objects.filter(task=task).count(), 1)
+
+    def test_transient_java_failure_is_reported_and_next_invocation_recovers(self):
+        from django.core.management.base import CommandError
+        from unittest.mock import patch
+        from clients.management.commands import process_task_deadline_notifications as command
+
+        Task.objects.create(
+            project=self.project, title='Recuperación de recordatorio', status='Pendiente',
+            created_by=self.people['L3'], responsible=self.people['L4'],
+            due_at=timezone.now() + timedelta(hours=1),
+        )
+        error_output = StringIO()
+        run_processor = command.compile_and_run_java
+        attempts = 0
+
+        def fail_once_then_run(payload):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise CommandError('transient failure')
+            return run_processor(payload)
+
+        with patch.object(
+            command, 'compile_and_run_java', side_effect=fail_once_then_run,
+        ):
+            with self.assertRaises(CommandError):
+                call_command(
+                    'process_task_deadline_notifications', stdout=StringIO(), stderr=error_output,
+                )
+            self.assertEqual(InternalNotification.objects.count(), 0)
+            output = StringIO()
+            call_command('process_task_deadline_notifications', stdout=output)
+
+        self.assertIn('status=failed error=command_error', error_output.getvalue())
+        self.assertIn('run_id=', error_output.getvalue())
+        self.assertNotIn('transient failure', error_output.getvalue())
+        self.assertIn('status=ok', output.getvalue())
+        self.assertEqual(InternalNotification.objects.count(), 1)
+
+    def test_interrupted_notification_batch_resumes_without_duplicates(self):
+        from unittest.mock import patch
+
+        task = Task.objects.create(
+            project=self.project, title='Reintento de lote', status='Pendiente',
+            created_by=self.people['L3'], responsible=self.people['L4'],
+            due_at=timezone.now() - timedelta(hours=1),
+        )
+        error_output = StringIO()
+        original_create = InternalNotification.objects.get_or_create
+        attempts = 0
+
+        def fail_second_notice(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 2:
+                raise RuntimeError('synthetic processing interruption')
+            return original_create(*args, **kwargs)
+
+        with patch.object(
+            InternalNotification.objects, 'get_or_create', side_effect=fail_second_notice,
+        ):
+            with self.assertRaises(CommandError):
+                call_command(
+                    'process_task_deadline_notifications', stdout=StringIO(), stderr=error_output,
+                )
+
+        self.assertEqual(InternalNotification.objects.filter(task=task).count(), 1)
+        self.assertIn('status=failed error_type=RuntimeError', error_output.getvalue())
+        self.assertNotIn('synthetic processing interruption', error_output.getvalue())
+
+        output = StringIO()
+        call_command('process_task_deadline_notifications', stdout=output)
+        self.assertIn('status=ok', output.getvalue())
+        self.assertIn('ya existentes: 1', output.getvalue())
+        self.assertEqual(
+            set(InternalNotification.objects.filter(task=task).values_list('recipient_id', flat=True)),
+            {self.people['L3'].id, self.people['L4'].id},
+        )
 
     def test_task_create_accepts_optional_deadline_as_local_datetime(self):
         due_local = timezone.localtime(timezone.now() + timedelta(days=2)).replace(tzinfo=None)

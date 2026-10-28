@@ -4,6 +4,8 @@ import logging
 import shutil
 import subprocess
 import tempfile
+import time
+import uuid
 from datetime import timedelta
 from pathlib import Path
 
@@ -47,15 +49,79 @@ def compile_and_run_java(payload):
                 input=payload, check=True, capture_output=True, text=True, timeout=30,
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-            detail = getattr(exc, 'stderr', '') or str(exc)
-            raise CommandError(f'Falló la compilación o ejecución del procesador Java: {detail[:1200]}') from exc
+            raise CommandError(
+                'Falló la compilación o ejecución del procesador Java; consulta el registro operativo.'
+            ) from exc
     return result.stdout
+
+
+def verify_java_runtime():
+    """Fail early unless this execution environment has a working JDK."""
+    tools = {name: shutil.which(name) for name in ('java', 'javac')}
+    if not all(tools.values()):
+        raise CommandError('El procesamiento requiere un JDK disponible (java y javac).')
+    for name, executable in tools.items():
+        try:
+            subprocess.run(
+                [executable, '-version'], check=True, capture_output=True,
+                text=True, timeout=10,
+            )
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            raise CommandError(
+                f'No fue posible comprobar la dependencia {name} del JDK.'
+            ) from exc
 
 
 class Command(BaseCommand):
     help = 'Genera avisos internos de recordatorio o vencimiento de tareas usando el procesador Java.'
 
+    def add_arguments(self, parser):
+        parser.add_argument(
+            '--check', action='store_true',
+            help='Comprueba el JDK y compila/ejecuta el procesador sin consultar ni modificar datos.',
+        )
+
     def handle(self, *args, **options):
+        run_id = uuid.uuid4().hex
+        started = time.monotonic()
+        self.stdout.write(f'run_id={run_id} status=started')
+        try:
+            verify_java_runtime()
+            if options.get('check'):
+                compile_and_run_java('')
+                self.stdout.write(
+                    f'run_id={run_id} status=ok mode=check duration_ms={self._duration_ms(started)}'
+                )
+                return
+            return self._process(run_id, started)
+        except KeyboardInterrupt:
+            self.stderr.write(
+                f'run_id={run_id} status=interrupted duration_ms={self._duration_ms(started)}'
+            )
+            raise
+        except CommandError:
+            self.stderr.write(
+                f'run_id={run_id} status=failed error=command_error '
+                f'duration_ms={self._duration_ms(started)}'
+            )
+            raise
+        except Exception as exc:
+            # Log only the exception type; database/driver messages can contain sensitive values.
+            logger.error(
+                'Falló el procesamiento de recordatorios run_id=%s error_type=%s',
+                run_id, type(exc).__name__,
+            )
+            self.stderr.write(
+                f'run_id={run_id} status=failed error_type={type(exc).__name__} '
+                f'duration_ms={self._duration_ms(started)}'
+            )
+            raise CommandError('No se pudo completar el procesamiento de recordatorios.') from None
+
+    @staticmethod
+    def _duration_ms(started):
+        return round((time.monotonic() - started) * 1000)
+
+    def _process(self, run_id, started):
         from api.routers.tasks import task_queryset
 
         now = timezone.now()
@@ -63,7 +129,10 @@ class Command(BaseCommand):
             due_at__isnull=False, due_at__lte=now + timedelta(hours=24),
         ).select_related('responsible__role', 'created_by__role').order_by('id'))
         if not candidates:
-            self.stdout.write('Sin tareas con vencimiento dentro de las próximas 24 horas o ya vencidas.')
+            self.stdout.write(
+                f'run_id={run_id} status=ok Avisos creados: 0; ya existentes: 0; '
+                f'omitidos: 0; duration_ms={self._duration_ms(started)}.'
+            )
             return
 
         candidate_map = {}
@@ -166,5 +235,7 @@ class Command(BaseCommand):
                     existing_count += 1
 
         self.stdout.write(self.style.SUCCESS(
-            f'Avisos creados: {created_count}; ya existentes: {existing_count}; omitidos: {skipped_count}.'
+            f'run_id={run_id} status=ok Avisos creados: {created_count}; '
+            f'ya existentes: {existing_count}; omitidos: {skipped_count}; '
+            f'duration_ms={self._duration_ms(started)}.'
         ))
