@@ -1084,6 +1084,7 @@ export default function DashboardPage() {
   const now = new Date();
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth();
+  const currentDay = now.getDate();
 
   // Filtros globales
   const [gYear, setGYear] = useState(0); // 0 = todos los años
@@ -1174,8 +1175,8 @@ export default function DashboardPage() {
         if (!c.registration_date) return false;
         const d = new Date(c.registration_date);
         return (
-          d.getMonth() === now.getMonth() &&
-          d.getFullYear() === now.getFullYear()
+          d.getMonth() === currentMonth &&
+          d.getFullYear() === currentYear
         );
       }).length,
       nuevosAnio: filtered.filter(
@@ -1187,7 +1188,7 @@ export default function DashboardPage() {
       colaboradoresInactivos: collaboratorCounts.inactive,
       colaboradoresTotal: collaboratorCounts.total,
     }),
-    [filtered, collaboratorCounts],
+    [filtered, collaboratorCounts, currentMonth, currentYear],
   );
 
   const revenueSeries = useMemo(() => monthlyRevenue.map((series) => ({
@@ -1305,13 +1306,13 @@ export default function DashboardPage() {
   const venc = useMemo(() => ({
     v5: serviceIndicators.upcoming_expirations_30_days.filter((item) => {
       const due = new Date(`${item.documented_expiration}T12:00:00`);
-      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12);
+      const today = new Date(currentYear, currentMonth, currentDay, 12);
       return Math.ceil((due - today) / 86400000) <= 5;
     }),
     v30: serviceIndicators.upcoming_expirations_30_days,
     recurrences: serviceIndicators.upcoming_recurrences_30_days,
     expired: serviceIndicators.expired,
-  }), [serviceIndicators, now]);
+  }), [serviceIndicators, currentYear, currentMonth, currentDay]);
 
   const filterVigencias = (items) => {
     const query = serviceSearch.trim().toLocaleLowerCase("es-PE");
