@@ -26,4 +26,4 @@ class ElomuxPlatformResponse(BaseModel):
     url: str
     is_active: bool
     created_at: datetime
-    updated_at: datetime\n
+    updated_at: datetime
