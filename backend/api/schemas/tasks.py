@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Literal
 
 from pydantic import Field
@@ -11,6 +12,7 @@ class TaskCreate(SafeInputModel):
     description: str | None = None
     status: Literal['Pendiente', 'Asignada'] = 'Pendiente'
     assignee_id: int | None = Field(default=None, gt=0)
+    due_at: datetime | None = None
 
 
 class TaskAssign(SafeInputModel):

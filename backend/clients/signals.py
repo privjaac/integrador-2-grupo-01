@@ -4,6 +4,7 @@ from django.db import transaction
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 
+from api.role_permissions import effective_permissions
 from clients.models import Collaborator, InternalNotification, TaskEvent
 
 logger = logging.getLogger(__name__)
@@ -50,13 +51,20 @@ def _persist_task_event_notifications(event_id):
     if not recipients:
         return
 
-    active_ids = set(Collaborator.objects.filter(
+    active_people = Collaborator.objects.filter(
         pk__in=recipients, is_active=True, role__is_active=True,
-    ).values_list('pk', flat=True))
+    ).select_related('role')
+    active_ids = {
+        person.pk for person in active_people
+        if 'tasks.view' in effective_permissions(person.role)
+    }
     InternalNotification.objects.bulk_create([
         InternalNotification(
             event=event,
+            task=task,
             recipient_id=recipient_id,
+            notice_type='event',
+            source_key=f'event:{event.pk}:recipient:{recipient_id}',
             title=(
                 'Nueva tarea asignada' if is_assignment and recipient_id == event.assignee_id
                 else 'Te removieron de la tarea' if is_reassignment

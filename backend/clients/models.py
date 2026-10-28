@@ -898,6 +898,7 @@ class Task(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     assigned_at = models.DateTimeField(null=True, blank=True)
+    due_at = models.DateTimeField(null=True, blank=True, db_index=True)
     is_blocked = models.BooleanField(default=False)
     block_reason = models.TextField(blank=True, default='')
     block_evidence = models.TextField(blank=True, default='')
@@ -989,10 +990,17 @@ class TaskEvent(models.Model):
 class InternalNotification(models.Model):
     """User-scoped internal notice generated from an approved task event."""
 
-    event = models.ForeignKey(TaskEvent, on_delete=models.CASCADE, related_name='notifications')
+    event = models.ForeignKey(
+        TaskEvent, on_delete=models.CASCADE, related_name='notifications', null=True, blank=True,
+    )
+    task = models.ForeignKey(
+        Task, on_delete=models.CASCADE, related_name='internal_notifications', null=True, blank=True,
+    )
     recipient = models.ForeignKey(
         Collaborator, on_delete=models.CASCADE, related_name='internal_notifications',
     )
+    notice_type = models.CharField(max_length=30, default='event')
+    source_key = models.CharField(max_length=160, null=True, blank=True, unique=True)
     title = models.CharField(max_length=100)
     message = models.CharField(max_length=300)
     created_at = models.DateTimeField(auto_now_add=True)

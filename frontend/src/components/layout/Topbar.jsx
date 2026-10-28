@@ -14,6 +14,7 @@ const ROUTE_TITLES = {
   "/usuarios": "Colaboradores",
   "/roles": "Roles y Jerarquías",
   "/catalogo": "Catálogo de Servicios",
+  "/tareas": "Tareas",
 };
 
 export default function Topbar() {

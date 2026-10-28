@@ -18,7 +18,8 @@ def list_internal_notifications(user: dict = Depends(get_current_user)):
     else:
         readable_task_ids = task_queryset(user).values_list('pk', flat=True)
         own_notifications = own_notifications.filter(
-            Q(event__task_id__in=readable_task_ids)
+            Q(task_id__in=readable_task_ids)
+            | Q(event__task_id__in=readable_task_ids)
             | Q(event__event_type='ejecutor_reasignado', event__previous_assignee_id=user['collaborator_id'])
         )
     rows = list(
@@ -29,8 +30,8 @@ def list_internal_notifications(user: dict = Depends(get_current_user)):
         'unread_count': unread,
         'items': [{
             'id': item.id,
-            'task_id': item.event.task_id,
-            'event_type': item.event.event_type,
+            'task_id': item.task_id or item.event.task_id,
+            'event_type': item.event.event_type if item.event_id else item.notice_type,
             'title': item.title,
             'message': item.message,
             'created_at': item.created_at,
@@ -47,7 +48,8 @@ def mark_internal_notification_read(
     if 'tasks.view' in user.get('permissions', []):
         readable_task_ids = task_queryset(user).values_list('pk', flat=True)
         allowed = allowed.filter(
-            Q(event__task_id__in=readable_task_ids)
+            Q(task_id__in=readable_task_ids)
+            | Q(event__task_id__in=readable_task_ids)
             | Q(event__event_type='ejecutor_reasignado', event__previous_assignee_id=user['collaborator_id'])
         )
     else:

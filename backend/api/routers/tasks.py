@@ -306,6 +306,7 @@ def task_response(task: Task, user: dict) -> dict:
         ),
         'created_at': task.created_at.isoformat(),
         'assigned_at': task.assigned_at.isoformat() if task.assigned_at else None,
+        'due_at': task.due_at.isoformat() if task.due_at else None,
         'events': [
             {
                 'task_id': event.task_id,
@@ -1008,6 +1009,11 @@ def create_task(payload: TaskCreate, user: dict = Depends(get_current_user)):
                 project=project, title=payload.title.strip(), description=payload.description,
                 status=payload.status, created_by=current_actor, responsible=current_actor,
                 assignee=assignee, assigned_at=timezone.now() if assignee else None,
+                due_at=(
+                    timezone.make_aware(payload.due_at, timezone.get_current_timezone())
+                    if payload.due_at is not None and timezone.is_naive(payload.due_at)
+                    else payload.due_at
+                ),
             )
             TaskEvent.objects.create(
                 task=task, event_type='creada', actor=current_actor,

@@ -1,3 +1,8 @@
+from datetime import timedelta
+from io import StringIO
+
+from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import TransactionTestCase
 from django.utils import timezone
 from fastapi.testclient import TestClient
@@ -1301,16 +1306,90 @@ class TaskWorkflowApiTests(TransactionTestCase):
 
     def test_notification_failure_does_not_rollback_source_business_event(self):
         with patch('clients.signals.InternalNotification.objects.bulk_create', side_effect=IntegrityError):
-            with transaction.atomic():
-                task = Task.objects.create(
-                    project=self.project, title='Atomic notification', status='Asignada',
-                    created_by=self.people['L4'], responsible=self.people['L4'],
-                    assignee=self.people['L5'], assigned_at=timezone.now(),
-                )
-                event = TaskEvent.objects.create(
-                    task=task, event_type='asignada', actor=self.people['L4'],
-                    previous_status='Pendiente', new_status='Asignada', assignee=self.people['L5'],
-                )
+            with self.assertLogs('clients.signals', level='ERROR'):
+                with transaction.atomic():
+                    task = Task.objects.create(
+                        project=self.project, title='Atomic notification', status='Asignada',
+                        created_by=self.people['L4'], responsible=self.people['L4'],
+                        assignee=self.people['L5'], assigned_at=timezone.now(),
+                    )
+                    event = TaskEvent.objects.create(
+                        task=task, event_type='asignada', actor=self.people['L4'],
+                        previous_status='Pendiente', new_status='Asignada', assignee=self.people['L5'],
+                    )
         self.assertTrue(Task.objects.filter(title='Atomic notification').exists())
         self.assertTrue(TaskEvent.objects.filter(pk=event.pk).exists())
         self.assertFalse(InternalNotification.objects.filter(message__contains='Atomic notification').exists())
+
+    def test_java_deadline_processor_generates_scoped_idempotent_reminders(self):
+        now = timezone.now()
+        upcoming = Task.objects.create(
+            project=self.project, title='Vence pronto', status='Pendiente',
+            created_by=self.people['L3'], responsible=self.people['L4'],
+            due_at=now + timedelta(hours=12),
+        )
+        overdue = Task.objects.create(
+            project=self.project, title='Ya vencida', status='Pendiente',
+            created_by=self.people['L3'], responsible=self.people['L4'],
+            due_at=now - timedelta(hours=2),
+        )
+        terminal = Task.objects.create(
+            project=self.project, title='Cancelada', status='Cancelada',
+            created_by=self.people['L3'], responsible=self.people['L4'],
+            due_at=now - timedelta(hours=1),
+        )
+
+        first = StringIO()
+        call_command('process_task_deadline_notifications', stdout=first)
+        self.assertIn('Avisos creados: 3', first.getvalue())
+        self.assertEqual(InternalNotification.objects.filter(task=upcoming).count(), 1)
+        self.assertEqual(InternalNotification.objects.get(task=upcoming).recipient_id, self.people['L4'].id)
+        overdue_notices = InternalNotification.objects.filter(task=overdue, notice_type='tarea_vencida')
+        self.assertEqual(set(overdue_notices.values_list('recipient_id', flat=True)), {
+            self.people['L3'].id, self.people['L4'].id,
+        })
+        self.assertFalse(InternalNotification.objects.filter(task=terminal).exists())
+
+        second = StringIO()
+        call_command('process_task_deadline_notifications', stdout=second)
+        self.assertIn('ya existentes: 3', second.getvalue())
+        self.assertEqual(InternalNotification.objects.count(), 3)
+
+    def test_task_create_accepts_optional_deadline_as_local_datetime(self):
+        due_local = timezone.localtime(timezone.now() + timedelta(days=2)).replace(tzinfo=None)
+        response = self.api.post('/api/tasks/', headers=self.headers['L3'], json={
+            'project_id': self.project.id,
+            'title': 'Tarea con fecha límite',
+            'due_at': due_local.isoformat(timespec='minutes'),
+        })
+        self.assertEqual(response.status_code, 201, response.text)
+        task = Task.objects.get(pk=response.json()['id'])
+        self.assertTrue(timezone.is_aware(task.due_at))
+        self.assertIsNotNone(response.json()['due_at'])
+
+    def test_java_processor_unavailable_fails_without_creating_notifications(self):
+        Task.objects.create(
+            project=self.project, title='Tarea con plazo', status='Pendiente',
+            created_by=self.people['L3'], responsible=self.people['L4'],
+            due_at=timezone.now() + timedelta(hours=1),
+        )
+        with patch(
+            'clients.management.commands.process_task_deadline_notifications.shutil.which',
+            return_value=None,
+        ):
+            with self.assertRaises(CommandError):
+                call_command('process_task_deadline_notifications', stdout=StringIO())
+        self.assertEqual(InternalNotification.objects.count(), 0)
+
+    def test_deadline_notice_respects_custom_tasks_view_capability(self):
+        self.people['L4'].role.permissions = []
+        self.people['L4'].role.save(update_fields=['permissions'])
+        Task.objects.create(
+            project=self.project, title='Responsable sin consulta de tareas', status='Pendiente',
+            created_by=self.people['L3'], responsible=self.people['L4'],
+            due_at=timezone.now() + timedelta(hours=1),
+        )
+        output = StringIO()
+        call_command('process_task_deadline_notifications', stdout=output)
+        self.assertIn('Avisos creados: 0', output.getvalue())
+        self.assertEqual(InternalNotification.objects.count(), 0)
