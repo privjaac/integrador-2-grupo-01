@@ -8,7 +8,7 @@
 // ==============================================================================
 
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { useToast } from "../../components/ui/Toast";
 import { loginApi } from "../../api/auth";
@@ -415,6 +415,10 @@ export default function LoginPage() {
                 {showPass ? "🙈" : "👁"}
               </button>
             </div>
+          </div>
+
+          <div style={{ textAlign: "right", marginTop: -10 }}>
+            <Link to="/forgot-password" style={{ color: "#3fe5e5", fontSize: 13 }}>¿Olvidaste tu contraseña?</Link>
           </div>
 
           {/* Botón submit */}

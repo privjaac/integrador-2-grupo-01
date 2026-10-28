@@ -14,6 +14,8 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from django.db import connections
 from api.routers.auth import decode_token
 from clients.models import Collaborator
+from clients.models import CollaboratorSession
+from django.utils import timezone
 
 # HTTPBearer lee automáticamente el header Authorization: Bearer <token>
 # y extrae el token — no hay que hacerlo manualmente
@@ -40,8 +42,14 @@ def get_current_user(
         collaborator_id = int(payload.get('collaborator_id'))
     except (TypeError, ValueError):
         collaborator_id = None
+    session_id = payload.get('sid')
 
     try:
+        if not session_id or not CollaboratorSession.objects.filter(
+            id=session_id, collaborator_id=collaborator_id, revoked_at__isnull=True,
+            expires_at__gt=timezone.now(),
+        ).exists():
+            raise HTTPException(status_code=401, detail='Sesión inválida o revocada')
         collaborator = Collaborator.objects.select_related('role').filter(
             id=collaborator_id,
             username=payload.get('sub'),

@@ -7,6 +7,7 @@
 import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { can } from "../../utils/permissions";
+import { useToast } from "../ui/Toast";
 
 const NAV_ITEMS = [
   {
@@ -139,12 +140,14 @@ const NAV_ITEMS = [
 
 export default function Sidebar() {
   const { user, logout } = useAuth();
+  const { showToast } = useToast();
   const navigate = useNavigate();
   const location = useLocation();
 
-  const handleLogout = () => {
-    logout();
-    navigate("/login", { replace: true });
+  const handleLogout = async () => {
+    const closed = await logout();
+    if (closed) navigate("/login", { replace: true });
+    else showToast("error", "NO SE CERRÓ LA SESIÓN", "No se pudo confirmar la revocación. Reintenta cuando haya conexión.");
   };
 
   const initials = user

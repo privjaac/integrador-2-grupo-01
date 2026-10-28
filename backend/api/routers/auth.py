@@ -1,239 +1,173 @@
-# ==============================================================================
-# ROUTERS/AUTH.PY — Endpoints de autenticación
-#
-# Maneja todo lo relacionado al login y tokens de sesión.
-#
-# Endpoints:
-#   POST /api/auth/login    → recibe usuario y contraseña, devuelve tokens
-#   POST /api/auth/refresh  → recibe refresh_token, devuelve nuevo access_token
-#   POST /api/auth/logout   → invalida la sesión (el frontend borra los tokens)
-#
-# Flujo de login:
-#   1. React manda username + password
-#   2. FastAPI busca el colaborador en PostgreSQL por username
-#   3. Verifica la contraseña contra el hash guardado con bcrypt
-#   4. Si es correcto, genera access_token y refresh_token con JWT
-#   5. Devuelve los tokens a React
-#   6. React los guarda y los manda en cada petición siguiente
-# ==============================================================================
+"""Authentication, independently revocable sessions and own-account recovery."""
+import hashlib
+import secrets
+import uuid
+from datetime import timedelta
 
-from fastapi import HTTPException, status
-from api.router import APIRouter
-from datetime import datetime, timedelta
-from jose import jwt, JWTError
-from passlib.context import CryptContext
 from django.conf import settings
+from django.core.mail import send_mail
+from django.db import transaction
+from django.utils import timezone
+from fastapi import BackgroundTasks, HTTPException, status
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 
-from api.schemas.auth import LoginRequest, TokenResponse, RefreshRequest
-from clients.models import Collaborator
-
+from api.router import APIRouter
+from api.schemas.auth import (
+    ForgotPasswordRequest, LoginRequest, PasswordResetRequest, RefreshRequest,
+    TokenResponse, LogoutRequest,
+)
+from clients.models import Collaborator, CollaboratorSession, PasswordResetRequest as PasswordResetRecord
 
 router = APIRouter()
-
-
-# ------------------------------------------------------------------------------
-# CONFIGURACIÓN DE BCRYPT
-#
-# CryptContext maneja el encriptado y verificación de contraseñas.
-# schemes=['bcrypt'] → usa el algoritmo bcrypt para hashear.
-# deprecated='auto' → si en el futuro cambiamos el algoritmo,
-#   bcrypt queda marcado como antiguo automáticamente.
-# ------------------------------------------------------------------------------
 pwd_context = CryptContext(schemes=['bcrypt'], deprecated='auto')
+GENERIC_RECOVERY_MESSAGE = 'Si el correo corresponde a una cuenta activa, recibirá instrucciones para recuperar el acceso.'
 
-
-# ------------------------------------------------------------------------------
-# FUNCIONES AUXILIARES
-# ------------------------------------------------------------------------------
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """
-    Compara una contraseña en texto plano con su hash guardado en BD.
-    Devuelve True si coinciden, False si no.
-    """
     return pwd_context.verify(plain_password, hashed_password)
 
 
 def hash_password(password: str) -> str:
-    """
-    Convierte una contraseña en texto plano a su hash bcrypt.
-    Se usa al crear o cambiar contraseña de un colaborador.
-    """
     return pwd_context.hash(password)
 
 
 def create_access_token(data: dict) -> str:
-    """
-    Genera un JWT de corta duración (30 minutos por defecto).
-    'data' contiene la info que queremos guardar en el token:
-    username, rol y collaborator_id.
-    """
-    to_encode = data.copy()
-
-    # Fecha de expiración = ahora + 30 minutos
-    expire = datetime.utcnow() + timedelta(
-        minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
-    )
-
-    # 'exp' es un campo estándar de JWT — indica cuándo vence el token
-    to_encode.update({'exp': expire, 'type': 'access'})
-
-    return jwt.encode(
-        to_encode,
-        settings.JWT_SECRET_KEY,
-        algorithm=settings.JWT_ALGORITHM
-    )
+    claims = data.copy()
+    claims.update({'exp': timezone.now() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES), 'type': 'access'})
+    return jwt.encode(claims, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
-def create_refresh_token(data: dict) -> str:
-    """
-    Genera un JWT de larga duración (24 horas por defecto).
-    Mismo proceso que el access_token pero con más tiempo de vida.
-    """
-    to_encode = data.copy()
-
-    expire = datetime.utcnow() + timedelta(
-        hours=settings.REFRESH_TOKEN_EXPIRE_HOURS
-    )
-
-    to_encode.update({'exp': expire, 'type': 'refresh'})
-
-    return jwt.encode(
-        to_encode,
-        settings.JWT_SECRET_KEY,
-        algorithm=settings.JWT_ALGORITHM
-    )
+def create_refresh_token(data: dict, jti: str | None = None, expires=None) -> tuple[str, object]:
+    expires = expires or (timezone.now() + timedelta(hours=settings.REFRESH_TOKEN_EXPIRE_HOURS))
+    claims = data.copy()
+    claims.update({'exp': expires, 'type': 'refresh', 'jti': jti or secrets.token_urlsafe(32)})
+    return jwt.encode(claims, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM), expires
 
 
-def decode_token(token: str) -> dict:
-    """
-    Verifica y decodifica un JWT.
-    Si el token es inválido, fue modificado o venció → lanza excepción 401.
-    Devuelve el contenido del token si es válido.
-    """
+def decode_token(token: str, *, verify_exp: bool = True) -> dict:
     try:
-        payload = jwt.decode(
-            token,
-            settings.JWT_SECRET_KEY,
-            algorithms=[settings.JWT_ALGORITHM]
-        )
-        return payload
+        return jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM], options={'verify_exp': verify_exp})
     except JWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail='Token inválido o expirado',
-            headers={'WWW-Authenticate': 'Bearer'},
-        )
+        raise HTTPException(status_code=401, detail='Token inválido o expirado', headers={'WWW-Authenticate': 'Bearer'})
 
 
-# ------------------------------------------------------------------------------
-# ENDPOINT: POST /api/auth/login
-#
-# Recibe username y password, verifica credenciales y devuelve los tokens.
-#
-# Respuestas:
-#   200 → login exitoso, devuelve access_token y refresh_token
-#   401 → usuario no existe o contraseña incorrecta
-#   403 → colaborador inactivo (is_active = False)
-# ------------------------------------------------------------------------------
+def _token_pair(collaborator: Collaborator, session_id: uuid.UUID, refresh_jti: str, refresh_expires=None):
+    data = {'sub': collaborator.username, 'role': collaborator.role.level if collaborator.role else None,
+            'collaborator_id': collaborator.id, 'sid': str(session_id)}
+    refresh, expiry = create_refresh_token(data, refresh_jti, refresh_expires)
+    return create_access_token(data), refresh, expiry
+
+
 @router.post('/login', response_model=TokenResponse)
 def login(data: LoginRequest):
-
-    # Buscar el colaborador por username en PostgreSQL
-    collaborator = Collaborator.objects.filter(username=data.username).first()
-
-    # Si no existe el usuario o la contraseña no coincide → error 401
-    # Mensaje genérico a propósito para no revelar si el usuario existe
+    collaborator = Collaborator.objects.select_related('role').filter(username=data.username).first()
     if not collaborator or not verify_password(data.password, collaborator.password_hash):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail='Usuario o contraseña incorrectos'
-        )
-
-    # Si el colaborador está inactivo no puede acceder
-    # is_active = False → dado de baja del sistema
+        raise HTTPException(status_code=401, detail='Usuario o contraseña incorrectos')
     if not collaborator.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail='Tu cuenta está inactiva. Contacta al administrador.'
-        )
-
-    # Datos que se guardan dentro del token
-    token_data = {
-        'sub': collaborator.username,
-        'role': collaborator.role.level if collaborator.role else None,
-        'collaborator_id': collaborator.id
-    }
-
-    # Generar ambos tokens
-    access_token = create_access_token(token_data)
-    refresh_token = create_refresh_token(token_data)
-
-    return TokenResponse(
-        access_token=access_token,
-        refresh_token=refresh_token
-    )
+        raise HTTPException(status_code=403, detail='Tu cuenta está inactiva. Contacta al administrador.')
+    session_id, jti = uuid.uuid4(), secrets.token_urlsafe(32)
+    access, refresh, expiry = _token_pair(collaborator, session_id, jti)
+    CollaboratorSession.objects.create(id=session_id, collaborator=collaborator, refresh_jti=jti, expires_at=expiry)
+    return TokenResponse(access_token=access, refresh_token=refresh)
 
 
-# ------------------------------------------------------------------------------
-# ENDPOINT: POST /api/auth/refresh
-#
-# Recibe el refresh_token y devuelve un nuevo access_token.
-# React llama a este endpoint cuando el access_token vence (cada 30 min).
-#
-# Respuestas:
-#   200 → devuelve nuevo access_token
-#   401 → refresh_token inválido o expirado
-# ------------------------------------------------------------------------------
 @router.post('/refresh', response_model=TokenResponse)
 def refresh_token(data: RefreshRequest):
-
-    # Verificar que el refresh_token sea válido
     payload = decode_token(data.refresh_token)
-
-    # Verificar que sea un refresh_token y no un access_token
-    if payload.get('type') != 'refresh':
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail='Token inválido'
-        )
-
-    # Verificar que el colaborador siga existiendo y esté activo
-    collaborator = Collaborator.objects.filter(
-        username=payload.get('sub')
-    ).first()
-
-    if not collaborator or not collaborator.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail='Usuario no encontrado o inactivo'
-        )
-
-    # Generar nuevo access_token con los mismos datos
-    token_data = {
-        'sub': collaborator.username,
-        'role': collaborator.role.level if collaborator.role else None,
-        'collaborator_id': collaborator.id
-    }
-
-    new_access_token = create_access_token(token_data)
-
-    # El refresh_token se reutiliza — no generamos uno nuevo
-    return TokenResponse(
-        access_token=new_access_token,
-        refresh_token=data.refresh_token
-    )
+    if payload.get('type') != 'refresh' or not payload.get('sid') or not payload.get('jti'):
+        raise HTTPException(status_code=401, detail='Token inválido')
+    try:
+        session_id = uuid.UUID(payload['sid'])
+        collaborator_id = int(payload['collaborator_id'])
+    except (ValueError, TypeError, KeyError):
+        raise HTTPException(status_code=401, detail='Token inválido')
+    with transaction.atomic():
+        session = CollaboratorSession.objects.select_for_update().filter(id=session_id).first()
+        if (not session or session.revoked_at or session.expires_at <= timezone.now()
+                or session.refresh_jti != payload['jti'] or session.collaborator_id != collaborator_id):
+            raise HTTPException(status_code=401, detail='Sesión inválida o revocada')
+        collaborator = Collaborator.objects.select_related('role').filter(id=collaborator_id, is_active=True).first()
+        if not collaborator:
+            raise HTTPException(status_code=401, detail='Usuario no encontrado o inactivo')
+        new_jti = secrets.token_urlsafe(32)
+        # Rotation invalidates the previous credential but does not extend the
+        # original 24-hour session lifetime through periodic background refresh.
+        access, refresh, expiry = _token_pair(collaborator, session_id, new_jti, session.expires_at)
+        session.refresh_jti = new_jti
+        session.expires_at = expiry
+        session.save(update_fields=['refresh_jti', 'expires_at', 'last_activity_at'])
+    return TokenResponse(access_token=access, refresh_token=refresh)
 
 
-# ------------------------------------------------------------------------------
-# ENDPOINT: POST /api/auth/logout
-#
-# El logout en JWT es responsabilidad del frontend — simplemente borra
-# los tokens guardados en memoria.
-#
-# Este endpoint existe para que React tenga una URL a donde llamar
-# al hacer logout. En el futuro se puede agregar una blacklist de tokens.
-# ------------------------------------------------------------------------------
 @router.post('/logout')
-def logout():
+def logout(data: LogoutRequest):
+    payload = decode_token(data.refresh_token, verify_exp=False)
+    if payload.get('type') != 'refresh' or not payload.get('sid') or not payload.get('jti'):
+        raise HTTPException(status_code=401, detail='Token inválido')
+    try:
+        session_id = uuid.UUID(payload['sid'])
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=401, detail='Token inválido')
+    with transaction.atomic():
+        session = CollaboratorSession.objects.select_for_update().filter(id=session_id).first()
+        if not session or session.refresh_jti != payload['jti']:
+            raise HTTPException(status_code=401, detail='Sesión inválida')
+        if not session.revoked_at:
+            session.revoked_at = timezone.now()
+            session.save(update_fields=['revoked_at'])
     return {'message': 'Sesión cerrada correctamente'}
+
+
+def deliver_recovery_email(recipient: str, token: str, *, reset: bool = False):
+    """Send through configured Django email backend; do not log secrets."""
+    base_url = getattr(settings, 'FRONTEND_PUBLIC_URL', '').rstrip('/')
+    subject = 'ELISA: contraseña actualizada' if reset else 'ELISA: recuperar acceso'
+    body = ('Su contraseña fue actualizada.' if reset else
+            f'Para restablecer su contraseña, abra: {base_url}/reset-password/{token}\nEl enlace vence en una hora y solo puede usarse una vez.')
+    try:
+        if not settings.DEFAULT_FROM_EMAIL or (not reset and not base_url):
+            return False
+        return bool(send_mail(subject, body, settings.DEFAULT_FROM_EMAIL, [recipient], fail_silently=False))
+    except Exception:
+        return False
+
+
+@router.post('/forgot-password', status_code=202)
+def forgot_password(data: ForgotPasswordRequest, background_tasks: BackgroundTasks):
+    collaborator = Collaborator.objects.filter(email__iexact=data.email, is_active=True).first()
+    if collaborator:
+        raw_token = secrets.token_urlsafe(32)
+        record = PasswordResetRecord.objects.create(
+            collaborator=collaborator,
+            token_digest=hashlib.sha256(raw_token.encode()).hexdigest(),
+            expires_at=timezone.now() + timedelta(hours=1),
+        )
+        # Delivery happens after response; if mail is unavailable, invalidate the undisclosed token.
+        background_tasks.add_task(_deliver_and_revoke_if_failed, record.id, collaborator.email, raw_token)
+    return {'message': GENERIC_RECOVERY_MESSAGE}
+
+
+def _deliver_and_revoke_if_failed(record_id, email, token):
+    sent = deliver_recovery_email(email, token)
+    if not sent:
+        PasswordResetRecord.objects.filter(id=record_id, used_at__isnull=True).update(revoked_at=timezone.now())
+
+
+@router.put('/reset-password')
+def reset_password(data: PasswordResetRequest, background_tasks: BackgroundTasks):
+    digest = hashlib.sha256(data.token.encode()).hexdigest()
+    with transaction.atomic():
+        request = PasswordResetRecord.objects.select_for_update().select_related('collaborator').filter(token_digest=digest).first()
+        now = timezone.now()
+        if (not request or request.used_at or request.revoked_at or request.expires_at <= now
+                or not request.collaborator.is_active):
+            raise HTTPException(status_code=400, detail='Enlace inválido o expirado')
+        collaborator = Collaborator.objects.select_for_update().get(pk=request.collaborator_id)
+        collaborator.password_hash = hash_password(data.new_password)
+        collaborator.save(update_fields=['password_hash', 'updated_at'])
+        request.used_at = now
+        request.save(update_fields=['used_at'])
+        email = collaborator.email
+    background_tasks.add_task(deliver_recovery_email, email, '', reset=True)
+    return {'message': 'La contraseña fue actualizada correctamente.'}

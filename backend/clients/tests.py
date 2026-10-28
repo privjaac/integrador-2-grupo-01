@@ -3,10 +3,13 @@ from django.core.management import call_command
 from django.conf import settings
 from fastapi.testclient import TestClient
 from unittest.mock import patch
+from django.utils import timezone
+from datetime import timedelta
 
 from api.main import app
 from api.routers.auth import hash_password, verify_password
-from clients.models import Client, ClientChangeRequest, ClientHistory, Collaborator, Role, WebCatalog, WebFeature
+from clients.models import (Client, ClientChangeRequest, ClientHistory, Collaborator, Role,
+                            WebCatalog, WebFeature, CollaboratorSession, PasswordResetRequest)
 
 
 class ApiContractTests(TransactionTestCase):
@@ -70,7 +73,9 @@ class ApiContractTests(TransactionTestCase):
         refreshed = response.json()
         self.assertIsInstance(refreshed['access_token'], str)
         self.assertTrue(refreshed['access_token'])
-        self.assertEqual(refreshed['refresh_token'], tokens['refresh_token'])
+        self.assertNotEqual(refreshed['refresh_token'], tokens['refresh_token'])
+        reused = self.api.post('/api/auth/refresh', json={'refresh_token': tokens['refresh_token']})
+        self.assertEqual(reused.status_code, 401)
         self.assertEqual(refreshed['token_type'], 'bearer')
 
     def test_access_token_cannot_be_used_as_refresh_token(self):
@@ -88,13 +93,56 @@ class ApiContractTests(TransactionTestCase):
         )
         self.assertEqual(response.status_code, 401, response.text)
 
-    def test_logout_returns_success_message(self):
-        response = self.api.post('/api/auth/logout')
+    def test_expired_session_cannot_refresh(self):
+        tokens = self.login()
+        session = CollaboratorSession.objects.get(collaborator=self.admin)
+        session.expires_at = timezone.now() - timedelta(seconds=1)
+        session.save(update_fields=['expires_at'])
+        response = self.api.post('/api/auth/refresh', json={'refresh_token': tokens['refresh_token']})
+        self.assertEqual(response.status_code, 401)
+
+    def test_logout_revokes_only_its_session(self):
+        first = self.login()
+        second = self.login()
+        protected = self.api.get('/api/users/me', headers={'Authorization': f"Bearer {first['access_token']}"})
+        self.assertEqual(protected.status_code, 200)
+        response = self.api.post('/api/auth/logout', json={'refresh_token': first['refresh_token']})
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(
-            response.json(),
-            {'message': 'Sesión cerrada correctamente'},
-        )
+        rejected = self.api.get('/api/users/me', headers={'Authorization': f"Bearer {first['access_token']}"})
+        self.assertEqual(rejected.status_code, 401)
+        still_active = self.api.get('/api/users/me', headers={'Authorization': f"Bearer {second['access_token']}"})
+        self.assertEqual(still_active.status_code, 200)
+        self.assertEqual(self.api.post('/api/auth/refresh', json={'refresh_token': first['refresh_token']}).status_code, 401)
+
+    @patch('api.routers.auth.deliver_recovery_email', return_value=True)
+    def test_password_recovery_is_single_use_and_does_not_enumerate(self, deliver):
+        known = self.api.post('/api/auth/forgot-password', json={'email': ' ADMIN@EXAMPLE.COM '})
+        unknown = self.api.post('/api/auth/forgot-password', json={'email': 'absent@example.com'})
+        self.assertEqual(known.status_code, 202)
+        self.assertEqual(known.json(), unknown.json())
+        deliver.assert_called_once()
+        recovery = PasswordResetRequest.objects.get(collaborator=self.admin)
+        raw_token = deliver.call_args.args[1]
+        self.assertNotEqual(recovery.token_digest, raw_token)
+        invalid = self.api.put('/api/auth/reset-password', json={
+            'token': 'not-a-real-recovery-token', 'new_password': 'updated-password',
+            'confirm_password': 'updated-password',
+        })
+        self.assertEqual(invalid.status_code, 400)
+        mismatch = self.api.put('/api/auth/reset-password', json={
+            'token': raw_token, 'new_password': 'updated-password', 'confirm_password': 'different-password',
+        })
+        self.assertEqual(mismatch.status_code, 422)
+        self.assertIsNone(PasswordResetRequest.objects.get(pk=recovery.pk).used_at)
+        changed = self.api.put('/api/auth/reset-password', json={
+            'token': raw_token, 'new_password': 'updated-password', 'confirm_password': 'updated-password',
+        })
+        self.assertEqual(changed.status_code, 200, changed.text)
+        self.assertTrue(verify_password('updated-password', self.admin.__class__.objects.get(pk=self.admin.pk).password_hash))
+        repeated = self.api.put('/api/auth/reset-password', json={
+            'token': raw_token, 'new_password': 'other-password', 'confirm_password': 'other-password',
+        })
+        self.assertEqual(repeated.status_code, 400)
 
     def test_collaborator_list_returns_users_and_supports_filters(self):
         token = self.login()['access_token']

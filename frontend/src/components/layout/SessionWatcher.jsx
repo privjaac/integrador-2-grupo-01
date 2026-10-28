@@ -13,7 +13,7 @@ import { useAuth } from "../../hooks/useAuth";
 import { useToast } from "../ui/Toast";
 
 export default function SessionWatcher() {
-  const { token, logout, isAuthenticated } = useAuth();
+  const { token, logout } = useAuth();
   const { showToast } = useToast();
   const navigate = useNavigate();
 
@@ -31,14 +31,14 @@ export default function SessionWatcher() {
       showToast("warning", "SESIÓN POR VENCER", msg);
     };
 
-    const handleExpired = () => {
-      showToast(
-        "error",
-        "SESIÓN EXPIRADA",
-        "Tu sesión se cerró por 24h de inactividad. Iniciá sesión nuevamente.",
-      );
-      logout();
-      navigate("/login", { replace: true });
+    const handleExpired = async () => {
+      const closed = await logout();
+      if (closed) {
+        showToast("error", "SESIÓN EXPIRADA", "Tu sesión se cerró por 24h de inactividad. Iniciá sesión nuevamente.");
+        navigate("/login", { replace: true });
+      } else {
+        showToast("error", "CIERRE NO CONFIRMADO", "No se pudo confirmar la revocación de la sesión. Reintenta cuando haya conexión.");
+      }
     };
 
     window.addEventListener("elisa:session-warning", handleWarning);

@@ -16,6 +16,7 @@ import MainLayout from "./components/layout/MainLayout";
 import LoadingSpinner from "./components/ui/LoadingSpinner";
 
 import LoginPage from "./pages/auth/LoginPage";
+import { ForgotPasswordPage, ResetPasswordPage } from "./pages/auth/RecoveryPages";
 const ClientsPage = lazy(() => import("./pages/clients/ClientsPage"));
 const ClientDetail = lazy(() => import("./pages/clients/ClientDetail"));
 const ClientForm = lazy(() => import("./pages/clients/ClientForm"));
@@ -36,6 +37,8 @@ export default function App() {
       <Suspense fallback={<LoadingSpinner />}>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
 
           <Route
             element={

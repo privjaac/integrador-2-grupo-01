@@ -37,3 +37,13 @@ export async function getCurrentUser(accessToken) {
   });
   return response.data;
 }
+
+export async function requestPasswordRecovery(email) {
+  return axiosInstance.post("/api/auth/forgot-password", { email: email.trim().toLowerCase() });
+}
+
+export async function resetPassword(token, newPassword, confirmPassword) {
+  return axiosInstance.put("/api/auth/reset-password", {
+    token, new_password: newPassword, confirm_password: confirmPassword,
+  });
+}

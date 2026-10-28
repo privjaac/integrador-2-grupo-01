@@ -17,6 +17,7 @@
 # ==============================================================================
 
 from django.db import models
+import uuid
 
 
 # ------------------------------------------------------------------------------
@@ -137,6 +138,34 @@ class Collaborator(models.Model):
 
     def __str__(self):
         return f"{self.cupe} — {self.first_name} {self.last_name}"
+
+
+class CollaboratorSession(models.Model):
+    """Server-side state for one independently revocable login session."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    collaborator = models.ForeignKey(Collaborator, on_delete=models.PROTECT, related_name='auth_sessions')
+    refresh_jti = models.CharField(max_length=64, unique=True)
+    expires_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_activity_at = models.DateTimeField(auto_now=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'collaborator_sessions'
+        indexes = [models.Index(fields=['collaborator', 'revoked_at'])]
+
+
+class PasswordResetRequest(models.Model):
+    """Single-use password recovery; only a digest of the bearer token is stored."""
+    collaborator = models.ForeignKey(Collaborator, on_delete=models.PROTECT, related_name='password_reset_requests')
+    token_digest = models.CharField(max_length=64, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'password_reset_requests'
 
 
 # ------------------------------------------------------------------------------

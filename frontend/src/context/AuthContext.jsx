@@ -11,10 +11,9 @@
 //   VITE_USE_MOCK=false → llama a /api/auth/refresh para renovar tokens
 // ==============================================================================
 
-import { createContext, useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import axiosInstance from "../api/axios";
-
-export const AuthContext = createContext(null);
+import { AuthContext } from "./AuthContextInstance";
 
 const USE_MOCK = import.meta.env.VITE_USE_MOCK === "true";
 
@@ -42,7 +41,7 @@ export function AuthProvider({ children }) {
 
   // ── LOGOUT ────────────────────────────────────────────────────────────────
 
-  const logout = useCallback(() => {
+  const clearLocalSession = useCallback(() => {
     setToken(null);
     setUser(null);
     window.__elisa_token__ = null;
@@ -52,11 +51,20 @@ export function AuthProvider({ children }) {
     localStorage.removeItem(KEY_TIMER2_START);
     clearInterval(refreshIntervalRef.current);
     clearInterval(checkIntervalRef.current);
-    // Solo llama al backend si no estamos en modo mock
-    if (!USE_MOCK) {
-      axiosInstance.post("/api/auth/logout").catch(() => {});
-    }
   }, []);
+
+  const logout = useCallback(async ({ localOnly = false } = {}) => {
+    const savedRefresh = localStorage.getItem(KEY_REFRESH);
+    if (!USE_MOCK && !localOnly && savedRefresh) {
+      try {
+        await axiosInstance.post("/api/auth/logout", { refresh_token: savedRefresh });
+      } catch {
+        return false;
+      }
+    }
+    clearLocalSession();
+    return true;
+  }, [clearLocalSession]);
 
   // ── RENOVAR ACCESS TOKEN ───────────────────────────────────────────────────
 
@@ -68,7 +76,7 @@ export function AuthProvider({ children }) {
 
     const savedRefresh = localStorage.getItem(KEY_REFRESH);
     if (!savedRefresh) {
-      logout();
+      await logout({ localOnly: true });
       return null;
     }
 
@@ -82,7 +90,7 @@ export function AuthProvider({ children }) {
       if (newRefresh) localStorage.setItem(KEY_REFRESH, newRefresh);
       return access_token;
     } catch {
-      logout();
+      await logout({ localOnly: true });
       return null;
     }
   }, [token, logout]);
@@ -98,7 +106,6 @@ export function AuthProvider({ children }) {
       const elapsed2 = now - timer2Start;
       if (elapsed2 >= TIMER2_DURATION) {
         window.dispatchEvent(new CustomEvent("elisa:session-expired"));
-        logout();
         return;
       }
       const remaining = TIMER2_DURATION - elapsed2;
@@ -123,7 +130,7 @@ export function AuthProvider({ children }) {
         );
       }
     }
-  }, [logout]);
+  }, []);
 
   // ── REGISTRAR ACTIVIDAD ───────────────────────────────────────────────────
 
@@ -184,7 +191,9 @@ export function AuthProvider({ children }) {
             is_active: userData.is_active,
           }),
         );
-      } catch {}
+      } catch {
+        // Local storage may be unavailable in restricted browser contexts.
+      }
 
       startCycles();
     },
@@ -211,7 +220,7 @@ export function AuthProvider({ children }) {
       if (timer2Start > 0) {
         const elapsed2 = now - timer2Start;
         if (elapsed2 >= TIMER2_DURATION) {
-          logout();
+          logout({ localOnly: true });
           setIsLoading(false);
           return;
         }
@@ -221,7 +230,7 @@ export function AuthProvider({ children }) {
           const timer2StartTime = lastClick + TIMER1_DURATION;
           const elapsed2 = now - timer2StartTime;
           if (elapsed2 >= TIMER2_DURATION) {
-            logout();
+            logout({ localOnly: true });
             setIsLoading(false);
             return;
           }
@@ -239,7 +248,7 @@ export function AuthProvider({ children }) {
           window.__elisa_token__ = mockToken;
           startCycles();
         } catch {
-          logout();
+          logout({ localOnly: true });
         }
         setIsLoading(false);
         return;
@@ -248,7 +257,7 @@ export function AuthProvider({ children }) {
       // ── REAL: renueva el access_token con el refresh_token ───────────────
       const savedRefresh = localStorage.getItem(KEY_REFRESH);
       if (!savedRefresh) {
-        logout();
+        logout({ localOnly: true });
         setIsLoading(false);
         return;
       }
@@ -265,7 +274,7 @@ export function AuthProvider({ children }) {
         if (newRefresh) localStorage.setItem(KEY_REFRESH, newRefresh);
         startCycles();
       } catch {
-        logout();
+        logout({ localOnly: true });
       }
 
       setIsLoading(false);
@@ -296,7 +305,7 @@ export function AuthProvider({ children }) {
         localStorage.removeItem(KEY_TIMER2_START);
       }
       if (e.key === KEY_USER && !e.newValue && isAuthenticated) {
-        logout();
+        logout({ localOnly: true });
       }
     };
     window.addEventListener("storage", handleStorageChange);

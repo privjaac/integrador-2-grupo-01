@@ -9,7 +9,7 @@
 #   - RefreshRequest → lo que React manda para renovar el token
 # ==============================================================================
 
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 
 # ------------------------------------------------------------------------------
@@ -57,3 +57,30 @@ class TokenResponse(BaseModel):
 # ------------------------------------------------------------------------------
 class RefreshRequest(BaseModel):
     refresh_token: str
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr = Field(max_length=150)
+
+    @field_validator('email', mode='before')
+    @classmethod
+    def normalize_email(cls, value):
+        return value.strip().lower() if isinstance(value, str) else value
+
+
+class PasswordResetRequest(BaseModel):
+    token: str = Field(min_length=20, max_length=200)
+    new_password: str = Field(min_length=6, max_length=50)
+    confirm_password: str = Field(min_length=6, max_length=50)
+
+    @model_validator(mode='after')
+    def passwords_match(self):
+        if self.new_password != self.confirm_password:
+            raise ValueError('Las contraseñas no coinciden')
+        if len(self.new_password.encode('utf-8')) > 72:
+            raise ValueError('La contraseña excede el límite admitido')
+        return self
