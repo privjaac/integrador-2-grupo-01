@@ -13,7 +13,7 @@ from api.main import app
 from api.routers.auth import hash_password
 from clients.models import (
     Client, Collaborator, InternalNotification, Project, ProjectCoordination, ProjectLeadership,
-    Role, Task, TaskEvent, TeamMembership, WebCatalog,
+    Role, Task, TaskComment, TaskEvent, TeamMembership, WebCatalog,
 )
 
 
@@ -1320,6 +1320,214 @@ class TaskWorkflowApiTests(TransactionTestCase):
         self.assertTrue(Task.objects.filter(title='Atomic notification').exists())
         self.assertTrue(TaskEvent.objects.filter(pk=event.pk).exists())
         self.assertFalse(InternalNotification.objects.filter(message__contains='Atomic notification').exists())
+
+    def test_task_comments_allow_creator_responsible_and_current_coordinator(self):
+        task = Task.objects.create(
+            project=self.project, title='Comentario autorizado', status='Pendiente',
+            created_by=self.people['L4'], responsible=self.people['L3'],
+        )
+        creator = self.api.post(
+            f'/api/tasks/{task.id}/comments', headers=self.headers['L4'],
+            json={'content': 'Comentario del creador'},
+        )
+        self.assertEqual(creator.status_code, 201, creator.text)
+        self.assertEqual(creator.json()['author_id'], self.people['L4'].id)
+
+        coordinator = self.api.post(
+            f'/api/tasks/{task.id}/comments', headers=self.headers['L3'],
+            json={'content': 'Comentario de coordinación'},
+        )
+        self.assertEqual(coordinator.status_code, 201, coordinator.text)
+        responsible = self.api.post(
+            f'/api/tasks/{task.id}/comments', headers=self.headers['L3'],
+            json={'content': 'Comentario del responsable'},
+        )
+        self.assertEqual(responsible.status_code, 201, responsible.text)
+        coordinator_comment = TaskComment.objects.get(pk=coordinator.json()['id'])
+        self.assertEqual(set(InternalNotification.objects.filter(
+            event=coordinator_comment.event,
+        ).values_list('recipient_id', flat=True)), {self.people['L4'].id})
+        self.assertEqual(TaskComment.objects.filter(task=task).count(), 3)
+        self.assertTrue(all(comment.author_id for comment in TaskComment.objects.filter(task=task)))
+
+        second_task = Task.objects.create(
+            project=self.project, title='Responsable L4', status='Pendiente',
+            created_by=self.people['L3'], responsible=self.people['L4'],
+        )
+        responsible = self.api.post(
+            f'/api/tasks/{second_task.id}/comments', headers=self.headers['L4'],
+            json={'content': 'Comentario del responsable L4'},
+        )
+        self.assertEqual(responsible.status_code, 201, responsible.text)
+
+    def test_comment_access_is_scoped_and_former_responsible_loses_write_access(self):
+        created = self.create('L4', status='Asignada', assignee=self.people['L5'])
+        self.assertEqual(created.status_code, 201, created.text)
+        task_id = created.json()['id']
+        allowed = self.api.post(
+            f'/api/tasks/{task_id}/comments', headers=self.headers['L4'],
+            json={'content': 'Comentario visible en ámbito'},
+        )
+        self.assertEqual(allowed.status_code, 201, allowed.text)
+
+        # The assigned L5 can read within the task scope but is not one of the approved writers.
+        history = self.api.get(f'/api/tasks/{task_id}/comments', headers=self.headers['L5'])
+        self.assertEqual(history.status_code, 200, history.text)
+        self.assertEqual(len(history.json()), 1)
+        task_detail = self.api.get(f'/api/tasks/{task_id}', headers=self.headers['L5'])
+        self.assertEqual(task_detail.status_code, 200, task_detail.text)
+        self.assertFalse(task_detail.json()['can_comment'])
+        denied_writer = self.api.post(
+            f'/api/tasks/{task_id}/comments', headers=self.headers['L5'],
+            json={'content': 'No autorizado'},
+        )
+        self.assertEqual(denied_writer.status_code, 403)
+        foreign_history = self.api.get(
+            f'/api/tasks/{task_id}/comments', headers=self.headers['L3B'],
+        )
+        self.assertEqual(foreign_history.status_code, 404)
+
+        removed = self.api.delete(
+            f'/api/tasks/projects/{self.project.id}/leadership/{self.people["L4"].id}',
+            headers=self.headers['L3'],
+        )
+        self.assertEqual(removed.status_code, 200, removed.text)
+        former_responsible = self.api.post(
+            f'/api/tasks/{task_id}/comments', headers=self.headers['L4'],
+            json={'content': 'Comentario tras retirada'},
+        )
+        self.assertEqual(former_responsible.status_code, 404)
+
+    def test_comment_permissions_reject_missing_capability_and_terminal_tasks(self):
+        created = self.create('L4')
+        self.assertEqual(created.status_code, 201, created.text)
+        task_id = created.json()['id']
+        self.people['L4'].role.permissions = []
+        self.people['L4'].role.save(update_fields=['permissions'])
+        no_view = self.api.post(
+            f'/api/tasks/{task_id}/comments', headers=self.headers['L4'],
+            json={'content': 'Sin capacidad de lectura'},
+        )
+        self.assertEqual(no_view.status_code, 403)
+
+        self.people['L4'].role.permissions = None
+        self.people['L4'].role.save(update_fields=['permissions'])
+        prior = self.api.post(
+            f'/api/tasks/{task_id}/comments', headers=self.headers['L4'],
+            json={'content': 'Se conserva después de finalizar'},
+        )
+        self.assertEqual(prior.status_code, 201, prior.text)
+        task = Task.objects.get(pk=task_id)
+        task.status = 'Finalizada'
+        task.assignee = self.people['L5']
+        task.assigned_at = timezone.now()
+        task.save(update_fields=['status', 'assignee', 'assigned_at'])
+        terminal = self.api.post(
+            f'/api/tasks/{task_id}/comments', headers=self.headers['L4'],
+            json={'content': 'Comentario en tarea finalizada'},
+        )
+        self.assertEqual(terminal.status_code, 409)
+        self.assertEqual(TaskComment.objects.filter(task=task).count(), 1)
+        history = self.api.get(f'/api/tasks/{task_id}/comments', headers=self.headers['L4'])
+        self.assertEqual(history.status_code, 200, history.text)
+        self.assertEqual(history.json()[0]['content'], 'Se conserva después de finalizar')
+
+    def test_comments_validate_content_and_notify_current_participants_once(self):
+        task = Task.objects.create(
+            project=self.project, title='Aviso de comentario', status='Pendiente',
+            created_by=self.people['L4'], responsible=self.people['L3'],
+        )
+        blank = self.api.post(
+            f'/api/tasks/{task.id}/comments', headers=self.headers['L4'],
+            json={'content': '   '},
+        )
+        too_long = self.api.post(
+            f'/api/tasks/{task.id}/comments', headers=self.headers['L4'],
+            json={'content': 'x' * 2001},
+        )
+        html = self.api.post(
+            f'/api/tasks/{task.id}/comments', headers=self.headers['L4'],
+            json={'content': '<script>no</script>'},
+        )
+        self.assertEqual((blank.status_code, too_long.status_code, html.status_code), (422, 422, 422))
+        self.assertEqual(TaskEvent.objects.filter(task=task, event_type='comentario_agregado').count(), 0)
+
+        created = self.api.post(
+            f'/api/tasks/{task.id}/comments', headers=self.headers['L4'],
+            json={'content': 'Contenido que no se comparte en el aviso'},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        comment = TaskComment.objects.get(pk=created.json()['id'])
+        event = comment.event
+        self.assertEqual(event.actor_id, self.people['L4'].id)
+        self.assertEqual(event.event_type, 'comentario_agregado')
+        self.assertEqual(comment.content, 'Contenido que no se comparte en el aviso')
+        notices = InternalNotification.objects.filter(event=event)
+        self.assertEqual(notices.count(), 1)
+        notice = notices.get()
+        self.assertEqual(notice.recipient_id, self.people['L3'].id)
+        self.assertNotIn(comment.content, notice.message)
+        self.assertIn('ha comentado', notice.message)
+        recipient_notices = self.api.get(
+            '/api/notifications/internal/', headers=self.headers['L3'],
+        ).json()['items']
+        self.assertTrue(any(item['id'] == notice.id for item in recipient_notices))
+        self.assertFalse(self.api.get(
+            '/api/notifications/internal/', headers=self.headers['L4'],
+        ).json()['items'])
+        self.assertEqual(self.api.patch(
+            f'/api/notifications/internal/{notice.id}/read', headers=self.headers['L4'],
+        ).status_code, 404)
+        self.assertEqual(self.api.get(
+            f'/api/tasks/{task.id}/comments', headers=self.headers['L4'],
+        ).json()[0]['created_at'], comment.created_at.isoformat())
+
+    def test_comment_notification_failure_keeps_comment_and_event(self):
+        task = Task.objects.create(
+            project=self.project, title='Aviso fallido', status='Pendiente',
+            created_by=self.people['L4'], responsible=self.people['L3'],
+        )
+        with patch('clients.signals.InternalNotification.objects.bulk_create', side_effect=IntegrityError):
+            with self.assertLogs('clients.signals', level='ERROR'):
+                response = self.api.post(
+                    f'/api/tasks/{task.id}/comments', headers=self.headers['L4'],
+                    json={'content': 'La falla del aviso no elimina el comentario'},
+                )
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertTrue(TaskComment.objects.filter(task=task).exists())
+        self.assertTrue(TaskEvent.objects.filter(task=task, event_type='comentario_agregado').exists())
+
+    def test_comment_notifications_require_recipient_tasks_view(self):
+        task = Task.objects.create(
+            project=self.project, title='Destinatario sin permiso', status='Pendiente',
+            created_by=self.people['L4'], responsible=self.people['L3'],
+        )
+        self.people['L3'].role.permissions = []
+        self.people['L3'].role.save(update_fields=['permissions'])
+        response = self.api.post(
+            f'/api/tasks/{task.id}/comments', headers=self.headers['L4'],
+            json={'content': 'El destinatario ya no tiene tasks.view'},
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertFalse(InternalNotification.objects.filter(
+            event__event_type='comentario_agregado', task=task,
+        ).exists())
+
+    def test_comment_write_failure_rolls_back_event_and_comment_together(self):
+        task = Task.objects.create(
+            project=self.project, title='Comentario atómico', status='Pendiente',
+            created_by=self.people['L4'], responsible=self.people['L3'],
+        )
+        with patch('api.routers.tasks.TaskComment.objects.create', side_effect=IntegrityError):
+            with self.assertRaises(IntegrityError):
+                self.api.post(
+                    f'/api/tasks/{task.id}/comments', headers=self.headers['L4'],
+                    json={'content': 'No debe quedar evento parcial'},
+                )
+        self.assertFalse(TaskComment.objects.filter(task=task).exists())
+        self.assertFalse(TaskEvent.objects.filter(
+            task=task, event_type='comentario_agregado',
+        ).exists())
 
     def test_java_deadline_processor_generates_scoped_idempotent_reminders(self):
         now = timezone.now()

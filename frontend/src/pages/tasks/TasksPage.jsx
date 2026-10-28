@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
-import { addTeamMember, applyTaskCancellation, assignTask, blockTask, createTask, designateCoordinator, designateLeader, evaluateTaskCancellation, getTaskContext, proposeTaskCancellation, removeCoordinator, removeLeader, removeTaskExecutor, removeTeamMember, reassignTask, reportTaskIncident, reopenTask, reviewTaskCancellationCommercially, reviewTask, startTask, submitTaskReview, unblockTask } from "../../api/tasks";
+import { addTaskComment, addTeamMember, applyTaskCancellation, assignTask, blockTask, createTask, designateCoordinator, designateLeader, evaluateTaskCancellation, getTaskContext, proposeTaskCancellation, removeCoordinator, removeLeader, removeTaskExecutor, removeTeamMember, reassignTask, reportTaskIncident, reopenTask, reviewTaskCancellationCommercially, reviewTask, startTask, submitTaskReview, unblockTask } from "../../api/tasks";
 import Button from "../../components/ui/Button";
 import Input from "../../components/ui/Input";
 import Table from "../../components/ui/Table";
@@ -29,6 +29,7 @@ const eventLabels = {
   revision_comercial_pend: "Intervención comercial pendiente",
   revision_comercial_resuelta: "Intervención comercial de L2 registrada",
   cancelacion_aplicada: "Cancelación aplicada",
+  comentario_agregado: "Comentario agregado",
 };
 const cancellationDataLabels = {
   effects: "Efectos previstos", decision: "Decisión", work_assessment: "Evaluación del trabajo",
@@ -55,6 +56,7 @@ export default function TasksPage() {
   const [cancellationProposals, setCancellationProposals] = useState({});
   const [cancellationEvaluations, setCancellationEvaluations] = useState({});
   const [commercialReviewInputs, setCommercialReviewInputs] = useState({});
+  const [commentInputs, setCommentInputs] = useState({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
@@ -201,6 +203,19 @@ export default function TasksPage() {
       await refresh();
     } catch (err) {
       setError(err.userMessage || "No se pudo presentar el resultado.");
+    }
+  }
+
+  async function submitTaskComment(task) {
+    const content = commentInputs[task.id] || "";
+    setError("");
+    try {
+      await addTaskComment(task.id, content);
+      setCommentInputs((items) => ({ ...items, [task.id]: "" }));
+      setNotice("Comentario agregado.");
+      await refresh();
+    } catch (err) {
+      setError(err.userMessage || "No se pudo agregar el comentario.");
     }
   }
 
@@ -411,7 +426,8 @@ export default function TasksPage() {
         const targetResponsibleId = user?.role === "L3" ? Number(reassignment.responsible_id) : task.responsible_id;
         const replacementOptions = options.filter((person) => Number(person.responsible_id) === Number(targetResponsibleId));
         return <Table.Row key={task.id} id={`task-row-${task.id}`} index={index} isSelected={String(task.id) === String(taskId)}>
-          <Table.Cell>{task.project_name}</Table.Cell><Table.Cell><strong>{task.title}</strong>{task.due_at && <div style={{ color: "#8892a4", marginTop: 4 }}>Fecha límite: {new Date(task.due_at).toLocaleString()}</div>}{task.description && <div style={{ color: "#8892a4", marginTop: 4 }}>{task.description}</div>}{task.is_blocked && <div style={{ color: "#f3c969", marginTop: 4 }}>Bloqueada: {task.block_reason}</div>}<details open={String(task.id) === String(taskId)} style={{ color: "#8892a4", fontSize: 12, marginTop: 6 }}><summary style={{ cursor: "pointer" }}>Responsables e historial</summary><p>Responsable actual: {task.responsible_name || "—"}<br />Creada por: {task.created_by_name || "—"}<br />Registro: {new Date(task.created_at).toLocaleString()}</p>{task.assigned_at && <p>Asignada: {new Date(task.assigned_at).toLocaleString()}</p>}{task.events?.map((event, eventIndex) => <div key={`${event.event_type}-${eventIndex}`} style={{ padding: "4px 0" }}><p>{eventLabels[event.event_type] || event.event_type} por {event.actor_name} · {new Date(event.occurred_at).toLocaleString()}{event.previous_status && event.new_status && event.previous_status !== event.new_status ? ` · ${event.previous_status} → ${event.new_status}` : ""}</p>{(event.previous_assignee_name || event.assignee_name) && <p>Ejecutor: {event.previous_assignee_name || "Sin asignar"} → {event.assignee_name || "Sin asignar"}</p>}{(event.previous_responsible_name || event.responsible_name) && <p>Responsable: {event.previous_responsible_name || "Sin asignar"} → {event.responsible_name || "Sin asignar"}</p>}{event.is_blocked_before !== event.is_blocked_after && <p>Condición: {event.is_blocked_before ? "Bloqueada" : "Sin bloqueo"} → {event.is_blocked_after ? "Bloqueada" : "Sin bloqueo"}</p>}{event.result_text && !event.cancellation_data && <p>{event.event_type === "reapertura_autorizada" ? "Resultado de la reapertura" : "Resultado presentado"}: {event.result_text}</p>}{event.cancellation_data && <div>{Object.entries(event.cancellation_data).filter(([key, value]) => cancellationDataLabels[key] && value !== "").map(([key, value]) => <p key={key}>{cancellationDataLabels[key]}: {String(value)}</p>)}</div>}{event.reason && <p>{event.event_type === "reapertura_autorizada" ? "Motivo de reapertura" : event.event_type?.startsWith("cancelacion_") ? "Motivo / decisión" : "Motivo/resultado"}: {event.reason}</p>}{event.evidence && <p>Evidencia: {event.evidence}</p>}</div>)}</details></Table.Cell><Table.Cell>{task.status}{task.is_blocked && <div style={{ color: "#f3c969", fontSize: 12 }}>Bloqueada</div>}</Table.Cell><Table.Cell>{task.assignee_name || "Sin asignar"}</Table.Cell>
+          <Table.Cell>{task.project_name}</Table.Cell><Table.Cell><strong>{task.title}</strong>{task.due_at && <div style={{ color: "#8892a4", marginTop: 4 }}>Fecha límite: {new Date(task.due_at).toLocaleString()}</div>}{task.description && <div style={{ color: "#8892a4", marginTop: 4 }}>{task.description}</div>}{task.is_blocked && <div style={{ color: "#f3c969", marginTop: 4 }}>Bloqueada: {task.block_reason}</div>}<details open={String(task.id) === String(taskId)} style={{ color: "#8892a4", fontSize: 12, marginTop: 6 }}><summary style={{ cursor: "pointer" }}>Responsables e historial</summary><p>Responsable actual: {task.responsible_name || "—"}<br />Creada por: {task.created_by_name || "—"}<br />Registro: {new Date(task.created_at).toLocaleString()}</p>{task.assigned_at && <p>Asignada: {new Date(task.assigned_at).toLocaleString()}</p>}{task.events?.map((event, eventIndex) => <div key={`${event.event_type}-${eventIndex}`} style={{ padding: "4px 0" }}><p>{eventLabels[event.event_type] || event.event_type} por {event.actor_name} · {new Date(event.occurred_at).toLocaleString()}{event.previous_status && event.new_status && event.previous_status !== event.new_status ? ` · ${event.previous_status} → ${event.new_status}` : ""}</p>{(event.previous_assignee_name || event.assignee_name) && <p>Ejecutor: {event.previous_assignee_name || "Sin asignar"} → {event.assignee_name || "Sin asignar"}</p>}{(event.previous_responsible_name || event.responsible_name) && <p>Responsable: {event.previous_responsible_name || "Sin asignar"} → {event.responsible_name || "Sin asignar"}</p>}{event.is_blocked_before !== event.is_blocked_after && <p>Condición: {event.is_blocked_before ? "Bloqueada" : "Sin bloqueo"} → {event.is_blocked_after ? "Bloqueada" : "Sin bloqueo"}</p>}{event.result_text && !event.cancellation_data && <p>{event.event_type === "reapertura_autorizada" ? "Resultado de la reapertura" : "Resultado presentado"}: {event.result_text}</p>}{event.cancellation_data && <div>{Object.entries(event.cancellation_data).filter(([key, value]) => cancellationDataLabels[key] && value !== "").map(([key, value]) => <p key={key}>{cancellationDataLabels[key]}: {String(value)}</p>)}</div>}{event.reason && <p>{event.event_type === "reapertura_autorizada" ? "Motivo de reapertura" : event.event_type?.startsWith("cancelacion_") ? "Motivo / decisión" : "Motivo/resultado"}: {event.reason}</p>}{event.evidence && <p>Evidencia: {event.evidence}</p>}</div>)}
+          <div style={{ borderTop: "1px solid rgba(63,229,229,0.12)", marginTop: 10, paddingTop: 8 }}><strong>Comentarios</strong>{task.comments?.length ? task.comments.map((comment) => <div key={comment.id} style={{ borderTop: "1px solid rgba(255,255,255,0.06)", marginTop: 6, paddingTop: 6 }}><div>{comment.author_name} · {new Date(comment.created_at).toLocaleString()}</div><p style={{ whiteSpace: "pre-wrap", margin: "4px 0" }}>{comment.content}</p></div>) : <p>Aún no hay comentarios.</p>}{task.can_comment && <div style={{ display: "grid", gap: 6, marginTop: 8 }}><label htmlFor={`task-comment-${task.id}`}>Agregar comentario</label><textarea id={`task-comment-${task.id}`} maxLength={2000} rows={3} value={commentInputs[task.id] || ""} onChange={(event) => setCommentInputs({ ...commentInputs, [task.id]: event.target.value })} style={{ background: "#151824", color: "#eef1f7", border: "1px solid #34394a", borderRadius: 6, padding: 8, font: "inherit", resize: "vertical" }} /><Button size="sm" disabled={!commentInputs[task.id]?.trim()} onClick={() => submitTaskComment(task)}>Agregar comentario</Button></div>}</div></details></Table.Cell><Table.Cell>{task.status}{task.is_blocked && <div style={{ color: "#f3c969", fontSize: 12 }}>Bloqueada</div>}</Table.Cell><Table.Cell>{task.assignee_name || "Sin asignar"}</Table.Cell>
           <Table.Cell>
             {user?.role === "L4" && task.status === "Pendiente" && <div style={{ display: "flex", gap: 8 }}><select aria-label={`Ejecutor para ${task.title}`} style={selectStyle} value={assignment[task.id] || ""} onChange={(e) => setAssignment({ ...assignment, [task.id]: e.target.value })}><option value="">Selecciona L5</option>{options.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select><Button size="sm" disabled={!assignment[task.id]} onClick={() => submitAssignment(task.id)}>Asignar</Button></div>}
             {can(user, "tasks", "start") && task.actions?.can_start && <Button size="sm" onClick={() => startTaskAction(task)}>{task.status === "Observada" ? "Iniciar corrección" : "Iniciar tarea"}</Button>}

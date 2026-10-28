@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from api.schemas.safe_input import SafeInputModel
 
@@ -21,6 +21,17 @@ class TaskAssign(SafeInputModel):
 
 class TaskSubmission(SafeInputModel):
     result_text: str = Field(min_length=1)
+
+
+class TaskCommentCreate(SafeInputModel):
+    content: str = Field(min_length=1, max_length=2000)
+
+    @field_validator('content')
+    @classmethod
+    def validate_comment_content(cls, value):
+        if not value.strip():
+            raise ValueError('El comentario no puede estar vacío')
+        return value.strip()
 
 
 class TaskReview(SafeInputModel):

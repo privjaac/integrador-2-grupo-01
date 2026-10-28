@@ -1,19 +1,20 @@
 from django.db import IntegrityError, transaction
-from django.db.models import OuterRef, Q, Subquery
+from django.db.models import OuterRef, Prefetch, Q, Subquery
 from django.utils import timezone
 from fastapi import Depends, HTTPException, status
 import json
 
 from api.dependencies import get_current_user
 from api.router import APIRouter
+from api.role_permissions import effective_permissions
 from api.schemas.tasks import (
     Designation, TaskAssign, TaskBlockInput, TaskCancellationCommercialReview,
-    TaskCancellationEvaluation, TaskCancellationProposal, TaskCreate, TaskExecutorRemoval,
+    TaskCancellationEvaluation, TaskCancellationProposal, TaskCommentCreate, TaskCreate, TaskExecutorRemoval,
     TaskIncidentInput, TaskReassignment, TaskReview, TaskReopen, TaskSubmission,
 )
 from clients.models import (
     Collaborator, Project, ProjectCoordination, ProjectLeadership, Task,
-    TaskEvent, TeamMembership,
+    TaskComment, TaskEvent, TeamMembership,
 )
 
 CANCELABLE_TASK_STATUSES = {'Pendiente', 'Asignada', 'En proceso', 'En revisión', 'Observada'}
@@ -34,6 +35,7 @@ def actor(user: dict) -> Collaborator:
 
 
 def task_queryset(user: dict):
+    comments = Prefetch('comments', queryset=TaskComment.objects.select_related('author'))
     role = user.get('role')
     if role == 'L3':
         return Task.objects.filter(
@@ -41,7 +43,7 @@ def task_queryset(user: dict):
             project__coordinations__is_active=True,
             project__coordinations__coordinator__is_active=True,
             project__coordinations__coordinator__role__level='L3',
-        )
+        ).prefetch_related(comments)
     if role == 'L4':
         delegated_coordinators = ProjectCoordination.objects.filter(
             project_id=OuterRef('project_id'), is_active=True,
@@ -62,14 +64,30 @@ def task_queryset(user: dict):
         ).filter(
             Q(responsible_id=user['collaborator_id'])
             | Q(responsible_id__in=Subquery(delegated_coordinators))
-        )
+        ).prefetch_related(comments)
     if role == 'L5':
         return Task.objects.filter(
             assignee_id=user['collaborator_id'],
             assignee__is_active=True,
             assignee__role__level='L5',
-        )
+        ).prefetch_related(comments)
     return Task.objects.none()
+
+
+def can_author_task_comment(task: Task, user: dict) -> bool:
+    collaborator_id = user.get('collaborator_id')
+    if (
+        user.get('role') not in {'L3', 'L4', 'L5'}
+        or 'tasks.view' not in user.get('permissions', [])
+        or not task_queryset(user).filter(pk=task.pk).exists()
+    ):
+        return False
+    if collaborator_id in {task.created_by_id, task.responsible_id}:
+        return True
+    return user.get('role') == 'L3' and ProjectCoordination.objects.filter(
+        project_id=task.project_id, coordinator_id=collaborator_id, is_active=True,
+        coordinator__is_active=True, coordinator__role__level='L3',
+    ).exists()
 
 
 def active_team_membership(task: Task, developer_id: int | None = None):
@@ -307,6 +325,20 @@ def task_response(task: Task, user: dict) -> dict:
         'created_at': task.created_at.isoformat(),
         'assigned_at': task.assigned_at.isoformat() if task.assigned_at else None,
         'due_at': task.due_at.isoformat() if task.due_at else None,
+        'can_comment': (
+            task.status not in {'Finalizada', 'Cancelada'}
+            and can_author_task_comment(task, user)
+        ),
+        'comments': [
+            {
+                'id': comment.id,
+                'author_id': comment.author_id,
+                'author_name': f'{comment.author.first_name} {comment.author.last_name}',
+                'content': comment.content,
+                'created_at': comment.created_at.isoformat(),
+            }
+            for comment in task.comments.all()
+        ],
         'events': [
             {
                 'task_id': event.task_id,
@@ -963,6 +995,87 @@ def get_task(task_id: int, user: dict = Depends(get_current_user)):
     if task is None:
         raise HTTPException(404, 'Tarea no encontrada')
     return task_response(task, user)
+
+
+@router.get('/{task_id}/comments')
+def list_task_comments(task_id: int, user: dict = Depends(get_current_user)):
+    if user.get('role') not in {'L3', 'L4', 'L5'}:
+        raise HTTPException(403, 'No tienes permiso para consultar comentarios de tareas')
+    task = task_queryset(user).filter(pk=task_id).first()
+    if task is None:
+        raise HTTPException(404, 'Tarea no encontrada')
+    return [
+        {
+            'id': comment.id,
+            'task_id': task.id,
+            'author_id': comment.author_id,
+            'author_name': f'{comment.author.first_name} {comment.author.last_name}',
+            'content': comment.content,
+            'created_at': comment.created_at,
+        }
+        for comment in task.comments.all()
+    ]
+
+
+@router.post('/{task_id}/comments', status_code=status.HTTP_201_CREATED)
+def create_task_comment(
+    task_id: int, payload: TaskCommentCreate, user: dict = Depends(get_current_user),
+):
+    candidate = Task.objects.filter(pk=task_id).values('project_id').first()
+    if candidate is None:
+        raise HTTPException(404, 'Tarea no encontrada')
+    content = payload.content.strip()
+    if not content:
+        raise HTTPException(422, 'El comentario no puede estar vacío')
+
+    with transaction.atomic():
+        # Lock organizational relationships before the task, matching task mutations.
+        coordination_ids = list(ProjectCoordination.objects.select_for_update(of=('self',)).filter(
+            project_id=candidate['project_id'],
+        ).order_by('id').values_list('id', flat=True))
+        if coordination_ids:
+            list(ProjectLeadership.objects.select_for_update(of=('self',)).filter(
+                coordination_id__in=coordination_ids,
+            ).order_by('id').values_list('id', flat=True))
+        current_actor = Collaborator.objects.select_for_update().select_related('role').filter(
+            pk=user['collaborator_id'], is_active=True, role__is_active=True,
+        ).first()
+        task = Task.objects.select_for_update(of=('self',)).select_related(
+            'project', 'created_by', 'responsible',
+        ).filter(pk=task_id).first()
+        if task is None or current_actor is None:
+            raise HTTPException(404, 'Tarea no encontrada')
+
+        current_user = {
+            **user,
+            'role': current_actor.role.level,
+            'permissions': effective_permissions(current_actor.role),
+        }
+        if 'tasks.view' not in current_user['permissions']:
+            raise HTTPException(403, 'No tienes permiso para consultar tareas')
+        if not task_queryset(current_user).filter(pk=task.pk).exists():
+            raise HTTPException(404, 'Tarea no encontrada')
+        if not can_author_task_comment(task, current_user):
+            raise HTTPException(403, 'No estás autorizado para comentar esta tarea')
+        if task.status in {'Finalizada', 'Cancelada'}:
+            raise HTTPException(409, 'No se pueden agregar comentarios a tareas finalizadas o canceladas')
+
+        event = TaskEvent.objects.create(
+            task=task, event_type='comentario_agregado', actor=current_actor,
+            new_status=task.status,
+        )
+        comment = TaskComment.objects.create(
+            task=task, event=event, author=current_actor, content=content,
+        )
+
+    return {
+        'id': comment.id,
+        'task_id': task.id,
+        'author_id': current_actor.id,
+        'author_name': f'{current_actor.first_name} {current_actor.last_name}',
+        'content': comment.content,
+        'created_at': comment.created_at,
+    }
 
 
 @router.post('/', status_code=status.HTTP_201_CREATED)

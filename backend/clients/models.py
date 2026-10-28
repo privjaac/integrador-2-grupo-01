@@ -937,6 +937,7 @@ class Task(models.Model):
 class TaskEvent(models.Model):
     EVENT_CHOICES = [
         ('creada', 'Creada'), ('asignada', 'Asignada'),
+        ('comentario_agregado', 'Comentario agregado'),
         ('iniciada', 'Iniciada'), ('resultado_presentado', 'Resultado presentado'),
         ('observada', 'Observada'), ('aprobada_revision', 'Aprobada en revisión'),
         ('correccion_iniciada', 'Corrección iniciada'),
@@ -985,6 +986,24 @@ class TaskEvent(models.Model):
     class Meta:
         db_table = 'task_events'
         ordering = ['occurred_at', 'id']
+
+
+class TaskComment(models.Model):
+    """Immutable comment attached to an authorized task event."""
+
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='comments')
+    event = models.OneToOneField(
+        TaskEvent, on_delete=models.CASCADE, related_name='comment',
+    )
+    author = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='task_comments',
+    )
+    content = models.TextField(max_length=2000)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'task_comments'
+        ordering = ['created_at', 'id']
 
 
 class InternalNotification(models.Model):

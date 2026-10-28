@@ -5,6 +5,11 @@ export async function getTaskContext() {
   return data;
 }
 
+export async function addTaskComment(id, content) {
+  const { data } = await axiosInstance.post(`/api/tasks/${id}/comments`, { content });
+  return data;
+}
+
 export async function createTask(payload) {
   const { data } = await axiosInstance.post("/api/tasks/", payload);
   return data;

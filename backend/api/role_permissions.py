@@ -130,6 +130,7 @@ ROUTE_CAPABILITIES = {
     'unlink_contracted_service': 'projects.associateContractedServices',
     # Tasks and project coordination.
     'get_task_context': 'tasks.view', 'list_tasks': 'tasks.view', 'get_task': 'tasks.view',
+    'list_task_comments': 'tasks.view', 'create_task_comment': 'tasks.view',
     'create_task': 'tasks.create', 'assign_task': 'tasks.assign',
     'reassign_task': 'tasks.reassign', 'remove_task_executor': 'tasks.removeExecutor',
     'block_task': 'tasks.blockTask', 'unblock_task': 'tasks.unblockTask',
