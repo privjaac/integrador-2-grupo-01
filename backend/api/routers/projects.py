@@ -13,12 +13,13 @@ from api.schemas.projects import (
     ProjectTaskClassificationInput, ProjectTechnicalEvaluationInput,
     ProjectValidationReadiness,
 )
+from api.schemas.clients import ProjectServiceLinkInput
 from clients.models import (
     Client, Collaborator, Project, ProjectCommercialAuthorization,
     ProjectCommercialAuthorizationEvent, ProjectCoordination, ProjectDeliveryAuthorization,
     ProjectDeliveryAuthorizationEvent, ProjectDelivery, ProjectDeliveryTechnicalReview,
     ProjectDeliveryTransition, ProjectEvent, ProjectTaskClassification, ProjectTechnicalEvaluation,
-    Task, TaskEvent,
+    Task, TaskEvent, ContractedService, ProjectContractedService,
 )
 
 router = APIRouter()
@@ -1228,3 +1229,93 @@ def get_project(project_id: int, user: dict = Depends(get_current_user)):
     except Project.DoesNotExist:
         raise HTTPException(status_code=404, detail='Proyecto no encontrado')
     return to_response(project)
+
+
+@router.get('/{project_id}/contracted-services')
+def list_project_contracted_services(project_id: int, user: dict = Depends(get_current_user)):
+    require_project_reader(user)
+    try:
+        project = Project.objects.get(pk=project_id)
+    except Project.DoesNotExist:
+        raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+    if user.get('role') == 'L3' and not ProjectCoordination.objects.filter(
+        project=project, coordinator_id=user.get('collaborator_id'), is_active=True,
+        coordinator__is_active=True, coordinator__role__level='L3',
+    ).exists():
+        raise HTTPException(status_code=404, detail='Proyecto fuera de tu coordinación vigente')
+    links = ProjectContractedService.objects.filter(project=project).select_related(
+        'service__catalog_service', 'linked_by', 'unlinked_by',
+    )
+    return [{
+        'id': link.id, 'service_id': link.service_id,
+        'service_name': link.commitment_snapshot.get('service_name', link.service.service_name),
+        'commitment_reference': link.commitment_snapshot.get('commitment_reference', link.service.commitment_reference),
+        'scope': link.commitment_snapshot.get('scope', link.service.scope),
+        'effective_start': link.commitment_snapshot.get('effective_start'),
+        'contracted_duration': link.commitment_snapshot.get('contracted_duration', ''),
+        'documented_expiration': link.commitment_snapshot.get('documented_expiration'),
+        'frequency': link.commitment_snapshot.get('frequency', link.service.frequency),
+        'commitment_snapshot': link.commitment_snapshot,
+        'linked_by_id': link.linked_by_id, 'linked_at': link.linked_at,
+        'link_reason': link.link_reason, 'unlinked_by_id': link.unlinked_by_id,
+        'unlinked_at': link.unlinked_at, 'unlink_reason': link.unlink_reason,
+        'is_active': link.unlinked_at is None,
+    } for link in links]
+
+
+@router.post('/{project_id}/contracted-services', status_code=status.HTTP_201_CREATED)
+def link_contracted_service(
+    project_id: int, payload: ProjectServiceLinkInput, user: dict = Depends(get_current_user),
+):
+    actor = active_l3_actor(user)
+    with transaction.atomic():
+        project = lock_coordinated_project(project_id, actor)
+        if project.status == 'Entregado':
+            raise HTTPException(status_code=409, detail='No se asocian servicios a un proyecto ya entregado')
+        service = ContractedService.objects.select_for_update().select_related('client').filter(pk=payload.service_id).first()
+        if service is None:
+            raise HTTPException(status_code=404, detail='Servicio contratado no encontrado')
+        if service.client_id != project.client_id:
+            raise HTTPException(status_code=409, detail='El servicio y el proyecto deben pertenecer al mismo cliente')
+        if ProjectContractedService.objects.filter(service=service, unlinked_at__isnull=True).exists():
+            raise HTTPException(status_code=409, detail='El servicio ya está asociado a un proyecto; se requiere resolver la relación vigente antes de reasociar')
+        link = ProjectContractedService.objects.create(
+            project=project, service=service, linked_by=actor,
+            link_reason=payload.reason,
+            commitment_snapshot={
+                'catalog_service_id': service.catalog_service_id,
+                'catalog_service_name': service.catalog_service.name if service.catalog_service_id else None,
+                'service_name': service.service_name,
+                'commitment_reference': service.commitment_reference,
+                'scope': service.scope,
+                'frequency': service.frequency,
+                'effective_start': service.effective_start.isoformat() if service.effective_start else None,
+                'contracted_duration': service.contracted_duration,
+                'documented_expiration': service.documented_expiration.isoformat() if service.documented_expiration else None,
+                'evidence_reference': service.evidence_reference,
+            },
+        )
+    return {'id': link.id, 'project_id': link.project_id, 'service_id': link.service_id, 'linked_at': link.linked_at}
+
+
+@router.post('/{project_id}/contracted-services/{link_id}/withdrawal')
+def unlink_contracted_service(
+    project_id: int, link_id: int, payload: ProjectServiceLinkInput, user: dict = Depends(get_current_user),
+):
+    actor = active_l3_actor(user)
+    with transaction.atomic():
+        project = lock_coordinated_project(project_id, actor)
+        link = ProjectContractedService.objects.select_for_update().filter(
+            pk=link_id, project=project, unlinked_at__isnull=True,
+        ).first()
+        if link is None:
+            raise HTTPException(status_code=404, detail='Vínculo activo no encontrado')
+        if link.service_id != payload.service_id:
+            raise HTTPException(status_code=409, detail='El servicio indicado no corresponde al vínculo')
+        if project.status != 'Planificado' or Task.objects.filter(project=project).exists():
+            raise HTTPException(status_code=409, detail='El vínculo afecta trabajo u obligaciones que requieren evaluación y autorización antes de desvincular')
+        link.unlinked_by = actor
+        link.unlinked_at = timezone.now()
+        link.unlink_reason = payload.reason
+        link.save(update_fields=['unlinked_by', 'unlinked_at', 'unlink_reason'])
+    return {'id': link.id, 'unlinked_at': link.unlinked_at}

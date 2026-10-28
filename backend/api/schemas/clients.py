@@ -14,7 +14,7 @@
 from decimal import Decimal
 from typing import Annotated, Literal, Optional
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 from api.schemas.safe_input import SafeInputModel
 from datetime import datetime, date
 
@@ -143,3 +143,49 @@ class ClientList(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class ContractedServiceWrite(SafeInputModel):
+    service_name: str = Field(min_length=1, max_length=160)
+    catalog_service_id: Optional[Annotated[int, Field(gt=0)]] = None
+    commitment_reference: str = Field(min_length=1, max_length=200)
+    scope: str = Field(min_length=1)
+    agreed_amount: Optional[Annotated[Decimal, Field(ge=0, max_digits=12, decimal_places=2)]] = None
+    currency: str = Field(default='', max_length=3)
+    frequency: Literal['unica', 'mensual', 'anual']
+    effective_start: Optional[date] = None
+    contracted_duration: str = Field(default='', max_length=120)
+    documented_expiration: Optional[date] = None
+    terms: str = ''
+    evidence_reference: str = Field(min_length=1, max_length=300)
+    reason: str = Field(min_length=1)
+    impact_assessment: str = ''
+
+    @field_validator('service_name', 'commitment_reference', 'scope', 'evidence_reference')
+    @classmethod
+    def reject_blank_contract_terms(cls, value):
+        if not value.strip():
+            raise ValueError('La referencia, alcance y evidencia son obligatorios')
+        return value.strip()
+
+    @model_validator(mode='after')
+    def validate_service_dates(self):
+        if self.effective_start and self.documented_expiration and self.documented_expiration < self.effective_start:
+            raise ValueError('El vencimiento documentado no puede preceder al inicio contratado')
+        if not self.reason.strip():
+            raise ValueError('El motivo comercial es obligatorio')
+        if self.agreed_amount is not None and not self.currency.strip():
+            raise ValueError('Indica la moneda del importe acordado')
+        return self
+
+
+class ProjectServiceLinkInput(SafeInputModel):
+    service_id: int = Field(gt=0)
+    reason: str = Field(min_length=1)
+
+    @field_validator('reason')
+    @classmethod
+    def reject_blank_link_reason(cls, value):
+        if not value.strip():
+            raise ValueError('El motivo de asociación es obligatorio')
+        return value.strip()

@@ -13,7 +13,7 @@
 # Reglas de negocio:
 #   - Al crear un cliente se copia el base_price del tipo de web.
 #   - El total_price = base_price + extra_price.
-#   - El next_payment_date se calcula automáticamente según el plan.
+#   - Los vencimientos se consultan por servicio contratado, desde su vigencia.
 #   - El created_by se asigna automáticamente con el token del colaborador.
 #   - Soft delete — no se elimina, solo cambia status a 'inactivo'.
 # ==============================================================================
@@ -31,8 +31,11 @@ from datetime import date, timedelta
 from dateutil.relativedelta import relativedelta
 
 from api.dependencies import get_current_user
-from api.schemas.clients import ClientCreate, ClientUpdate, ClientResponse, ClientList
-from clients.models import Client, WebCatalog, Collaborator, WebFeature, ClientFeature, ClientChangeRequest, ClientHistory
+from api.schemas.clients import ClientCreate, ClientUpdate, ClientResponse, ClientList, ContractedServiceWrite
+from clients.models import (
+    Client, WebCatalog, Collaborator, WebFeature, ClientFeature, ClientChangeRequest, ClientHistory,
+    ContractedService, ContractedServiceHistory,
+)
 
 
 router = APIRouter()
@@ -55,6 +58,76 @@ def request_actor(user: dict) -> Collaborator:
 
 def client_snapshot(client: Client, fields=CLIENT_CHANGE_FIELDS) -> dict:
     return {field: getattr(client, field) for field in fields}
+
+
+def contracted_service_snapshot(service: ContractedService) -> dict:
+    return {
+        'client_id': service.client_id, 'service_name': service.service_name,
+        'catalog_service_id': service.catalog_service_id,
+        'commitment_reference': service.commitment_reference, 'scope': service.scope,
+        'agreed_amount': str(service.agreed_amount) if service.agreed_amount is not None else None,
+        'currency': service.currency, 'frequency': service.frequency,
+        'effective_start': service.effective_start.isoformat() if service.effective_start else None,
+        'contracted_duration': service.contracted_duration,
+        'documented_expiration': service.documented_expiration.isoformat() if service.documented_expiration else None,
+        'terms': service.terms, 'evidence_reference': service.evidence_reference,
+    }
+
+
+def contracted_service_response(service: ContractedService, *, disclose_commercial: bool) -> dict:
+    result = contracted_service_snapshot(service)
+    history = []
+    for event in service.history.all():
+        before, after = event.before, event.after
+        if not disclose_commercial:
+            before = {key: value for key, value in before.items() if key not in {'agreed_amount', 'currency', 'terms'}} if before else None
+            after = {key: value for key, value in after.items() if key not in {'agreed_amount', 'currency', 'terms'}}
+        history.append({
+            'id': event.id, 'actor_id': event.actor_id, 'action': event.action,
+            'reason': event.reason, 'impact_assessment': event.impact_assessment if disclose_commercial else None,
+            'evidence_reference': event.evidence_reference, 'occurred_at': event.occurred_at,
+            'before': before, 'after': after,
+        })
+    result.update({
+        'id': service.id, 'service_name': service.service_name,
+        'catalog_service_name': service.catalog_service.name if service.catalog_service_id else None,
+        'recorded_by_id': service.recorded_by_id, 'recorded_at': service.recorded_at,
+        'history': history,
+        'next_due_date': service_next_due_date(service),
+        'active_project_id': service.project_links.filter(unlinked_at__isnull=True).values_list('project_id', flat=True).first(),
+    })
+    if not disclose_commercial:
+        result.pop('agreed_amount')
+        result.pop('currency')
+        result.pop('terms')
+    return result
+
+
+def service_next_due_date(service: ContractedService, as_of: date | None = None) -> date | None:
+    if service.frequency == 'unica' or service.effective_start is None:
+        return None
+    as_of = as_of or timezone.localdate()
+    anchor = service.effective_start
+    step = relativedelta(months=1) if service.frequency == 'mensual' else relativedelta(years=1)
+    period = 1
+    due = anchor + step * period
+    while due <= as_of:
+        period += 1
+        due = anchor + step * period
+    if service.documented_expiration and (
+        service.documented_expiration <= as_of or due > service.documented_expiration
+    ):
+        return None
+    return due
+
+
+def active_commercial_actor(user: dict) -> Collaborator:
+    if user.get('role') != 'L2':
+        raise HTTPException(status_code=403, detail='El registro y modificación del compromiso corresponde a L2')
+    actor = Collaborator.objects.filter(pk=user.get('collaborator_id'), is_active=True, role__level='L2').first()
+    if actor is None:
+        raise HTTPException(status_code=403, detail='El colaborador L2 no está activo')
+    return actor
 
 
 # ------------------------------------------------------------------------------
@@ -99,27 +172,6 @@ def selected_features(
         raise HTTPException(status_code=400, detail='Una funcionalidad no existe o está inactiva')
     validate_feature_applicability(features, web_type)
     return features
-
-
-# ------------------------------------------------------------------------------
-# FUNCIÓN AUXILIAR — Calcular next_payment_date
-#
-# Lógica según el plan:
-#   - Mensual (alquiler): mismo día del mes siguiente a delivery_date
-#   - Anual (venta): mismo día y mes del año siguiente a registration_date
-# ------------------------------------------------------------------------------
-def calculate_next_payment(
-    payment_frequency: str,
-    delivery_date: date = None,
-    registration_date: date = None
-) -> date:
-    if payment_frequency == 'mensual' and delivery_date:
-        # Suma un mes a delivery_date conservando el mismo día
-        return delivery_date + relativedelta(months=1)
-    elif payment_frequency == 'anual' and registration_date:
-        # Suma un año a registration_date conservando día y mes
-        return registration_date + relativedelta(years=1)
-    return None
 
 
 # ------------------------------------------------------------------------------
@@ -298,14 +350,8 @@ def create_client(
     # total_price = base_price + extra_price
     total_price = base_price + extra_price
 
-    # Calcular next_payment_date si ya tiene delivery_date
+    # Fechas del cliente no acreditan la vigencia de cada servicio.
     next_payment_date = None
-    if data.delivery_date:
-        next_payment_date = calculate_next_payment(
-            payment_frequency,
-            delivery_date=data.delivery_date,
-            registration_date=data.registration_date
-        )
 
     # Crear el cliente en PostgreSQL
     with transaction.atomic():
@@ -550,3 +596,69 @@ def get_client_history(client_id: int, user: dict = Depends(get_current_user)):
     return list(ClientHistory.objects.filter(client_id=client_id).values(
         'id', 'request_id', 'actor_id', 'event_type', 'occurred_at', 'reason', 'before_data', 'after_data',
     ))
+
+
+@router.get('/{client_id}/contracted-services')
+def list_contracted_services(client_id: int, user: dict = Depends(get_current_user)):
+    require_crm_reader(user)
+    if not Client.objects.filter(pk=client_id).exists():
+        raise HTTPException(status_code=404, detail='Cliente no encontrado')
+    disclose_commercial = user.get('role') in ('L1', 'L2')
+    services = ContractedService.objects.filter(client_id=client_id).select_related('catalog_service', 'recorded_by').prefetch_related('history')
+    return [contracted_service_response(item, disclose_commercial=disclose_commercial) for item in services]
+
+
+@router.post('/{client_id}/contracted-services', status_code=status.HTTP_201_CREATED)
+def record_contracted_service(
+    client_id: int, payload: ContractedServiceWrite, user: dict = Depends(get_current_user),
+):
+    actor = active_commercial_actor(user)
+    with transaction.atomic():
+        client = Client.objects.select_for_update().filter(pk=client_id).first()
+        if client is None:
+            raise HTTPException(status_code=404, detail='Cliente no encontrado')
+        if client.status == 'inactivo':
+            raise HTTPException(status_code=409, detail='Un cliente inactivo requiere regularización comercial antes de una nueva contratación')
+        catalog_service = WebCatalog.objects.filter(pk=payload.catalog_service_id, is_active=True).first() if payload.catalog_service_id else None
+        if payload.catalog_service_id and catalog_service is None:
+            raise HTTPException(status_code=400, detail='La oferta no existe o no está disponible para una nueva contratación')
+        values = payload.model_dump(exclude={'reason', 'impact_assessment', 'catalog_service_id'})
+        service = ContractedService.objects.create(
+            client=client, catalog_service=catalog_service, recorded_by=actor, **values,
+        )
+        snapshot = contracted_service_snapshot(service)
+        ContractedServiceHistory.objects.create(
+            service=service, actor=actor, action='registro', after=snapshot,
+            reason=payload.reason.strip(), evidence_reference=service.evidence_reference,
+        )
+    return contracted_service_response(service, disclose_commercial=True)
+
+
+@router.put('/{client_id}/contracted-services/{service_id}')
+def amend_contracted_service(
+    client_id: int, service_id: int, payload: ContractedServiceWrite, user: dict = Depends(get_current_user),
+):
+    actor = active_commercial_actor(user)
+    with transaction.atomic():
+        service = ContractedService.objects.select_for_update().select_related('client', 'catalog_service').filter(
+            pk=service_id, client_id=client_id,
+        ).first()
+        if service is None:
+            raise HTTPException(status_code=404, detail='Servicio contratado no encontrado para este cliente')
+        before = contracted_service_snapshot(service)
+        catalog_service = WebCatalog.objects.filter(pk=payload.catalog_service_id).first() if payload.catalog_service_id else None
+        if payload.catalog_service_id and (catalog_service is None or (catalog_service.pk != service.catalog_service_id and not catalog_service.is_active)):
+            raise HTTPException(status_code=400, detail='La oferta no existe o no está disponible para el cambio')
+        if not payload.impact_assessment.strip():
+            raise HTTPException(status_code=422, detail='La modificación requiere evaluar las obligaciones afectadas')
+        values = payload.model_dump(exclude={'reason', 'impact_assessment', 'catalog_service_id'})
+        for field, value in values.items():
+            setattr(service, field, value)
+        service.catalog_service = catalog_service
+        service.save()
+        ContractedServiceHistory.objects.create(
+            service=service, actor=actor, action='modificacion', before=before,
+            after=contracted_service_snapshot(service), reason=payload.reason.strip(),
+            evidence_reference=service.evidence_reference, impact_assessment=payload.impact_assessment.strip(),
+        )
+    return contracted_service_response(service, disclose_commercial=True)

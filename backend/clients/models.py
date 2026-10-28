@@ -182,12 +182,11 @@ class WebCatalog(models.Model):
 # Flujo de estados:
 #   1. Cliente paga inicial → status = 'desarrollo', delivery_date = NULL
 #   2. Web terminada → trabajador llena delivery_date → status = 'activo'
-#   3. Cliente paga cada mes/año → next_payment_date avanza
+#   3. Las vigencias recurrentes se registran por servicio contratado.
 #   4. Si no paga → status = 'inactivo'
 #
-# Lógica de next_payment_date:
-#   - Plan alquiler (mensual) → mismo día del mes siguiente a delivery_date
-#   - Plan venta (anual) → mismo día y mes del año siguiente a registration_date
+# next_payment_date se conserva para compatibilidad con registros anteriores;
+# no sustituye el calendario propio de cada servicio contratado.
 # ------------------------------------------------------------------------------
 class Client(models.Model):
 
@@ -273,7 +272,7 @@ class Client(models.Model):
     # FECHAS
     # registration_date  → día que pagó el inicial y se registró
     # delivery_date      → día que la web fue entregada (llena el trabajador)
-    # next_payment_date  → calculado automáticamente por FastAPI
+    # next_payment_date  → legado; el vencimiento actual se calcula por servicio
     # ------------------------------------------------------------------
     registration_date = models.DateField(null=True, blank=True)
     delivery_date = models.DateField(null=True, blank=True)
@@ -1006,7 +1005,88 @@ class ClientFeature(models.Model):
         return f"{self.client.cupe} — {self.feature.name}"
 
 
-# ------------------------------------------------------------------------------
+class ContractedService(models.Model):
+    """Commercial service commitment recorded independently from its catalog offer."""
+
+    FREQUENCY_CHOICES = [
+        ('unica', 'Pago único'),
+        ('mensual', 'Mensual'),
+        ('anual', 'Anual'),
+    ]
+
+    client = models.ForeignKey(Client, on_delete=models.PROTECT, related_name='contracted_services')
+    service_name = models.CharField(max_length=160)
+    catalog_service = models.ForeignKey(
+        WebCatalog, on_delete=models.PROTECT, null=True, blank=True, related_name='contracted_services',
+    )
+    commitment_reference = models.CharField(max_length=200)
+    scope = models.TextField()
+    agreed_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    currency = models.CharField(max_length=3, blank=True, default='')
+    frequency = models.CharField(max_length=10, choices=FREQUENCY_CHOICES)
+    effective_start = models.DateField(null=True, blank=True)
+    contracted_duration = models.CharField(max_length=120, blank=True, default='')
+    documented_expiration = models.DateField(null=True, blank=True)
+    terms = models.TextField(blank=True, default='')
+    evidence_reference = models.CharField(max_length=300)
+    recorded_by = models.ForeignKey(Collaborator, on_delete=models.PROTECT, related_name='contracted_services_recorded')
+    recorded_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'contracted_services'
+        ordering = ['client_id', 'id']
+        constraints = [
+            models.CheckConstraint(condition=models.Q(frequency__in=['unica', 'mensual', 'anual']), name='contracted_service_frequency_valid'),
+            models.CheckConstraint(condition=models.Q(agreed_amount__isnull=True) | models.Q(agreed_amount__gte=0), name='contracted_service_amount_nonnegative'),
+        ]
+
+
+class ContractedServiceHistory(models.Model):
+    service = models.ForeignKey(ContractedService, on_delete=models.PROTECT, related_name='history')
+    actor = models.ForeignKey(Collaborator, on_delete=models.PROTECT, related_name='contracted_service_history')
+    action = models.CharField(max_length=16, choices=[('registro', 'Registro'), ('modificacion', 'Modificación')])
+    before = models.JSONField(null=True, blank=True)
+    after = models.JSONField()
+    reason = models.TextField(blank=True, default='')
+    impact_assessment = models.TextField(blank=True, default='')
+    evidence_reference = models.CharField(max_length=300)
+    occurred_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'contracted_service_history'
+        ordering = ['occurred_at', 'id']
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValueError('El historial de servicios contratados es inmutable')
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError('El historial de servicios contratados es inmutable')
+
+
+class ProjectContractedService(models.Model):
+    project = models.ForeignKey(Project, on_delete=models.PROTECT, related_name='contracted_service_links')
+    service = models.ForeignKey(ContractedService, on_delete=models.PROTECT, related_name='project_links')
+    linked_by = models.ForeignKey(Collaborator, on_delete=models.PROTECT, related_name='project_service_links')
+    linked_at = models.DateTimeField(auto_now_add=True)
+    link_reason = models.TextField()
+    commitment_snapshot = models.JSONField(default=dict)
+    unlinked_by = models.ForeignKey(Collaborator, on_delete=models.PROTECT, null=True, blank=True, related_name='project_service_unlinks')
+    unlinked_at = models.DateTimeField(null=True, blank=True)
+    unlink_reason = models.TextField(blank=True, default='')
+
+    class Meta:
+        db_table = 'project_contracted_services'
+        ordering = ['linked_at', 'id']
+        constraints = [models.UniqueConstraint(
+            fields=['service'], condition=models.Q(unlinked_at__isnull=True),
+            name='contracted_service_single_active_project',
+        )]
+
+
+
 # CUPELOG — Historial de cambios de CUPE
 #
 # Registra cada vez que se cambia el CUPE de un cliente o colaborador.

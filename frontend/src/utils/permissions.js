@@ -125,6 +125,7 @@ const PERMISSIONS = {
     reviewProjectDeliveryVersion: ["L3"],
     authorizeProjectStart: ["L2"],
     startProject: ["L3"],
+    associateContractedServices: ["L3"],
     edit: [],
     delete: [],
   },

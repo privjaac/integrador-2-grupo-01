@@ -23,6 +23,7 @@ import Button from "../../components/ui/Button";
 import Modal from "../../components/ui/Modal";
 import LoadingSpinner from "../../components/ui/LoadingSpinner";
 import CupeChangeModal from "../../components/ui/CupeChangeModal";
+import ContractedServicesPanel from "./ContractedServicesPanel";
 
 function DetailRow({ label, value, valueColor }) {
   return (
@@ -749,6 +750,7 @@ export default function ClientDetail() {
         </DetailCard>
       )}
 
+      {can(user, "clients", "view") && <ContractedServicesPanel clientId={Number(id)} canManage={user?.role === "L2"} />}`n
       {/* ── MODALES ─────────────────────────────────────────────────────────── */}
 
       {/* Cambio de CUPE */}

@@ -102,3 +102,18 @@ export async function startProject(projectId, payload) {
   const { data } = await axiosInstance.post(`/api/projects/${projectId}/start`, payload);
   return data;
 }
+
+export async function getProjectContractedServices(projectId) {
+  const { data } = await axiosInstance.get(`/api/projects/${projectId}/contracted-services`);
+  return data;
+}
+
+export async function linkContractedService(projectId, payload) {
+  const { data } = await axiosInstance.post(`/api/projects/${projectId}/contracted-services`, payload);
+  return data;
+}
+
+export async function unlinkContractedService(projectId, linkId, payload) {
+  const { data } = await axiosInstance.post(`/api/projects/${projectId}/contracted-services/${linkId}/withdrawal`, payload);
+  return data;
+}

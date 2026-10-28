@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getClients } from "../../api/clients";
+import ProjectServicesPanel from "./ProjectServicesPanel";
 import { designateCoordinator, getTaskContext, removeCoordinator } from "../../api/tasks";
 import {
   classifyProjectTask, createCommercialAuthorization, createDeliveryAuthorization,
@@ -411,6 +412,7 @@ export default function ProjectsPage() {
         <div style={{ display: "flex", gap: 6 }}><select aria-label={`Coordinación de ${project.name}`} value={coordinatorSelection[project.id] || ""} onChange={(event) => setCoordinatorSelection({ ...coordinatorSelection, [project.id]: event.target.value })} style={fieldStyle}><option value="">Seleccionar L3</option>{taskContext.coordinators?.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" disabled={!coordinatorSelection[project.id]} onClick={() => assignCoordinator(project.id)} style={{ ...fieldStyle, cursor: "pointer" }}>Designar</button></div>
       </td>}</tr>;
     })}</tbody></table></div>}
+    {can(user, "projects", "associateContractedServices") && projects.filter((project) => scopedProjects.has(project.id)).map((project) => <ProjectServicesPanel key={`services-${project.id}`} project={project} canManage={project.status !== "Entregado"} />)}
     {canStartValidation && projects.some((project) => project.status === "En ejecución" && scopedProjects.has(project.id)) && <section style={{ marginTop: 28 }}>
       <h2>Ingreso a validación técnica</h2>
       <p style={{ color: "#aab2c5" }}>L3 evalúa preparación suficiente para comenzar una validación significativa. Este acto no declara resultados aprobados ni finaliza el proyecto.</p>

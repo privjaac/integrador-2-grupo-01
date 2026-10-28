@@ -105,3 +105,18 @@ export async function getClientHistory(id) {
   const response = await axiosInstance.get(`/api/clients/${id}/history`);
   return response.data;
 }
+
+export async function getContractedServices(clientId) {
+  const response = await axiosInstance.get(`/api/clients/${clientId}/contracted-services`);
+  return response.data;
+}
+
+export async function recordContractedService(clientId, payload) {
+  const response = await axiosInstance.post(`/api/clients/${clientId}/contracted-services`, payload);
+  return response.data;
+}
+
+export async function amendContractedService(clientId, serviceId, payload) {
+  const response = await axiosInstance.put(`/api/clients/${clientId}/contracted-services/${serviceId}`, payload);
+  return response.data;
+}
