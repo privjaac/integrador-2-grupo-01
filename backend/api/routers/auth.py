@@ -173,6 +173,11 @@ def reset_password(data: PasswordResetRequest, background_tasks: BackgroundTasks
         collaborator = Collaborator.objects.select_for_update().get(pk=request.collaborator_id)
         collaborator.password_hash = hash_password(data.new_password)
         collaborator.save(update_fields=['password_hash', 'updated_at'])
+        # Password replacement and account-wide session revocation commit as
+        # one unit; unrelated collaborators and their sessions are untouched.
+        CollaboratorSession.objects.filter(
+            collaborator_id=collaborator.pk, revoked_at__isnull=True,
+        ).update(revoked_at=now)
         request.used_at = now
         request.save(update_fields=['used_at'])
         email = collaborator.email

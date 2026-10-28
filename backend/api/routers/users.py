@@ -22,6 +22,7 @@ from api.router import APIRouter
 from django.db import IntegrityError, transaction
 from typing import Optional
 from django.db.models import Q
+from django.utils import timezone
 
 # Depends(get_current_user) → FastAPI verifica el token automáticamente
 # antes de ejecutar cada endpoint. Si el token es inválido → 401.
@@ -29,7 +30,7 @@ from api.dependencies import get_current_user
 from api.routers.auth import hash_password
 from api.role_permissions import effective_permissions
 from api.schemas.users import CollaboratorCreate, CollaboratorUpdate, CollaboratorResponse, CollaboratorList
-from clients.models import Collaborator, Role
+from clients.models import Collaborator, CollaboratorSession, Role
 
 
 router = APIRouter()
@@ -316,60 +317,62 @@ def update_collaborator(
     if user.get('role') not in ('L1', 'L2'):
         raise HTTPException(status_code=403, detail='Solo SA/SM pueden editar colaboradores')
 
-    try:
-        collaborator = Collaborator.objects.select_related('role').get(id=collaborator_id)
-    except Collaborator.DoesNotExist:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f'Colaborador con id {collaborator_id} no encontrado'
-        )
-    require_manage_target(user, collaborator)
-
     update_data = data.model_dump(exclude_unset=True)
     if 'role_id' in update_data:
         raise HTTPException(status_code=403, detail='El cambio de rol no está disponible en la edición ordinaria')
-    unique_fields = {
-        'username': 'El username ya está en uso',
-        'email': 'El email ya está registrado',
-        'document_number': 'El documento ya está registrado',
-    }
-    for field, message in unique_fields.items():
-        if (
-            field in update_data
-            and Collaborator.objects.filter(**{field: update_data[field]})
-            .exclude(id=collaborator_id).exists()
-        ):
-            raise HTTPException(status_code=400, detail=message)
-    if 'is_active' in update_data:
-        if update_data != {'is_active': True}:
-            raise HTTPException(status_code=403, detail='Usa la operación autorizada de activación/desactivación')
-        collaborator.is_active = True
-        collaborator.save(update_fields=['is_active', 'updated_at'])
-        return collaborator_to_response(collaborator)
-
-    for field, value in update_data.items():
-
-        # Si viene una nueva contraseña, encriptarla antes de guardar
-        if field == 'password':
-            collaborator.password_hash = hash_password(value)
-
-        # Si viene un nuevo rol, buscar el objeto Role
-        elif field == 'role_id':
-            try:
-                role = Role.objects.get(id=value, is_active=True)
-            except Role.DoesNotExist:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f'Rol con id {value} no encontrado'
-                )
-            require_lower_role(user, role)
-            collaborator.role = role
-
-        else:
-            setattr(collaborator, field, value)
-
     try:
-        collaborator.save()
+        with transaction.atomic():
+            try:
+                collaborator = Collaborator.objects.select_for_update().select_related('role').get(id=collaborator_id)
+            except Collaborator.DoesNotExist:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f'Colaborador con id {collaborator_id} no encontrado'
+                )
+            require_manage_target(user, collaborator)
+            unique_fields = {
+                'username': 'El username ya está en uso',
+                'email': 'El email ya está registrado',
+                'document_number': 'El documento ya está registrado',
+            }
+            for field, message in unique_fields.items():
+                if (
+                    field in update_data
+                    and Collaborator.objects.filter(**{field: update_data[field]})
+                    .exclude(id=collaborator_id).exists()
+                ):
+                    raise HTTPException(status_code=400, detail=message)
+            if 'is_active' in update_data:
+                if update_data != {'is_active': True}:
+                    raise HTTPException(status_code=403, detail='Usa la operación autorizada de activación/desactivación')
+                collaborator.is_active = True
+                collaborator.save(update_fields=['is_active', 'updated_at'])
+                return collaborator_to_response(collaborator)
+
+            password_changed = 'password' in update_data
+            for field, value in update_data.items():
+                # Si viene una nueva contraseña, encriptarla antes de guardar.
+                if field == 'password':
+                    collaborator.password_hash = hash_password(value)
+                # La ruta ya rechaza role_id; conservar su defensa local.
+                elif field == 'role_id':
+                    try:
+                        role = Role.objects.get(id=value, is_active=True)
+                    except Role.DoesNotExist:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f'Rol con id {value} no encontrado'
+                        )
+                    require_lower_role(user, role)
+                    collaborator.role = role
+                else:
+                    setattr(collaborator, field, value)
+
+            collaborator.save()
+            if password_changed:
+                CollaboratorSession.objects.filter(
+                    collaborator_id=collaborator.pk, revoked_at__isnull=True,
+                ).update(revoked_at=timezone.now())
     except IntegrityError as exc:
         raise HTTPException(
             status_code=400,
