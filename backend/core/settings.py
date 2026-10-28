@@ -302,3 +302,6 @@ FRONTEND_PUBLIC_URL = os.getenv('FRONTEND_PUBLIC_URL', '')
 # usa BigAutoField → un entero grande autoincremental (más seguro que el int normal).
 # ------------------------------------------------------------------------------
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Refuse test runs unless every effective connection is isolated SQLite memory.
+TEST_RUNNER = 'core.test_runner.SafeDiscoverRunner'

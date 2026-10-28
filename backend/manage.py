@@ -12,6 +12,49 @@ Por ejemplo, se utiliza para:
 """
 import os
 import sys
+from importlib import import_module
+
+
+def _test_command_settings(argv):
+    """Resolve Django's settings option before Django initializes its app registry."""
+    args = argv[1:]
+    command = None
+    skip_value = False
+    for token in args:
+        if skip_value:
+            skip_value = False
+            continue
+        if token in {'--settings', '--pythonpath'}:
+            skip_value = True
+            continue
+        if token.startswith('-'):
+            continue
+        command = token
+        break
+    if command != 'test':
+        return None
+
+    settings_module = os.environ.get('DJANGO_SETTINGS_MODULE', 'core.settings')
+    for index, token in enumerate(args):
+        if token.startswith('--settings='):
+            settings_module = token.split('=', 1)[1]
+        elif token == '--settings' and index + 1 < len(args):
+            settings_module = args[index + 1]
+    return settings_module
+
+
+def _validate_test_database_selection(argv):
+    settings_module = _test_command_settings(argv)
+    if settings_module is None:
+        return
+    from django.core.exceptions import ImproperlyConfigured
+    from core.test_runner import validate_database_mapping
+
+    selected_settings = import_module(settings_module)
+    try:
+        validate_database_mapping(getattr(selected_settings, 'DATABASES', None))
+    except ImproperlyConfigured as exc:
+        raise SystemExit(f'No se inicia el ejecutor de pruebas: {exc}') from exc
 
 
 def main():
@@ -20,6 +63,7 @@ def main():
     # Aquí le indicamos a Django dónde encontrar las configuraciones principales de tu proyecto.
     # En tu caso, le dice que busque dentro de la carpeta 'core' el archivo 'settings.py'.
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'core.settings')
+    _validate_test_database_selection(sys.argv)
 
     try:
         # Intenta importar la función de Django encargada de interpretar y ejecutar comandos
