@@ -124,7 +124,7 @@ class Command(BaseCommand):
 
             snapshot = candidate['task']
             with transaction.atomic():
-                task = Task.objects.select_for_update().select_related(
+                task = Task.objects.select_for_update(of=('self',)).select_related(
                     'responsible__role', 'created_by__role',
                 ).filter(pk=task_id).first()
                 if (
