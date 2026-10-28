@@ -622,6 +622,69 @@ class ProjectLeadership(models.Model):
         )]
 
 
+class OrganizationalSubstitution(models.Model):
+    """Time-bounded, auditable substitution within an existing project scope."""
+
+    ABSENT_LEVELS = [('L3', 'L3'), ('L4', 'L4')]
+    FACULTY_CHOICES = [
+        ('tasks.view', 'Consultar tareas'),
+        ('tasks.review', 'Revisar tareas'),
+    ]
+
+    coordination = models.ForeignKey(
+        ProjectCoordination, on_delete=models.PROTECT, related_name='substitutions',
+    )
+    leadership = models.ForeignKey(
+        ProjectLeadership, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='substitutions',
+    )
+    absent_level = models.CharField(max_length=2, choices=ABSENT_LEVELS)
+    absent_person = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='substitutions_as_absent',
+    )
+    substitute = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='organizational_substitutions',
+    )
+    designated_by = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='substitutions_designated',
+    )
+    reason = models.TextField()
+    evidence = models.TextField()
+    scope = models.TextField()
+    faculties = models.JSONField(default=list)
+    valid_from = models.DateTimeField()
+    valid_until = models.DateTimeField()
+    is_active = models.BooleanField(default=True)
+    ended_by = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='substitutions_ended',
+    )
+    ended_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'organizational_substitutions'
+        ordering = ['-created_at', '-id']
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(valid_until__gt=models.F('valid_from')),
+                name='org_substitution_valid_period',
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(is_active=True, ended_by__isnull=True, ended_at__isnull=True)
+                    | models.Q(is_active=False, ended_at__isnull=False)
+                ),
+                name='org_substitution_end_consistent',
+            ),
+            models.UniqueConstraint(
+                fields=['coordination', 'absent_person'], condition=models.Q(is_active=True),
+                name='org_substitution_single_active_scope',
+            ),
+        ]
+
+
 class ProjectEvent(models.Model):
     """Audit record of explicitly authorized project status transitions."""
 

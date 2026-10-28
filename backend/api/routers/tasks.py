@@ -7,6 +7,7 @@ import json
 from api.dependencies import get_current_user
 from api.router import APIRouter
 from api.role_permissions import effective_permissions
+from api.organizational_substitutions import active_coordination_scope, active_leadership_scope, has_active_substitution
 from api.schemas.tasks import (
     Designation, TaskAssign, TaskBlockInput, TaskCancellationCommercialReview,
     TaskCancellationEvaluation, TaskCancellationProposal, TaskCommentCreate, TaskCreate, TaskExecutorRemoval,
@@ -51,32 +52,17 @@ def task_queryset(user: dict):
     comments = Prefetch('comments', queryset=TaskComment.objects.select_related('author'))
     role = user.get('role')
     if role == 'L3':
-        return Task.objects.filter(
-            project__coordinations__coordinator_id=user['collaborator_id'],
-            project__coordinations__is_active=True,
-            project__coordinations__coordinator__is_active=True,
-            project__coordinations__coordinator__role__level='L3',
-        ).prefetch_related(comments)
+        coordination_ids = active_coordination_scope(user['collaborator_id']).values('id')
+        return Task.objects.filter(project__coordinations__id__in=Subquery(coordination_ids)).prefetch_related(comments)
     if role == 'L4':
-        delegated_coordinators = ProjectCoordination.objects.filter(
-            project_id=OuterRef('project_id'), is_active=True,
-            coordinator__is_active=True, coordinator__role__level='L3',
-            leaderships__leader_id=user['collaborator_id'],
-            leaderships__is_active=True,
-            leaderships__leader__is_active=True,
-            leaderships__leader__role__level='L4',
-        ).values('coordinator_id')
+        leaderships = active_leadership_scope(user['collaborator_id'], faculty='tasks.view')
+        coordinator_ids = leaderships.values('coordination__coordinator_id')
+        leader_ids = leaderships.values('leader_id')
         return Task.objects.filter(
-            project__coordinations__leaderships__leader_id=user['collaborator_id'],
-            project__coordinations__leaderships__is_active=True,
-            project__coordinations__is_active=True,
-            project__coordinations__coordinator__is_active=True,
-            project__coordinations__coordinator__role__level='L3',
-            project__coordinations__leaderships__leader__is_active=True,
-            project__coordinations__leaderships__leader__role__level='L4',
+            project__coordinations__leaderships__id__in=Subquery(leaderships.values('id')),
         ).filter(
-            Q(responsible_id=user['collaborator_id'])
-            | Q(responsible_id__in=Subquery(delegated_coordinators))
+            Q(responsible_id__in=Subquery(leader_ids))
+            | Q(responsible_id__in=Subquery(coordinator_ids))
         ).prefetch_related(comments)
     if role == 'L5':
         return Task.objects.filter(
@@ -118,6 +104,18 @@ def active_team_membership(task: Task, developer_id: int | None = None):
         developer__role__level='L5',
         is_active=True,
     )
+
+
+def substituted_l4_for_task(task: Task, actor_id: int, faculty: str) -> bool:
+    return has_active_substitution(
+        actor_id, leadership_id=ProjectLeadership.objects.filter(
+            coordination__project_id=task.project_id, leader_id=task.responsible_id,
+            is_active=True,
+        ).values_list('id', flat=True).first(), faculty=faculty,
+    ) if ProjectLeadership.objects.filter(
+        coordination__project_id=task.project_id, leader_id=task.responsible_id,
+        is_active=True,
+    ).exists() else False
 
 
 def cancellation_event_data(event: TaskEvent) -> dict:
@@ -243,11 +241,19 @@ def task_action_permissions(task: Task, user: dict, events: list[TaskEvent] | No
             coordination__coordinator__is_active=True,
             coordination__coordinator__role__level='L3',
         ).exists()
+        substitute_review = substituted_l4_for_task(task, collaborator_id, 'tasks.review')
+        if substitute_review:
+            member = member or TeamMembership.objects.filter(
+                leadership__coordination__project_id=task.project_id,
+                leadership__leader_id=task.responsible_id, leadership__is_active=True,
+                leadership__coordination__is_active=True, developer_id=task.assignee_id,
+                developer__is_active=True, developer__role__level='L5', is_active=True,
+            ).exists()
         return {
             'can_start': False,
             'can_submit_result': False,
             'can_review': (
-                in_scope and task.responsible_id == collaborator_id
+                in_scope and (task.responsible_id == collaborator_id or substitute_review)
                 and task.status == 'En revisión' and member
             ),
             'can_reassign': (
@@ -279,20 +285,25 @@ def task_action_permissions(task: Task, user: dict, events: list[TaskEvent] | No
         }
     if role == 'L3':
         in_scope = task_queryset(user).filter(pk=task.pk).exists()
+        directly_coordinated = ProjectCoordination.objects.filter(
+            project_id=task.project_id, coordinator_id=collaborator_id, is_active=True,
+            coordinator__is_active=True, coordinator__role__level='L3',
+        ).exists()
+        can_mutate_scope = in_scope and directly_coordinated
         return {
             'can_start': False,
             'can_submit_result': False,
             'can_review': False,
-            'can_reassign': in_scope and task.status in {'En proceso', 'Observada'},
-            'can_remove_executor': in_scope and task.status in {'Asignada', 'En proceso'},
-            'can_block': in_scope and task.status not in {'Finalizada', 'Cancelada'} and not task.is_blocked,
-            'can_unblock': in_scope and task.status != 'Cancelada' and task.is_blocked,
+            'can_reassign': can_mutate_scope and task.status in {'En proceso', 'Observada'},
+            'can_remove_executor': can_mutate_scope and task.status in {'Asignada', 'En proceso'},
+            'can_block': can_mutate_scope and task.status not in {'Finalizada', 'Cancelada'} and not task.is_blocked,
+            'can_unblock': can_mutate_scope and task.status != 'Cancelada' and task.is_blocked,
             'can_report_incident': False,
-            'can_reopen': in_scope and task.status == 'Finalizada',
+            'can_reopen': can_mutate_scope and task.status == 'Finalizada',
             'can_propose_cancellation': False,
-            'can_evaluate_cancellation': in_scope and can_evaluate_cancellation,
+            'can_evaluate_cancellation': can_mutate_scope and can_evaluate_cancellation,
             'can_review_cancellation_commercial': False,
-            'can_apply_cancellation': in_scope and can_apply_cancellation,
+            'can_apply_cancellation': can_mutate_scope and can_apply_cancellation,
         }
     if role == 'L2':
         return {
@@ -466,12 +477,32 @@ def lock_task_for_l4_review(task_id: int, collaborator_id: int) -> Task:
     candidate = Task.objects.filter(pk=task_id).values(
         'project_id', 'responsible_id', 'assignee_id',
     ).first()
-    if candidate is None or candidate['responsible_id'] != collaborator_id or not candidate['assignee_id']:
+    if candidate is None or not candidate['assignee_id']:
         raise HTTPException(404, 'Tarea no encontrada en tu responsabilidad')
     lock_project_for_task_action(candidate['project_id'])
-    _coordinations, leaderships = lock_l4_leaderships(
-        candidate['project_id'], collaborator_id,
+    leadership = ProjectLeadership.objects.filter(
+        coordination__project_id=candidate['project_id'], leader_id=candidate['responsible_id'],
+        is_active=True, coordination__is_active=True,
+    ).first()
+    is_substitute = bool(
+        leadership and candidate['responsible_id'] != collaborator_id
+        and has_active_substitution(
+            collaborator_id, leadership_id=leadership.id, faculty='tasks.review',
+        )
     )
+    if candidate['responsible_id'] != collaborator_id and not is_substitute:
+        raise HTTPException(404, 'Tarea no encontrada en tu responsabilidad')
+    if is_substitute:
+        _coordinations = list(ProjectCoordination.objects.select_for_update(of=('self',)).filter(
+            pk=leadership.coordination_id, is_active=True,
+        ))
+        leaderships = list(ProjectLeadership.objects.select_for_update(of=('self',)).filter(
+            pk=leadership.id, is_active=True,
+        ))
+    else:
+        _coordinations, leaderships = lock_l4_leaderships(
+            candidate['project_id'], candidate['responsible_id'],
+        )
     if not leaderships:
         raise HTTPException(404, 'La responsabilidad L4 ya no está vigente')
     membership = TeamMembership.objects.select_for_update(of=('self',)).filter(
@@ -482,7 +513,7 @@ def lock_task_for_l4_review(task_id: int, collaborator_id: int) -> Task:
     if membership is None:
         raise HTTPException(404, 'La pertenencia del ejecutor ya no está vigente')
     task = Task.objects.select_for_update().filter(pk=task_id).first()
-    if task is None or task.responsible_id != collaborator_id or task.assignee_id != candidate['assignee_id']:
+    if task is None or task.responsible_id != candidate['responsible_id'] or task.assignee_id != candidate['assignee_id']:
         raise HTTPException(404, 'Tarea no encontrada en tu responsabilidad')
     return task
 

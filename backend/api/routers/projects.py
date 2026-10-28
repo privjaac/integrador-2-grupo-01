@@ -20,6 +20,7 @@ from api.schemas.projects import (
     ProjectValidationReadiness,
 )
 from api.schemas.clients import ProjectServiceLinkInput
+from api.schemas.organizational_substitutions import OrganizationalSubstitutionCreate
 from clients.models import (
     Client, Collaborator, Project, ProjectCommercialAuthorization,
     ProjectCancellation, ProjectCancellationEvent,
@@ -27,6 +28,7 @@ from clients.models import (
     ProjectDeliveryAuthorizationEvent, ProjectDelivery, ProjectDeliveryTechnicalReview,
     ProjectDeliveryTransition, ProjectEvent, ProjectTaskClassification, ProjectTechnicalEvaluation,
     Task, TaskEvent, ContractedService, ProjectContractedService,
+    OrganizationalSubstitution, ProjectLeadership,
 )
 
 router = APIRouter()
@@ -62,6 +64,169 @@ def active_l2_actor(user: dict) -> Collaborator:
     if actor is None:
         raise HTTPException(status_code=403, detail='El colaborador L2 no está activo')
     return actor
+
+
+def active_l1_actor(user: dict) -> Collaborator:
+    if user.get('role') != 'L1':
+        raise HTTPException(status_code=403, detail='La decisión excepcional corresponde a L1')
+    actor = Collaborator.objects.filter(
+        pk=user['collaborator_id'], is_active=True, role__level='L1',
+    ).first()
+    if actor is None:
+        raise HTTPException(status_code=403, detail='El colaborador L1 no está activo')
+    return actor
+
+
+def substitution_response(item: OrganizationalSubstitution) -> dict:
+    return {
+        'id': item.id, 'project_id': item.coordination.project_id,
+        'coordination_id': item.coordination_id, 'leadership_id': item.leadership_id,
+        'absent_level': item.absent_level, 'absent_person_id': item.absent_person_id,
+        'substitute_id': item.substitute_id, 'designated_by_id': item.designated_by_id,
+        'reason': item.reason, 'evidence': item.evidence, 'scope': item.scope,
+        'faculties': item.faculties, 'valid_from': item.valid_from.isoformat(),
+        'valid_until': item.valid_until.isoformat(), 'is_active': item.is_active,
+        'ended_by_id': item.ended_by_id, 'ended_at': item.ended_at.isoformat() if item.ended_at else None,
+    }
+
+
+@router.get('/{project_id}/substitutions')
+def list_project_substitutions(project_id: int, user: dict = Depends(get_current_user)):
+    if user.get('role') not in {'L1', 'L2', 'L3'}:
+        raise HTTPException(status_code=403, detail='No tienes permiso para consultar sustituciones')
+    if not Project.objects.filter(pk=project_id).exists():
+        raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+    items = OrganizationalSubstitution.objects.filter(coordination__project_id=project_id)
+    if user.get('role') == 'L1':
+        items = items.filter(designated_by_id=user.get('collaborator_id'))
+    elif user.get('role') == 'L3' and ProjectCoordination.objects.filter(
+        project_id=project_id, coordinator_id=user.get('collaborator_id'), is_active=True,
+    ).exists():
+        pass
+    elif user.get('role') == 'L3':
+        items = items.filter(substitute_id=user.get('collaborator_id'))
+        if not items.exists():
+            raise HTTPException(status_code=404, detail='Proyecto fuera de tu coordinación o sustitución')
+    return [substitution_response(item) for item in items.select_related(
+        'coordination', 'absent_person', 'substitute', 'designated_by', 'ended_by',
+    )]
+
+
+@router.post('/{project_id}/substitutions', status_code=status.HTTP_201_CREATED)
+def create_project_substitution(
+    project_id: int, payload: OrganizationalSubstitutionCreate,
+    user: dict = Depends(get_current_user),
+):
+    actor = active_l3_actor(user) if payload.absent_level == 'L4' else active_l1_actor(user)
+    try:
+        with transaction.atomic():
+            project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
+            if project is None:
+                raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+            coordination = ProjectCoordination.objects.select_for_update(of=('self',)).filter(
+                pk=payload.coordination_id, project=project, is_active=True,
+                coordinator__role__level='L3',
+            ).first()
+            absent = Collaborator.objects.select_for_update().filter(
+                pk=payload.absent_person_id, role__level=payload.absent_level,
+            ).first()
+            if coordination is None or absent is None:
+                raise HTTPException(status_code=404, detail='La persona ausente o su ámbito vigente no existe')
+            expired_substitutions = OrganizationalSubstitution.objects.select_for_update(of=('self',)).filter(
+                coordination=coordination, absent_person=absent, is_active=True,
+                valid_until__lte=timezone.now(),
+            )
+            for expired in expired_substitutions:
+                expired.is_active = False
+                expired.ended_at = expired.valid_until
+                expired.ended_by = None
+                expired.save(update_fields=['is_active', 'ended_at', 'ended_by'])
+            leadership = None
+            if payload.absent_level == 'L4':
+                if coordination.coordinator_id != actor.id or not coordination.coordinator.is_active:
+                    raise HTTPException(status_code=404, detail='La coordinación está fuera de tu ámbito')
+                leadership = ProjectLeadership.objects.select_for_update(of=('self',)).filter(
+                    pk=payload.leadership_id, coordination=coordination, leader=absent,
+                    is_active=True, leader__role__level='L4',
+                ).first()
+                if leadership is None:
+                    raise HTTPException(status_code=409, detail='La persona ausente no tiene designación L4 vigente')
+                if payload.substitute_id is None:
+                    if ProjectLeadership.objects.filter(
+                        coordination=coordination, is_active=True, leader__is_active=True,
+                        leader__role__level='L4',
+                    ).exclude(pk=leadership.pk).exists():
+                        raise HTTPException(status_code=409, detail='Existe otro L4 vigente para este ámbito')
+                    if payload.faculties:
+                        raise HTTPException(status_code=422, detail='La supervisión L3 no hereda facultades L4')
+                else:
+                    substitute = Collaborator.objects.select_related('role').filter(
+                        pk=payload.substitute_id, is_active=True, role__level='L4',
+                    ).first()
+                    allowed = {'tasks.view', 'tasks.review'}
+                    if substitute is None or substitute.id == absent.id:
+                        raise HTTPException(status_code=400, detail='El sustituto debe ser otro L4 activo')
+                    if not payload.faculties or 'tasks.view' not in payload.faculties or set(payload.faculties) - allowed:
+                        raise HTTPException(status_code=422, detail='La suplencia L4 solo admite consulta y revisión de tareas')
+                    from api.role_permissions import effective_permissions
+                    if set(payload.faculties) - set(effective_permissions(substitute.role)):
+                        raise HTTPException(status_code=403, detail='El rol organizacional no habilita las facultades solicitadas')
+            else:
+                if actor.role.level != 'L1' or coordination.coordinator_id != absent.id:
+                    raise HTTPException(status_code=404, detail='La coordinación L3 ausente no corresponde al ámbito')
+                if payload.substitute_id is None:
+                    if payload.faculties:
+                        raise HTTPException(status_code=422, detail='La intervención L1 sin sustituto no habilita facultades L3')
+                else:
+                    substitute = Collaborator.objects.select_related('role').filter(
+                        pk=payload.substitute_id, is_active=True, role__level='L3',
+                    ).first()
+                    if substitute is None or substitute.id == absent.id:
+                        raise HTTPException(status_code=400, detail='El sustituto debe ser otro L3 activo')
+                    if payload.faculties != ['tasks.view']:
+                        raise HTTPException(status_code=422, detail='Solo se habilita consulta operativa mientras no se implementen controles granulares adicionales')
+                    from api.role_permissions import effective_permissions
+                    if 'tasks.view' not in effective_permissions(substitute.role):
+                        raise HTTPException(status_code=403, detail='El rol organizacional no habilita consulta de tareas')
+            substitution = OrganizationalSubstitution.objects.create(
+                coordination=coordination, leadership=leadership,
+                absent_level=payload.absent_level, absent_person=absent,
+                substitute_id=payload.substitute_id, designated_by=actor,
+                reason=payload.reason, evidence=payload.evidence, scope=payload.scope,
+                faculties=payload.faculties, valid_from=payload.valid_from,
+                valid_until=payload.valid_until,
+            )
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail='Ya existe una sustitución activa en este ámbito')
+    return substitution_response(OrganizationalSubstitution.objects.select_related(
+        'coordination', 'absent_person', 'substitute', 'designated_by',
+    ).get(pk=substitution.pk))
+
+
+@router.post('/{project_id}/substitutions/{substitution_id}/end')
+def end_project_substitution(
+    project_id: int, substitution_id: int, user: dict = Depends(get_current_user),
+):
+    role = user.get('role')
+    actor = active_l3_actor(user) if role == 'L3' else active_l1_actor(user)
+    with transaction.atomic():
+        project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
+        item = OrganizationalSubstitution.objects.select_for_update(of=('self',)).filter(
+            pk=substitution_id, coordination__project_id=project_id, is_active=True,
+        ).first()
+        if project is None or item is None or item.designated_by_id != actor.id:
+            raise HTTPException(status_code=404, detail='No existe una sustitución vigente que hayas dispuesto')
+        if (item.absent_level == 'L4' and role != 'L3') or (item.absent_level == 'L3' and role != 'L1'):
+            raise HTTPException(status_code=403, detail='No tienes competencia para finalizar esta sustitución')
+        if item.absent_level == 'L4' and item.coordination.coordinator_id != actor.id:
+            raise HTTPException(status_code=404, detail='La sustitución está fuera de tu coordinación')
+        item.is_active = False
+        item.ended_by = actor
+        item.ended_at = timezone.now()
+        item.save(update_fields=['is_active', 'ended_by', 'ended_at'])
+    return substitution_response(OrganizationalSubstitution.objects.select_related(
+        'coordination', 'absent_person', 'substitute', 'designated_by', 'ended_by',
+    ).get(pk=item.pk))
 
 
 def lock_coordinated_project(project_id: int, actor: Collaborator) -> Project:
