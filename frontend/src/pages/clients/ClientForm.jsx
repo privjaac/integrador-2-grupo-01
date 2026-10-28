@@ -13,7 +13,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { can } from "../../utils/permissions";
 import { parsePriceInput, formatPrice } from "../../utils/formatPrice";
-import { createClient, updateClient, getClientById } from "../../api/clients";
+import { createClient, requestClientChange, getClientById } from "../../api/clients";
 import { getWebTypes, getWebFeatures } from "../../api/catalog";
 import Button from "../../components/ui/Button";
 import Input from "../../components/ui/Input";
@@ -147,12 +147,14 @@ export default function ClientForm() {
   }, [user, action, navigate]);
 
   const [formData, setFormData] = useState(INITIAL_FORM);
+  const [initialEditValues, setInitialEditValues] = useState({ name: "", email: "", plan: "", status: "" });
   const [errors, setErrors] = useState({});
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingData, setIsLoadingData] = useState(isEditMode);
   const [webTypes, setWebTypes] = useState([]);
   const [webFeatures, setWebFeatures] = useState([]);
   const [selectedFeatures, setSelectedFeatures] = useState([]);
+  const [changeReason, setChangeReason] = useState("");
 
   // Tipo de web seleccionado (para acceder a sus precios)
   const selectedWebType = webTypes.find(
@@ -206,6 +208,7 @@ export default function ClientForm() {
             domain_custom_price: client.domain_custom_price || "",
             notes: client.notes || "",
           });
+          setInitialEditValues({ name: client.name || "", email: client.email || "", plan: client.plan || "", status: client.status || "desarrollo" });
           setSelectedFeatures(client.features?.map((f) => f.id) || []);
         }
       } catch (err) {
@@ -309,6 +312,29 @@ export default function ClientForm() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (isEditMode) {
+      if (!formData.name.trim() || !formData.email.trim() || !formData.plan || !changeReason.trim()) {
+        showToast("error", "DATOS INCOMPLETOS", "Completa nombre, correo, plan y motivo.");
+        return;
+      }
+      setIsLoading(true);
+      try {
+        const changes = {};
+        if (formData.name !== initialEditValues.name) changes.name = formData.name.trim();
+        if (formData.email !== initialEditValues.email) changes.email = formData.email.trim();
+        if (formData.plan !== initialEditValues.plan) changes.plan = formData.plan;
+        if (formData.status !== initialEditValues.status) changes.status = formData.status;
+        if (!Object.keys(changes).length) throw new Error("No hay cambios para solicitar.");
+        await requestClientChange(id, changes, changeReason);
+        showToast("success", "SOLICITUD ENVIADA", "Los cambios quedarán pendientes de aprobación.");
+        navigate(`/clientes/${id}`);
+      } catch (err) {
+        showToast("error", "ERROR AL SOLICITAR", err.userMessage || err.message || "No se pudo enviar la solicitud.");
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
     if (!validateForm()) return;
     setIsLoading(true);
     try {
@@ -326,15 +352,7 @@ export default function ClientForm() {
         notes: formData.notes || null,
         feature_ids: selectedFeatures,
       };
-      if (isEditMode) {
-        await updateClient(id, payload);
-        showToast(
-          "success",
-          "CAMBIOS GUARDADOS",
-          "Cliente actualizado correctamente.",
-        );
-        navigate("/clientes");
-      } else {
+      {
         await createClient(payload);
         showToast(
           "success",
@@ -358,6 +376,20 @@ export default function ClientForm() {
 
   if (isLoadingData)
     return <LoadingSpinner fullPage label="Cargando datos del cliente..." />;
+
+  if (isEditMode) {
+    return (
+      <form onSubmit={handleSubmit} style={{ maxWidth: 680, margin: "0 auto", display: "grid", gap: 16 }}>
+        <h1>Solicitar cambio de cliente</h1>
+        <label>Nombre<input value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} /></label>
+        <label>Correo<input type="email" value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })} /></label>
+        <label>Plan<select value={formData.plan} onChange={(e) => setFormData({ ...formData, plan: e.target.value })}><option value="alquiler">Alquiler</option><option value="venta">Venta</option></select></label>
+        <label>Estado<select value={formData.status} onChange={(e) => setFormData({ ...formData, status: e.target.value })}><option value="desarrollo">En desarrollo</option><option value="activo">Activo</option><option value="inactivo" disabled>Inactivo (tramitar baja)</option></select></label>
+        <label>Motivo<textarea required value={changeReason} onChange={(e) => setChangeReason(e.target.value)} /></label>
+        <div><Button type="submit" isLoading={isLoading}>Enviar para aprobación</Button><Button type="button" variant="secondary" onClick={() => navigate(`/clientes/${id}`)}>Cancelar</Button></div>
+      </form>
+    );
+  }
 
   // ── RENDER ─────────────────────────────────────────────────────────────────
 

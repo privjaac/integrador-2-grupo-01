@@ -13,7 +13,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { can } from "../../utils/permissions";
-import { getClients, deactivateClient } from "../../api/clients";
+import { getClients, requestClientDeactivation, getClientChangeRequests, resolveClientChangeRequest } from "../../api/clients";
 import {
   formatDate,
   formatDateRelative,
@@ -138,6 +138,7 @@ export default function ClientsPage() {
   const navigate = useNavigate();
 
   const [allClients, setAllClients] = useState([]);
+  const [pendingRequests, setPendingRequests] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [currentPage, setCurrentPage] = useState(1);
 
@@ -160,6 +161,7 @@ export default function ClientsPage() {
     clientName: "",
   });
   const [isDeactivating, setIsDeactivating] = useState(false);
+  const [deactivationReason, setDeactivationReason] = useState("");
   const [errorModal, setErrorModal] = useState({ isOpen: false, message: "" });
   const [successModal, setSuccessModal] = useState({
     isOpen: false,
@@ -192,6 +194,24 @@ export default function ClientsPage() {
   useEffect(() => {
     loadClients();
   }, [loadClients]);
+
+  const loadPendingRequests = useCallback(async () => {
+    if (!['L1', 'L2'].includes(user?.role)) return;
+    try { setPendingRequests(await getClientChangeRequests()); } catch { setPendingRequests([]); }
+  }, [user?.role]);
+  useEffect(() => { loadPendingRequests(); }, [loadPendingRequests]);
+
+  const handleRequestDecision = async (request, decision) => {
+    const reason = window.prompt(decision === 'aprobado' ? 'Motivo de aprobación:' : 'Motivo de rechazo:');
+    if (!reason?.trim()) return;
+    try {
+      await resolveClientChangeRequest(request.id, decision, reason.trim());
+      await Promise.all([loadPendingRequests(), loadClients()]);
+      setSuccessModal({ isOpen: true, message: `Solicitud ${decision}.` });
+    } catch (err) {
+      setErrorModal({ isOpen: true, message: err.userMessage || 'No se pudo resolver la solicitud.' });
+    }
+  };
 
   // ── FILTROS EXTRA — se aplican localmente ──────────────────────────────────
 
@@ -305,11 +325,11 @@ export default function ClientsPage() {
   const handleBajaConfirm = async () => {
     setIsDeactivating(true);
     try {
-      await deactivateClient(bajaModal.clientId);
+      await requestClientDeactivation(bajaModal.clientId, deactivationReason);
       setBajaModal({ isOpen: false, clientId: null, clientName: "" });
       setSuccessModal({
         isOpen: true,
-        message: `Cliente "${bajaModal.clientName}" dado de baja.`,
+        message: `Solicitud de baja de "${bajaModal.clientName}" enviada para aprobación.`,
       });
       loadClients();
     } catch (err) {
@@ -602,6 +622,7 @@ export default function ClientsPage() {
             </svg>
           </button>
         </div>
+
         <div
           style={{
             margin: "1rem 1.5rem 0",
@@ -777,6 +798,25 @@ export default function ClientsPage() {
             </Button>
           )}
         </div>
+
+        {pendingRequests.length > 0 && (
+          <section aria-label="Solicitudes de clientes pendientes" style={{ border: '1px solid #3fe5e540', borderRadius: 8, padding: 16 }}>
+            <h3>Solicitudes pendientes</h3>
+            {pendingRequests.map((request) => (
+              <div key={request.id} style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderTop: '1px solid #ffffff18' }}>
+                <span>
+                  <strong>{request.client_name} · {request.request_type}</strong>
+                  <div>{request.reason}</div>
+                  <small>Propuesto: {JSON.stringify(request.proposed_data)} · Actual: {JSON.stringify(request.previous_data)}</small>
+                </span>
+                <span style={{ display: 'flex', gap: 8 }}>
+                  <Button size="sm" onClick={() => handleRequestDecision(request, 'aprobado')}>Aprobar</Button>
+                  <Button size="sm" variant="secondary" onClick={() => handleRequestDecision(request, 'rechazado')}>Rechazar</Button>
+                </span>
+              </div>
+            ))}
+          </section>
+        )}
 
         {/* KPIs — contenedor siempre visible, números se actualizan al filtrar */}
         {
@@ -1411,7 +1451,7 @@ export default function ClientsPage() {
                               />
                             </svg>
                           </button>
-                          {can(user, "clients", "edit") && (
+                          {can(user, "clients", "edit") && client.status !== "inactivo" && (
                             <button
                               onClick={() =>
                                 navigate(`/clientes/${client.id}/editar`)
@@ -1532,10 +1572,18 @@ export default function ClientsPage() {
           />
           <Modal.Body>
             <p style={{ textAlign: "center" }}>
-              ¿Dar de baja a{" "}
+              Solicitar la baja de{" "}
               <strong style={{ color: "white" }}>{bajaModal.clientName}</strong>
               ?
             </p>
+            <textarea
+              value={deactivationReason}
+              onChange={(event) => setDeactivationReason(event.target.value)}
+              placeholder="Motivo obligatorio de la solicitud"
+              aria-label="Motivo de baja"
+              rows={3}
+              style={{ width: "100%", marginTop: "1rem" }}
+            />
             <p
               style={{
                 textAlign: "center",
@@ -1561,8 +1609,9 @@ export default function ClientsPage() {
               variant="danger"
               onClick={handleBajaConfirm}
               isLoading={isDeactivating}
+              disabled={!deactivationReason.trim()}
             >
-              Sí, dar de baja
+              Enviar solicitud
             </Button>
           </Modal.Footer>
         </Modal>

@@ -322,6 +322,109 @@ class Client(models.Model):
         return f"{self.cupe} — {self.name}"
 
 
+class ClientChangeRequest(models.Model):
+    """Audited modification or logical deactivation request for a client."""
+
+    REQUEST_TYPES = [
+        ('modificacion', 'Modificación'),
+        ('baja', 'Baja'),
+    ]
+    STATUS_CHOICES = [
+        ('pendiente', 'Pendiente'),
+        ('aprobado', 'Aprobado'),
+        ('rechazado', 'Rechazado'),
+    ]
+
+    client = models.ForeignKey(Client, on_delete=models.PROTECT, related_name='change_requests')
+    request_type = models.CharField(max_length=16, choices=REQUEST_TYPES)
+    requester = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='client_change_requests',
+    )
+    requested_at = models.DateTimeField(auto_now_add=True)
+    reason = models.TextField()
+    proposed_data = models.JSONField(default=dict, blank=True)
+    previous_data = models.JSONField(default=dict, blank=True)
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default='pendiente')
+    resolved_by = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='client_change_resolutions',
+    )
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    resolution_reason = models.TextField(blank=True, default='')
+
+    class Meta:
+        db_table = 'client_change_requests'
+        ordering = ['-requested_at', '-id']
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(request_type__in=['modificacion', 'baja']),
+                name='client_change_request_type_valid',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(status__in=['pendiente', 'aprobado', 'rechazado']),
+                name='client_change_request_status_valid',
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(status='pendiente', resolved_by__isnull=True, resolved_at__isnull=True)
+                    | models.Q(status__in=['aprobado', 'rechazado'], resolved_by__isnull=False, resolved_at__isnull=False)
+                ),
+                name='client_change_request_resolution_consistent',
+            ),
+        ]
+
+
+class ClientHistory(models.Model):
+    """Append-only chronology for client creation, requests and decisions."""
+
+    EVENT_TYPES = [
+        ('cliente_creado', 'Cliente creado'),
+        ('modificacion_solicitada', 'Modificación solicitada'),
+        ('modificacion_aprobada', 'Modificación aprobada'),
+        ('modificacion_rechazada', 'Modificación rechazada'),
+        ('baja_solicitada', 'Baja solicitada'),
+        ('baja_aprobada', 'Baja aprobada'),
+        ('baja_rechazada', 'Baja rechazada'),
+    ]
+
+    client = models.ForeignKey(Client, on_delete=models.PROTECT, related_name='history')
+    request = models.ForeignKey(
+        ClientChangeRequest, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='history_events',
+    )
+    actor = models.ForeignKey(Collaborator, on_delete=models.PROTECT, related_name='client_history_events')
+    event_type = models.CharField(max_length=28, choices=EVENT_TYPES)
+    occurred_at = models.DateTimeField(auto_now_add=True)
+    reason = models.TextField(blank=True, default='')
+    before_data = models.JSONField(default=dict, blank=True)
+    after_data = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        db_table = 'client_history'
+        ordering = ['-occurred_at', '-id']
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(event_type__in=[
+                    'cliente_creado', 'modificacion_solicitada', 'modificacion_aprobada',
+                    'modificacion_rechazada', 'baja_solicitada', 'baja_aprobada', 'baja_rechazada',
+                ]),
+                name='client_history_event_type_valid',
+            ),
+            models.UniqueConstraint(
+                fields=['request', 'event_type'], condition=models.Q(request__isnull=False),
+                name='client_history_request_event_unique',
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValueError('El historial de clientes es inmutable')
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError('El historial de clientes es inmutable')
+
+
 class Project(models.Model):
     STATUS_CHOICES = [
         ('Planificado', 'Planificado'),

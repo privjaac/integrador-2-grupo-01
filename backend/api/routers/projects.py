@@ -1194,19 +1194,20 @@ def create_project(payload: ProjectCreate, user: dict = Depends(get_current_user
         raise HTTPException(status_code=422, detail='El nombre del proyecto es obligatorio')
     if payload.status not in (None, 'Planificado'):
         raise HTTPException(status_code=422, detail='Todo proyecto debe crearse en estado Planificado')
-    try:
-        client = Client.objects.get(pk=payload.client_id)
-    except Client.DoesNotExist:
-        raise HTTPException(status_code=404, detail='Cliente no encontrado')
-    if client.status == 'inactivo':
-        raise HTTPException(status_code=400, detail='No se pueden crear proyectos para clientes inactivos')
-    project = Project.objects.create(
-        client=client,
-        name=payload.name.strip(),
-        objective=payload.objective,
-        scope=payload.scope,
-        status='Planificado',
-    )
+    with transaction.atomic():
+        try:
+            client = Client.objects.select_for_update().get(pk=payload.client_id)
+        except Client.DoesNotExist:
+            raise HTTPException(status_code=404, detail='Cliente no encontrado')
+        if client.status == 'inactivo':
+            raise HTTPException(status_code=400, detail='No se pueden crear proyectos para clientes inactivos')
+        project = Project.objects.create(
+            client=client,
+            name=payload.name.strip(),
+            objective=payload.objective,
+            scope=payload.scope,
+            status='Planificado',
+        )
     return to_response(project)
 
 

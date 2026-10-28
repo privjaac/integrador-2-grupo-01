@@ -18,21 +18,43 @@
 #   - Soft delete — no se elimina, solo cambia status a 'inactivo'.
 # ==============================================================================
 
-from fastapi import HTTPException, status, Depends
+from fastapi import HTTPException, status, Depends, Body
 from api.router import APIRouter
 from typing import Optional
 from decimal import Decimal
 from django.db import IntegrityError, transaction
 from django.db.models import Q
+from django.utils import timezone
+from django.core.exceptions import ValidationError
+from django.core.validators import validate_email
 from datetime import date, timedelta
 from dateutil.relativedelta import relativedelta
 
 from api.dependencies import get_current_user
 from api.schemas.clients import ClientCreate, ClientUpdate, ClientResponse, ClientList
-from clients.models import Client, WebCatalog, Collaborator, WebFeature, ClientFeature
+from clients.models import Client, WebCatalog, Collaborator, WebFeature, ClientFeature, ClientChangeRequest, ClientHistory
 
 
 router = APIRouter()
+
+CRM_ROLES = ('L1', 'L2', 'L3')
+CLIENT_CHANGE_FIELDS = ('name', 'email', 'plan', 'status')
+
+
+def require_crm_reader(user: dict) -> None:
+    if user.get('role') not in CRM_ROLES:
+        raise HTTPException(status_code=403, detail='No tienes permiso para consultar el CRM')
+
+
+def request_actor(user: dict) -> Collaborator:
+    try:
+        return Collaborator.objects.get(pk=user.get('collaborator_id'))
+    except (Collaborator.DoesNotExist, ValueError, TypeError):
+        raise HTTPException(status_code=401, detail='La sesión no identifica un colaborador válido')
+
+
+def client_snapshot(client: Client, fields=CLIENT_CHANGE_FIELDS) -> dict:
+    return {field: getattr(client, field) for field in fields}
 
 
 # ------------------------------------------------------------------------------
@@ -161,6 +183,7 @@ def get_clients(
     search: Optional[str] = None,
     user: dict = Depends(get_current_user)
 ):
+    require_crm_reader(user)
     clients = Client.objects.select_related('web_type', 'created_by').prefetch_related('features__feature').all()
 
     if status:
@@ -189,6 +212,7 @@ def get_client(
     client_id: int,
     user: dict = Depends(get_current_user)
 ):
+    require_crm_reader(user)
     try:
         client = Client.objects.select_related('web_type', 'created_by').get(id=client_id)
     except Client.DoesNotExist:
@@ -222,7 +246,7 @@ def create_client(
     data: ClientCreate,
     user: dict = Depends(get_current_user)
 ):
-    if user.get('role') not in ('L1', 'L2', 'L3', 'L4'):
+    if user.get('role') not in ('L1', 'L2'):
         raise HTTPException(status_code=403, detail='No tienes permiso para crear clientes')
 
     # Verificar que no exista otro cliente con el mismo documento
@@ -317,6 +341,11 @@ def create_client(
         ClientFeature.objects.bulk_create([
             ClientFeature(client=client, feature=feature) for feature in features
         ])
+        if created_by:
+            ClientHistory.objects.create(
+                client=client, actor=created_by, event_type='cliente_creado',
+                after_data=client_snapshot(client),
+            )
 
     # Recargar el cliente con las relaciones para la respuesta
     client = Client.objects.select_related('web_type', 'created_by').prefetch_related('features__feature').get(id=client.id)
@@ -341,95 +370,8 @@ def update_client(
     data: ClientUpdate,
     user: dict = Depends(get_current_user)
 ):
-    if user.get('role') not in ('L1', 'L2', 'L3', 'L4'):
-        raise HTTPException(status_code=403, detail='No tienes permiso para editar clientes')
-
-    try:
-        client = Client.objects.select_related('web_type', 'created_by').get(id=client_id)
-    except Client.DoesNotExist:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f'Cliente con id {client_id} no encontrado'
-        )
-
-    update_data = data.model_dump(exclude_unset=True)
-    feature_ids = update_data.pop('feature_ids', None)
-    for calculated_field in ('base_price', 'extra_price', 'total_price', 'payment_frequency', 'next_payment_date'):
-        update_data.pop(calculated_field, None)
-    if (
-        'document_number' in update_data
-        and Client.objects.filter(document_number=update_data['document_number'])
-        .exclude(id=client_id).exists()
-    ):
-        raise HTTPException(status_code=400, detail='El documento ya está registrado')
-
-    target_web_type = client.web_type
-    if 'web_type_id' in update_data:
-        try:
-            target_web_type = WebCatalog.objects.get(
-                id=update_data['web_type_id'], is_active=True,
-            )
-        except WebCatalog.DoesNotExist:
-            raise HTTPException(
-                status_code=400,
-                detail=f'Tipo de web con id {update_data["web_type_id"]} no encontrado',
-            )
-
-    features = (
-        selected_features(feature_ids, target_web_type)
-        if feature_ids is not None else None
-    )
-    if features is None and target_web_type.id != client.web_type_id:
-        existing_features = list(
-            WebFeature.objects.filter(client_features__client=client)
-            .prefetch_related('web_types')
-        )
-        validate_feature_applicability(existing_features, target_web_type)
-
-    with transaction.atomic():
-        for field, value in update_data.items():
-            if field == 'web_type_id':
-                client.web_type = target_web_type
-            else:
-                setattr(client, field, value)
-
-        if client.plan not in ('alquiler', 'venta'):
-            raise HTTPException(status_code=400, detail='El plan debe ser alquiler o venta')
-        client.payment_frequency = 'mensual' if client.plan == 'alquiler' else 'anual'
-        client.base_price = (
-            client.web_type.base_price_rent if client.plan == 'alquiler'
-            else client.web_type.base_price_sale
-        )
-        if features is not None:
-            ClientFeature.objects.filter(client=client).delete()
-            ClientFeature.objects.bulk_create([
-                ClientFeature(client=client, feature=feature) for feature in features
-            ])
-            selected = features
-        else:
-            selected = [item.feature for item in client.features.select_related('feature')]
-        client.extra_price = sum((feature.extra_price for feature in selected), Decimal('0'))
-        client.total_price = client.base_price + client.extra_price
-
-        if any(field in update_data for field in ('delivery_date', 'registration_date', 'plan')):
-            client.next_payment_date = calculate_next_payment(
-                client.payment_frequency,
-                delivery_date=client.delivery_date,
-                registration_date=client.registration_date
-            )
-            if client.delivery_date and client.status == 'desarrollo':
-                client.status = 'activo'
-
-        try:
-            client.save()
-        except IntegrityError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail='El documento o CUPE del cliente ya está registrado',
-            ) from exc
-
-    client = Client.objects.select_related('web_type', 'created_by').prefetch_related('features__feature').get(id=client.id)
-    return client_to_response(client)
+    require_crm_reader(user)
+    raise HTTPException(status_code=409, detail='Los cambios deben solicitarse mediante el flujo de aprobación del CRM')
 
 
 # ------------------------------------------------------------------------------
@@ -448,18 +390,163 @@ def delete_client(
     client_id: int,
     user: dict = Depends(get_current_user)
 ):
-    if user.get('role') not in ('L1', 'L2'):
-        raise HTTPException(status_code=403, detail='No tienes permiso para desactivar clientes')
-    try:
-        client = Client.objects.get(id=client_id)
-    except Client.DoesNotExist:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f'Cliente con id {client_id} no encontrado'
+    require_crm_reader(user)
+    raise HTTPException(status_code=409, detail='La baja debe solicitarse mediante el flujo de aprobación del CRM')
+
+
+@router.post('/{client_id}/change-requests', status_code=201)
+def request_client_change(client_id: int, payload: dict = Body(...), user: dict = Depends(get_current_user)):
+    require_crm_reader(user)
+    if user.get('role') not in ('L1', 'L2', 'L3'):
+        raise HTTPException(status_code=403, detail='No puedes solicitar cambios')
+    proposed = payload.get('changes')
+    reason = str(payload.get('reason', '')).strip()
+    if not isinstance(proposed, dict) or not proposed or set(proposed) - set(CLIENT_CHANGE_FIELDS):
+        raise HTTPException(status_code=422, detail='Indica únicamente nombre, correo, plan o estado')
+    if not reason:
+        raise HTTPException(status_code=422, detail='El motivo del cambio es obligatorio')
+    for field in ('name', 'email'):
+        if field in proposed and (not isinstance(proposed[field], str) or not proposed[field].strip()):
+            raise HTTPException(status_code=422, detail=f'{field} debe ser un texto no vacío')
+        if field == 'name' and field in proposed and len(proposed[field].strip()) < 3:
+            raise HTTPException(status_code=422, detail='El nombre debe tener al menos 3 caracteres')
+    if 'email' in proposed:
+        try:
+            validate_email(proposed['email'].strip())
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail='El correo no tiene un formato válido') from exc
+        proposed['email'] = proposed['email'].strip()
+    if 'name' in proposed:
+        proposed['name'] = proposed['name'].strip()
+    if 'plan' in proposed and proposed['plan'] not in ('alquiler', 'venta'):
+        raise HTTPException(status_code=422, detail='El plan debe ser alquiler o venta')
+    if 'status' in proposed and proposed['status'] not in ('desarrollo', 'activo', 'inactivo'):
+        raise HTTPException(status_code=422, detail='Estado de cliente inválido')
+    actor = request_actor(user)
+    with transaction.atomic():
+        try:
+            client = Client.objects.select_for_update().get(pk=client_id)
+        except Client.DoesNotExist:
+            raise HTTPException(status_code=404, detail='Cliente no encontrado')
+        before = client_snapshot(client)
+        if before['status'] == 'inactivo' or proposed.get('status') == 'inactivo':
+            raise HTTPException(status_code=409, detail='El estado inactivo solo puede gestionarse mediante el procedimiento de baja')
+        if proposed.get('status') == 'activo' and before['status'] == 'desarrollo' and not client.delivery_date:
+            raise HTTPException(status_code=409, detail='La activación requiere la fecha de entrega comercial registrada')
+        request = ClientChangeRequest.objects.create(
+            client=client, request_type='modificacion', requester=actor,
+            reason=reason, proposed_data=proposed, previous_data={key: before[key] for key in proposed},
         )
+        ClientHistory.objects.create(
+            client=client, request=request, actor=actor, event_type='modificacion_solicitada',
+            reason=reason, before_data=before, after_data={**before, **proposed},
+        )
+    return {'id': request.id, 'status': request.status}
 
-    # Soft delete — no borramos, solo desactivamos
-    client.status = 'inactivo'
-    client.save()
 
-    return {'message': f'Cliente {client.cupe} dado de baja correctamente'}
+@router.post('/{client_id}/deactivation-requests', status_code=201)
+def request_client_deactivation(client_id: int, payload: dict = Body(...), user: dict = Depends(get_current_user)):
+    require_crm_reader(user)
+    reason = str(payload.get('reason', '')).strip()
+    if not reason:
+        raise HTTPException(status_code=422, detail='El motivo de la baja es obligatorio')
+    actor = request_actor(user)
+    with transaction.atomic():
+        try:
+            client = Client.objects.select_for_update().get(pk=client_id)
+        except Client.DoesNotExist:
+            raise HTTPException(status_code=404, detail='Cliente no encontrado')
+        if client.status == 'inactivo':
+            raise HTTPException(status_code=409, detail='El cliente ya está inactivo')
+        before = client_snapshot(client)
+        request = ClientChangeRequest.objects.create(
+            client=client, request_type='baja', requester=actor, reason=reason,
+            proposed_data={'status': 'inactivo'}, previous_data={'status': client.status},
+        )
+        ClientHistory.objects.create(
+            client=client, request=request, actor=actor, event_type='baja_solicitada',
+            reason=reason, before_data=before, after_data={**before, 'status': 'inactivo'},
+        )
+    return {'id': request.id, 'status': request.status}
+
+
+@router.get('/requests/pending')
+def list_client_requests(user: dict = Depends(get_current_user)):
+    role = user.get('role')
+    if role not in ('L1', 'L2'):
+        raise HTTPException(status_code=403, detail='No tienes permiso para resolver solicitudes')
+    requests = ClientChangeRequest.objects.filter(status='pendiente').select_related('client', 'requester')
+    if role == 'L2':
+        requests = requests.filter(request_type='modificacion')
+    return [{
+        'id': item.id, 'client_id': item.client_id, 'client_name': item.client.name,
+        'request_type': item.request_type, 'requester_id': item.requester_id,
+        'requested_at': item.requested_at, 'reason': item.reason,
+        'proposed_data': item.proposed_data, 'previous_data': item.previous_data,
+    } for item in requests]
+
+
+@router.post('/requests/{request_id}/resolve')
+def resolve_client_request(request_id: int, payload: dict = Body(...), user: dict = Depends(get_current_user)):
+    role = user.get('role')
+    decision = payload.get('decision')
+    resolution_reason = str(payload.get('reason', '')).strip()
+    if decision not in ('aprobado', 'rechazado') or not resolution_reason:
+        raise HTTPException(status_code=422, detail='Indica una decisión y su motivo')
+    actor = request_actor(user)
+    with transaction.atomic():
+        try:
+            item = ClientChangeRequest.objects.select_for_update().select_related('client').get(pk=request_id)
+            client = Client.objects.select_for_update().get(pk=item.client_id)
+        except ClientChangeRequest.DoesNotExist:
+            raise HTTPException(status_code=404, detail='Solicitud no encontrada')
+        allowed = role in ('L1', 'L2') if item.request_type == 'modificacion' else role == 'L1'
+        if not allowed:
+            raise HTTPException(status_code=403, detail='No tienes competencia para resolver esta solicitud')
+        if item.status != 'pendiente':
+            raise HTTPException(status_code=409, detail='La solicitud ya fue resuelta')
+        before = client_snapshot(client)
+        event = f'{item.request_type}_rechazada'
+        if decision == 'aprobado':
+            if any(before.get(key) != value for key, value in item.previous_data.items()):
+                raise HTTPException(status_code=409, detail='El cliente cambió desde la solicitud; debe revisarse nuevamente')
+            if item.request_type == 'baja':
+                client.status = 'inactivo'
+                client.save(update_fields=['status', 'updated_at'])
+            else:
+                changes = item.proposed_data
+                if 'status' in changes and (before['status'] == 'inactivo' or changes['status'] == 'inactivo'):
+                    raise HTTPException(status_code=409, detail='El estado inactivo requiere el procedimiento de baja')
+                if changes.get('status') == 'activo' and before['status'] == 'desarrollo' and not client.delivery_date:
+                    raise HTTPException(status_code=409, detail='La activación requiere fecha de entrega registrada')
+                for field, value in changes.items():
+                    setattr(client, field, value)
+                if 'plan' in changes:
+                    client.payment_frequency = 'mensual' if client.plan == 'alquiler' else 'anual'
+                    client.base_price = client.web_type.base_price_rent if client.plan == 'alquiler' else client.web_type.base_price_sale
+                    selected = [item.feature for item in client.features.select_related('feature')]
+                    client.extra_price = sum((feature.extra_price for feature in selected), Decimal('0'))
+                    client.total_price = client.base_price + client.extra_price
+                client.save()
+            event = f'{item.request_type}_aprobada'
+        after = client_snapshot(client)
+        item.status = decision
+        item.resolved_by = actor
+        item.resolved_at = timezone.now()
+        item.resolution_reason = resolution_reason
+        item.save(update_fields=['status', 'resolved_by', 'resolved_at', 'resolution_reason'])
+        ClientHistory.objects.create(
+            client=client, request=item, actor=actor, event_type=event,
+            reason=resolution_reason, before_data=before, after_data=after,
+        )
+    return {'id': item.id, 'status': item.status}
+
+
+@router.get('/{client_id}/history')
+def get_client_history(client_id: int, user: dict = Depends(get_current_user)):
+    require_crm_reader(user)
+    if not Client.objects.filter(pk=client_id).exists():
+        raise HTTPException(status_code=404, detail='Cliente no encontrado')
+    return list(ClientHistory.objects.filter(client_id=client_id).values(
+        'id', 'request_id', 'actor_id', 'event_type', 'occurred_at', 'reason', 'before_data', 'after_data',
+    ))

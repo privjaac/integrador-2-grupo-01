@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from api.main import app
 from api.routers.auth import hash_password, verify_password
-from clients.models import Client, Collaborator, Role, WebCatalog, WebFeature
+from clients.models import Client, ClientChangeRequest, ClientHistory, Collaborator, Role, WebCatalog, WebFeature
 
 
 class ApiContractTests(TransactionTestCase):
@@ -154,10 +154,127 @@ class ApiContractTests(TransactionTestCase):
             headers=headers,
             json={'feature_ids': [], 'plan': 'venta'},
         )
-        self.assertEqual(update.status_code, 200, update.text)
-        self.assertEqual(update.json()['total_price'], 299)
-        self.assertEqual(update.json()['features'], [])
-        self.assertEqual(Client.objects.get(id=client_id).plan, 'venta')
+        self.assertEqual(update.status_code, 409, update.text)
+        self.assertEqual(Client.objects.get(id=client_id).plan, 'alquiler')
+
+    def test_client_change_request_requires_approval_and_records_history(self):
+        headers = {'Authorization': f"Bearer {self.login()['access_token']}"}
+        created = self.api.post('/api/clients/', headers=headers, json={
+            'name': 'Cliente aprobación', 'document_type': 'RUC',
+            'document_number': '20123456780', 'email': 'old@example.com',
+            'web_type_id': self.web_type.id, 'plan': 'alquiler',
+        })
+        client_id = created.json()['id']
+        requested = self.api.post(f'/api/clients/{client_id}/change-requests', headers=headers,
+                                  json={'changes': {'email': 'new@example.com'}, 'reason': 'Actualizar contacto'})
+        self.assertEqual(requested.status_code, 201, requested.text)
+        self.assertEqual(Client.objects.get(pk=client_id).email, 'old@example.com')
+        history = self.api.get(f'/api/clients/{client_id}/history', headers=headers)
+        self.assertEqual(history.status_code, 200, history.text)
+        self.assertEqual([event['event_type'] for event in history.json()], ['modificacion_solicitada', 'cliente_creado'])
+        queue = self.api.get('/api/clients/requests/pending', headers=headers)
+        self.assertEqual(queue.status_code, 200, queue.text)
+        resolved = self.api.post(f"/api/clients/requests/{requested.json()['id']}/resolve", headers=headers,
+                                 json={'decision': 'aprobado', 'reason': 'Verificado'})
+        self.assertEqual(resolved.status_code, 200, resolved.text)
+        self.assertEqual(Client.objects.get(pk=client_id).email, 'new@example.com')
+        request_row = ClientChangeRequest.objects.get(pk=requested.json()['id'])
+        self.assertEqual(request_row.status, 'aprobado')
+        self.assertEqual(request_row.requester_id, self.admin.id)
+        self.assertEqual(request_row.resolved_by_id, self.admin.id)
+        self.assertIsNotNone(request_row.resolved_at)
+        applied_event = ClientHistory.objects.get(request=request_row, event_type='modificacion_aprobada')
+        self.assertEqual(applied_event.actor_id, self.admin.id)
+        self.assertEqual(applied_event.before_data['email'], 'old@example.com')
+        self.assertEqual(applied_event.after_data['email'], 'new@example.com')
+
+    def test_client_deactivation_is_request_only_and_l1_approval_is_required(self):
+        headers = {'Authorization': f"Bearer {self.login()['access_token']}"}
+        created = self.api.post('/api/clients/', headers=headers, json={
+            'name': 'Cliente baja', 'document_type': 'RUC', 'document_number': '20123456781',
+            'email': 'baja@example.com', 'web_type_id': self.web_type.id, 'plan': 'alquiler',
+        })
+        client_id = created.json()['id']
+        cannot_directly_set_inactive = self.api.post(
+            f'/api/clients/{client_id}/change-requests', headers=headers,
+            json={'changes': {'status': 'inactivo'}, 'reason': 'Intento directo'},
+        )
+        self.assertEqual(cannot_directly_set_inactive.status_code, 409)
+        self.assertEqual(self.api.delete(f'/api/clients/{client_id}', headers=headers).status_code, 409)
+        request = self.api.post(f'/api/clients/{client_id}/deactivation-requests', headers=headers,
+                                json={'reason': 'Cierre solicitado'})
+        self.assertEqual(request.status_code, 201, request.text)
+        self.assertNotEqual(Client.objects.get(pk=client_id).status, 'inactivo')
+        resolved = self.api.post(f"/api/clients/requests/{request.json()['id']}/resolve", headers=headers,
+                                 json={'decision': 'aprobado', 'reason': 'Aprobado'})
+        self.assertEqual(resolved.status_code, 200, resolved.text)
+        self.assertEqual(Client.objects.get(pk=client_id).status, 'inactivo')
+        self.assertEqual(self.api.post(f'/api/clients/{client_id}/change-requests', headers=headers,
+                                       json={'changes': {'status': 'activo'}, 'reason': 'Reactivar'}).status_code, 409)
+
+    def test_l2_cannot_approve_deactivation(self):
+        headers = {'Authorization': f"Bearer {self.login()['access_token']}"}
+        created = self.api.post('/api/clients/', headers=headers, json={
+            'name': 'Cliente autorización L1', 'document_type': 'RUC', 'document_number': '20123456782',
+            'email': 'auth@example.com', 'web_type_id': self.web_type.id, 'plan': 'alquiler',
+        })
+        req = self.api.post(f"/api/clients/{created.json()['id']}/deactivation-requests", headers=headers,
+                            json={'reason': 'Baja solicitada'})
+        role = Role.objects.create(name='Scrum Master', level='L2')
+        collaborator = Collaborator.objects.create(
+            first_name='SM', last_name='Prueba', document_number='55555555',
+            email='sm@example.com', username='sm', password_hash=hash_password('sm-password'), role=role,
+        )
+        token_response = self.api.post('/api/auth/login', json={'username': collaborator.username, 'password': 'sm-password'})
+        sm_headers = {'Authorization': f"Bearer {token_response.json()['access_token']}"}
+        denied = self.api.post(f"/api/clients/requests/{req.json()['id']}/resolve", headers=sm_headers,
+                               json={'decision': 'aprobado', 'reason': 'No competente'})
+        self.assertEqual(denied.status_code, 403, denied.text)
+        self.assertEqual(Client.objects.get(pk=created.json()['id']).status, 'desarrollo')
+
+    def test_rejection_and_stale_approval_preserve_client_and_request_history(self):
+        headers = {'Authorization': f"Bearer {self.login()['access_token']}"}
+        created = self.api.post('/api/clients/', headers=headers, json={
+            'name': 'Cliente historial', 'document_type': 'RUC', 'document_number': '20123456783',
+            'email': 'before@example.com', 'web_type_id': self.web_type.id, 'plan': 'alquiler',
+        })
+        client_id = created.json()['id']
+        rejected_request = self.api.post(f'/api/clients/{client_id}/change-requests', headers=headers,
+                                         json={'changes': {'email': 'reject@example.com'}, 'reason': 'Cambio propuesto'})
+        rejected = self.api.post(f"/api/clients/requests/{rejected_request.json()['id']}/resolve", headers=headers,
+                                 json={'decision': 'rechazado', 'reason': 'No procede'})
+        self.assertEqual(rejected.status_code, 200, rejected.text)
+        self.assertEqual(Client.objects.get(pk=client_id).email, 'before@example.com')
+
+        stale_request = self.api.post(f'/api/clients/{client_id}/change-requests', headers=headers,
+                                      json={'changes': {'email': 'stale@example.com'}, 'reason': 'Otra propuesta'})
+        Client.objects.filter(pk=client_id).update(email='intervening@example.com')
+        stale = self.api.post(f"/api/clients/requests/{stale_request.json()['id']}/resolve", headers=headers,
+                              json={'decision': 'aprobado', 'reason': 'Revisar'})
+        self.assertEqual(stale.status_code, 409, stale.text)
+        request_row = ClientChangeRequest.objects.get(pk=stale_request.json()['id'])
+        self.assertEqual(request_row.status, 'pendiente')
+        self.assertEqual(Client.objects.get(pk=client_id).email, 'intervening@example.com')
+        event_types = set(ClientHistory.objects.filter(client_id=client_id).values_list('event_type', flat=True))
+        self.assertIn('modificacion_rechazada', event_types)
+        self.assertNotIn('modificacion_aprobada', event_types)
+
+    def test_crm_read_and_write_scope_excludes_l4(self):
+        role = Role.objects.create(name='Líder', level='L4')
+        collaborator = Collaborator.objects.create(
+            first_name='Lider', last_name='Prueba', document_number='66666666',
+            email='leader@example.com', username='leader', password_hash=hash_password('leader-password'), role=role,
+        )
+        token = self.api.post('/api/auth/login', json={
+            'username': collaborator.username, 'password': 'leader-password',
+        }).json()['access_token']
+        headers = {'Authorization': f'Bearer {token}'}
+        for path in ('/api/clients/', '/api/clients/1', '/api/clients/1/history'):
+            self.assertEqual(self.api.get(path, headers=headers).status_code, 403)
+        self.assertEqual(self.api.post('/api/clients/', headers=headers, json={
+            'name': 'No permitido', 'document_type': 'RUC', 'document_number': '20999999999',
+            'email': 'denied@example.com', 'web_type_id': self.web_type.id, 'plan': 'alquiler',
+        }).status_code, 403)
 
     def test_role_edit_is_superadmin_only_and_levels_stay_fixed(self):
         editor_role = Role.objects.create(name='Scrum Master', level='L2')

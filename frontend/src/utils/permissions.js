@@ -69,14 +69,14 @@ export const ROLES = {
     level: 4,
     label: "Líder",
     // Líder gestiona clientes y usuarios
-    routes: ["/clientes", "/usuarios", "/tareas"],
+    routes: ["/usuarios", "/tareas"],
   },
 
   L5: {
     level: 5,
     label: "Developer",
     // Developer solo accede a clientes
-    routes: ["/clientes", "/tareas"],
+    routes: ["/tareas"],
   },
 };
 
@@ -97,14 +97,16 @@ export const ROLES = {
 const PERMISSIONS = {
   // ── MÓDULO CLIENTES ──────────────────────────────────────────────────────
   clients: {
-    // Todos los roles pueden ver clientes
-    view: ["L1", "L2", "L3", "L4", "L5"],
-    // L1 a L4 pueden crear clientes — L5 (Developer) no
-    create: ["L1", "L2", "L3", "L4"],
-    // L1 a L4 pueden editar clientes
-    edit: ["L1", "L2", "L3", "L4"],
-    // Solo L1 y L2 pueden desactivar clientes
-    delete: ["L1", "L2"],
+    // CRM-002/003/008/009: lectura L1/L2/L3.
+    view: ["L1", "L2", "L3"],
+    // CRM-001: creación L1/L2.
+    create: ["L1", "L2"],
+    // CRM-004 solicita; no aplica cambios directos.
+    edit: ["L1", "L2", "L3"],
+    // CRM-007 solicita la baja; L1 resuelve y la interfaz limita la cola.
+    delete: ["L1", "L2", "L3"],
+    resolveChange: ["L1", "L2"],
+    resolveDeactivation: ["L1"],
   },
 
   // ── MÓDULO PROYECTOS (F2-01) ─────────────────────────────────────────────

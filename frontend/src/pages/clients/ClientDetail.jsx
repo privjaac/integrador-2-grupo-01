@@ -10,7 +10,7 @@ import { useState, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { can } from "../../utils/permissions";
-import { getClientById, deactivateClient } from "../../api/clients";
+import { getClientById, requestClientDeactivation, getClientHistory } from "../../api/clients";
 import { getNextCupe, changeCupe, getCupeHistory } from "../../api/cupe";
 import {
   formatDate,
@@ -110,6 +110,8 @@ export default function ClientDetail() {
   const [client, setClient] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [cupeHistory, setCupeHistory] = useState([]);
+  const [clientHistory, setClientHistory] = useState([]);
+  const [deactivationReason, setDeactivationReason] = useState("");
 
   // Modal de dar de baja
   const [bajaModal, setBajaModal] = useState({ isOpen: false });
@@ -130,12 +132,14 @@ export default function ClientDetail() {
 
   const loadClient = async () => {
     try {
-      const [clientData, history] = await Promise.all([
+      const [clientData, history, crmHistory] = await Promise.all([
         getClientById(id),
         getCupeHistory("client", id),
+        getClientHistory(id),
       ]);
       setClient(clientData);
       setCupeHistory(history);
+      setClientHistory(crmHistory);
     } catch (err) {
       setErrorModal({
         isOpen: true,
@@ -155,11 +159,11 @@ export default function ClientDetail() {
   const handleBaja = async () => {
     setIsDeactivating(true);
     try {
-      await deactivateClient(id);
+      await requestClientDeactivation(id, deactivationReason);
       setBajaModal({ isOpen: false });
       setSuccessModal({
         isOpen: true,
-        message: `Cliente "${client.name}" dado de baja correctamente.`,
+        message: `Solicitud de baja de "${client.name}" enviada para aprobación.`,
       });
       await loadClient();
     } catch (err) {
@@ -392,7 +396,7 @@ export default function ClientDetail() {
           </div>
 
           <div style={{ display: "flex", gap: "0.75rem", flexShrink: 0 }}>
-            {can(user, "clients", "edit") && (
+            {can(user, "clients", "edit") && client.status !== "inactivo" && (
               <Button
                 variant="secondary"
                 onClick={() => navigate(`/clientes/${id}/editar`)}
@@ -613,6 +617,18 @@ export default function ClientDetail() {
         </DetailCard>
       )}
 
+      {can(user, "clients", "view") && (
+        <DetailCard title="Cronología del cliente">
+          {clientHistory.length === 0 ? <p>Sin eventos de CRM registrados.</p> : clientHistory.map((entry) => (
+            <div key={entry.id} style={{ padding: '0.65rem 0', borderBottom: '1px solid rgba(63,229,229,0.12)' }}>
+              <strong>{entry.event_type.replaceAll('_', ' ')}</strong>
+              <div style={{ color: '#8892a4', fontSize: 12 }}>{new Date(entry.occurred_at).toLocaleString()} · actor #{entry.actor_id}</div>
+              {entry.reason && <div>{entry.reason}</div>}
+            </div>
+          ))}
+        </DetailCard>
+      )}
+
       {/* ── HISTORIAL DE CAMBIOS DE CUPE ──────────────────────────────────── */}
       {isSuperAdmin && (
         <DetailCard title="Historial de cambios de CUPE">
@@ -754,14 +770,15 @@ export default function ClientDetail() {
         size="sm"
       >
         <Modal.Header
-          title="Dar de baja al cliente"
+          title="Solicitar baja del cliente"
           onClose={() => setBajaModal({ isOpen: false })}
         />
         <Modal.Body>
           <p style={{ textAlign: "center" }}>
-            ¿Dar de baja a{" "}
+            ¿Solicitar la baja de{" "}
             <strong style={{ color: "white" }}>{client.name}</strong>?
           </p>
+          <textarea required aria-label="Motivo de baja" value={deactivationReason} onChange={(event) => setDeactivationReason(event.target.value)} placeholder="Motivo obligatorio" />
           <p
             style={{
               textAlign: "center",
@@ -786,7 +803,7 @@ export default function ClientDetail() {
             onClick={handleBaja}
             isLoading={isDeactivating}
           >
-            Sí, dar de baja
+            Enviar solicitud
           </Button>
         </Modal.Footer>
       </Modal>
