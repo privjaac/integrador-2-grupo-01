@@ -641,7 +641,7 @@ def amend_contracted_service(
 ):
     actor = active_commercial_actor(user)
     with transaction.atomic():
-        service = ContractedService.objects.select_for_update().select_related('client', 'catalog_service').filter(
+        service = ContractedService.objects.select_for_update(of=('self',)).select_related('client', 'catalog_service').filter(
             pk=service_id, client_id=client_id,
         ).first()
         if service is None:
