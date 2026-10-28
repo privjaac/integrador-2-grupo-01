@@ -120,3 +120,28 @@ export async function amendContractedService(clientId, serviceId, payload) {
   const response = await axiosInstance.put(`/api/clients/${clientId}/contracted-services/${serviceId}`, payload);
   return response.data;
 }
+
+export async function getClientPayments(clientId) {
+  const response = await axiosInstance.get(`/api/clients/${clientId}/payments`);
+  return response.data;
+}
+
+export async function recordClientPayment(clientId, payload) {
+  const response = await axiosInstance.post(`/api/clients/${clientId}/payments`, payload);
+  return response.data;
+}
+
+export async function confirmClientPayment(paymentId, evidence_reference) {
+  const response = await axiosInstance.post(`/api/clients/payments/${paymentId}/confirm`, { evidence_reference });
+  return response.data;
+}
+
+export async function recordPaymentAdjustment(paymentId, payload) {
+  const response = await axiosInstance.post(`/api/clients/payments/${paymentId}/adjustments`, payload);
+  return response.data;
+}
+
+export async function confirmPaymentAdjustment(adjustmentId) {
+  const response = await axiosInstance.post(`/api/clients/payments/adjustments/${adjustmentId}/confirm`, {});
+  return response.data;
+}

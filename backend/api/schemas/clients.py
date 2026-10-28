@@ -189,3 +189,34 @@ class ProjectServiceLinkInput(SafeInputModel):
         if not value.strip():
             raise ValueError('El motivo de asociación es obligatorio')
         return value.strip()
+
+
+class CustomerPaymentWrite(SafeInputModel):
+    service_id: int = Field(gt=0)
+    reference: str = Field(min_length=1, max_length=160)
+    amount: Annotated[Decimal, Field(gt=0, max_digits=12, decimal_places=2)]
+    currency: str = Field(min_length=3, max_length=3)
+    effective_date: date
+    evidence_reference: str = Field(min_length=1, max_length=300)
+
+    @field_validator('reference', 'currency', 'evidence_reference')
+    @classmethod
+    def strip_payment_fields(cls, value):
+        value = value.strip()
+        if not value:
+            raise ValueError('El valor es obligatorio')
+        return value.upper() if value and len(value) == 3 else value
+
+
+class PaymentAdjustmentWrite(SafeInputModel):
+    amount: Annotated[Decimal, Field(ne=0, max_digits=12, decimal_places=2)]
+    reason: str = Field(min_length=1)
+    evidence_reference: str = Field(min_length=1, max_length=300)
+
+    @field_validator('reason', 'evidence_reference')
+    @classmethod
+    def strip_adjustment_fields(cls, value):
+        value = value.strip()
+        if not value:
+            raise ValueError('El valor es obligatorio')
+        return value

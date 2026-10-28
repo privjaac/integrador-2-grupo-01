@@ -1086,7 +1086,58 @@ class ProjectContractedService(models.Model):
         )]
 
 
+class CustomerPayment(models.Model):
+    """A client receipt with separate registration and confirmation acts."""
+    client = models.ForeignKey(Client, on_delete=models.PROTECT, related_name='payments')
+    service = models.ForeignKey(ContractedService, on_delete=models.PROTECT, related_name='payments')
+    reference = models.CharField(max_length=160)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    currency = models.CharField(max_length=3)
+    effective_date = models.DateField()
+    evidence_reference = models.CharField(max_length=300)
+    recorded_by = models.ForeignKey(Collaborator, on_delete=models.PROTECT, related_name='payments_recorded')
+    recorded_at = models.DateTimeField(auto_now_add=True)
+    confirmed_by = models.ForeignKey(Collaborator, on_delete=models.PROTECT, null=True, blank=True, related_name='payments_confirmed')
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    confirmation_evidence = models.CharField(max_length=300, blank=True, default='')
 
+    class Meta:
+        db_table = 'customer_payments'
+        constraints = [
+            models.UniqueConstraint(fields=['client', 'reference'], name='customer_payment_client_reference_unique'),
+            models.CheckConstraint(condition=models.Q(amount__gt=0), name='customer_payment_amount_positive'),
+            models.CheckConstraint(
+                condition=(models.Q(confirmed_by__isnull=True, confirmed_at__isnull=True) |
+                           models.Q(confirmed_by__isnull=False, confirmed_at__isnull=False)),
+                name='customer_payment_confirmation_consistent',
+            ),
+        ]
+
+
+class CustomerPaymentAdjustment(models.Model):
+    """Append-only confirmed or pending adjustment linked to its original receipt."""
+    payment = models.ForeignKey(CustomerPayment, on_delete=models.PROTECT, related_name='adjustments')
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    reason = models.TextField()
+    evidence_reference = models.CharField(max_length=300)
+    recorded_by = models.ForeignKey(Collaborator, on_delete=models.PROTECT, related_name='payment_adjustments_recorded')
+    recorded_at = models.DateTimeField(auto_now_add=True)
+    confirmed_by = models.ForeignKey(Collaborator, on_delete=models.PROTECT, null=True, blank=True, related_name='payment_adjustments_confirmed')
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'customer_payment_adjustments'
+        constraints = [
+            models.CheckConstraint(condition=~models.Q(amount=0), name='customer_payment_adjustment_nonzero'),
+            models.CheckConstraint(
+                condition=(models.Q(confirmed_by__isnull=True, confirmed_at__isnull=True) |
+                           models.Q(confirmed_by__isnull=False, confirmed_at__isnull=False)),
+                name='customer_payment_adjustment_confirmation_consistent',
+            ),
+        ]
+
+
+# ------------------------------------------------------------------------------
 # CUPELOG — Historial de cambios de CUPE
 #
 # Registra cada vez que se cambia el CUPE de un cliente o colaborador.

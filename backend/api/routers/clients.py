@@ -31,10 +31,11 @@ from datetime import date, timedelta
 from dateutil.relativedelta import relativedelta
 
 from api.dependencies import get_current_user
-from api.schemas.clients import ClientCreate, ClientUpdate, ClientResponse, ClientList, ContractedServiceWrite
+from api.schemas.clients import (ClientCreate, ClientUpdate, ClientResponse, ClientList, ContractedServiceWrite,
+                                 CustomerPaymentWrite, PaymentAdjustmentWrite)
 from clients.models import (
     Client, WebCatalog, Collaborator, WebFeature, ClientFeature, ClientChangeRequest, ClientHistory,
-    ContractedService, ContractedServiceHistory,
+    ContractedService, ContractedServiceHistory, CustomerPayment, CustomerPaymentAdjustment,
 )
 
 
@@ -662,3 +663,125 @@ def amend_contracted_service(
             evidence_reference=service.evidence_reference, impact_assessment=payload.impact_assessment.strip(),
         )
     return contracted_service_response(service, disclose_commercial=True)
+
+
+def payment_actor(user: dict) -> Collaborator:
+    if user.get('role') != 'L2':
+        raise HTTPException(status_code=403, detail='La gestión de cobros corresponde a L2')
+    actor = Collaborator.objects.filter(pk=user.get('collaborator_id'), is_active=True, role__level='L2').first()
+    if actor is None:
+        raise HTTPException(status_code=403, detail='El colaborador L2 no está activo')
+    return actor
+
+
+def payment_json(item: CustomerPayment) -> dict:
+    adjustments = list(item.adjustments.order_by('id').values(
+        'id', 'amount', 'reason', 'evidence_reference', 'recorded_by_id', 'recorded_at',
+        'confirmed_by_id', 'confirmed_at',
+    ))
+    confirmed_total = (item.amount if item.confirmed_at else Decimal('0')) + sum(
+        item.adjustments.filter(confirmed_at__isnull=False).values_list('amount', flat=True), Decimal('0'))
+    return {
+        'id': item.id, 'client_id': item.client_id, 'service_id': item.service_id,
+        'reference': item.reference, 'amount': item.amount, 'currency': item.currency,
+        'effective_date': item.effective_date, 'evidence_reference': item.evidence_reference,
+        'recorded_by_id': item.recorded_by_id, 'recorded_at': item.recorded_at,
+        'confirmed_by_id': item.confirmed_by_id, 'confirmed_at': item.confirmed_at,
+        'confirmation_evidence': item.confirmation_evidence,
+        'adjustments': adjustments, 'confirmed_net': confirmed_total,
+    }
+
+
+@router.get('/{client_id}/payments')
+def list_client_payments(client_id: int, user: dict = Depends(get_current_user)):
+    role = user.get('role')
+    if role not in ('L1', 'L2'):
+        raise HTTPException(status_code=403, detail='No tienes acceso a información financiera')
+    if not Collaborator.objects.filter(pk=user.get('collaborator_id'), is_active=True, role__level=role).exists():
+        raise HTTPException(status_code=403, detail='El colaborador no está activo')
+    if not Client.objects.filter(pk=client_id).exists():
+        raise HTTPException(status_code=404, detail='Cliente no encontrado')
+    return [payment_json(item) for item in CustomerPayment.objects.filter(client_id=client_id).prefetch_related('adjustments')]
+
+
+@router.post('/{client_id}/payments', status_code=status.HTTP_201_CREATED)
+def record_client_payment(client_id: int, payload: CustomerPaymentWrite, user: dict = Depends(get_current_user)):
+    actor = payment_actor(user)
+    try:
+        with transaction.atomic():
+            client = Client.objects.select_for_update().filter(pk=client_id).first()
+            if client is None:
+                raise HTTPException(status_code=404, detail='Cliente no encontrado')
+            service = ContractedService.objects.select_for_update().filter(pk=payload.service_id, client=client).first()
+            if service is None:
+                raise HTTPException(status_code=409, detail='El compromiso no corresponde al cliente')
+            if service.agreed_amount is None or not service.currency:
+                raise HTTPException(status_code=409, detail='El compromiso debe acreditar importe y moneda')
+            if payload.currency != service.currency.upper():
+                raise HTTPException(status_code=409, detail='La moneda debe coincidir con el compromiso')
+            item = CustomerPayment.objects.create(
+                client=client, service=service, recorded_by=actor,
+                reference=payload.reference, amount=payload.amount, currency=payload.currency,
+                effective_date=payload.effective_date, evidence_reference=payload.evidence_reference,
+            )
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail='La referencia de cobro ya existe para este cliente')
+    return payment_json(item)
+
+
+@router.post('/payments/{payment_id}/confirm')
+def confirm_client_payment(payment_id: int, payload: dict = Body(...), user: dict = Depends(get_current_user)):
+    actor = payment_actor(user)
+    evidence = str(payload.get('evidence_reference', '')).strip()
+    if not evidence:
+        raise HTTPException(status_code=422, detail='La confirmación requiere evidencia')
+    with transaction.atomic():
+        item = CustomerPayment.objects.select_for_update().select_related('service').filter(pk=payment_id).first()
+        if item is None:
+            raise HTTPException(status_code=404, detail='Cobro no encontrado')
+        if item.confirmed_at:
+            raise HTTPException(status_code=409, detail='El cobro ya fue confirmado')
+        if item.amount <= 0 or item.currency != item.service.currency.upper():
+            raise HTTPException(status_code=409, detail='El cobro no coincide con el compromiso')
+        item.confirmed_by, item.confirmed_at, item.confirmation_evidence = actor, timezone.now(), evidence
+        item.save(update_fields=['confirmed_by', 'confirmed_at', 'confirmation_evidence'])
+    return payment_json(item)
+
+
+@router.post('/payments/{payment_id}/adjustments', status_code=status.HTTP_201_CREATED)
+def record_payment_adjustment(payment_id: int, payload: PaymentAdjustmentWrite, user: dict = Depends(get_current_user)):
+    actor = payment_actor(user)
+    with transaction.atomic():
+        item = CustomerPayment.objects.select_for_update().filter(pk=payment_id).first()
+        if item is None:
+            raise HTTPException(status_code=404, detail='Cobro no encontrado')
+        if not item.confirmed_at:
+            raise HTTPException(status_code=409, detail='Solo se corrige un cobro confirmado')
+        current = item.amount + sum(item.adjustments.filter(confirmed_at__isnull=False).values_list('amount', flat=True), Decimal('0'))
+        if current + payload.amount < 0:
+            raise HTTPException(status_code=409, detail='El ajuste no puede producir un neto negativo')
+        adjustment = CustomerPaymentAdjustment.objects.create(
+            payment=item, amount=payload.amount, reason=payload.reason,
+            evidence_reference=payload.evidence_reference, recorded_by=actor,
+        )
+    return {'id': adjustment.id, 'payment_id': payment_id, 'amount': adjustment.amount,
+            'recorded_by_id': actor.id, 'recorded_at': adjustment.recorded_at}
+
+
+@router.post('/payments/adjustments/{adjustment_id}/confirm')
+def confirm_payment_adjustment(adjustment_id: int, payload: dict = Body(...), user: dict = Depends(get_current_user)):
+    actor = payment_actor(user)
+    with transaction.atomic():
+        adjustment = CustomerPaymentAdjustment.objects.select_for_update().select_related('payment').filter(pk=adjustment_id).first()
+        if adjustment is None:
+            raise HTTPException(status_code=404, detail='Ajuste no encontrado')
+        if adjustment.confirmed_at:
+            raise HTTPException(status_code=409, detail='El ajuste ya fue confirmado')
+        payment = CustomerPayment.objects.select_for_update().get(pk=adjustment.payment_id)
+        net = payment.amount + sum(payment.adjustments.filter(confirmed_at__isnull=False).values_list('amount', flat=True), Decimal('0'))
+        if net + adjustment.amount < 0:
+            raise HTTPException(status_code=409, detail='El ajuste produciría un neto negativo')
+        adjustment.confirmed_by, adjustment.confirmed_at = actor, timezone.now()
+        adjustment.save(update_fields=['confirmed_by', 'confirmed_at'])
+    return {'id': adjustment.id, 'payment_id': adjustment.payment_id, 'confirmed_by_id': actor.id,
+            'confirmed_at': adjustment.confirmed_at, 'amount': adjustment.amount}
