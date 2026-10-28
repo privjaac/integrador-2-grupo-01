@@ -117,6 +117,23 @@ class ApiContractTests(TransactionTestCase):
         self.assertEqual(still_active.status_code, 200)
         self.assertEqual(self.api.post('/api/auth/refresh', json={'refresh_token': first['refresh_token']}).status_code, 401)
 
+    def test_logout_with_rotated_refresh_still_revokes_its_session(self):
+        original = self.login()
+        rotated = self.api.post('/api/auth/refresh', json={'refresh_token': original['refresh_token']})
+        self.assertEqual(rotated.status_code, 200, rotated.text)
+
+        logout = self.api.post('/api/auth/logout', json={'refresh_token': original['refresh_token']})
+        self.assertEqual(logout.status_code, 200, logout.text)
+        self.assertEqual(
+            self.api.get('/api/users/me', headers={
+                'Authorization': f"Bearer {rotated.json()['access_token']}"
+            }).status_code,
+            401,
+        )
+        self.assertEqual(self.api.post('/api/auth/refresh', json={
+            'refresh_token': rotated.json()['refresh_token'],
+        }).status_code, 401)
+
     @patch('api.routers.auth.deliver_recovery_email', return_value=True)
     def test_password_recovery_is_single_use_and_does_not_enumerate(self, deliver):
         known = self.api.post('/api/auth/forgot-password', json={'email': ' ADMIN@EXAMPLE.COM '})

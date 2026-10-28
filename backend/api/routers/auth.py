@@ -111,11 +111,14 @@ def logout(data: LogoutRequest):
         raise HTTPException(status_code=401, detail='Token inválido')
     try:
         session_id = uuid.UUID(payload['sid'])
+        collaborator_id = int(payload['collaborator_id'])
     except (ValueError, TypeError):
         raise HTTPException(status_code=401, detail='Token inválido')
     with transaction.atomic():
-        session = CollaboratorSession.objects.select_for_update().filter(id=session_id).first()
-        if not session or session.refresh_jti != payload['jti']:
+        session = CollaboratorSession.objects.select_for_update().filter(
+            id=session_id, collaborator_id=collaborator_id,
+        ).first()
+        if not session:
             raise HTTPException(status_code=401, detail='Sesión inválida')
         if not session.revoked_at:
             session.revoked_at = timezone.now()
