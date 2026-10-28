@@ -32,17 +32,18 @@ from dateutil.relativedelta import relativedelta
 
 from api.dependencies import get_current_user, require_user_permission
 from api.schemas.clients import (ClientCreate, ClientUpdate, ClientResponse, ClientList, ContractedServiceWrite,
-                                 CustomerPaymentWrite, PaymentAdjustmentWrite)
+                                 CustomerPaymentWrite, PaymentAdjustmentWrite, DocumentedPaymentDueCreate)
 from clients.models import (
     Client, WebCatalog, Collaborator, WebFeature, ClientFeature, ClientChangeRequest, ClientHistory,
     ContractedService, ContractedServiceHistory, CustomerPayment, CustomerPaymentAdjustment,
+    DocumentedPaymentDue,
 )
 
 
 router = APIRouter()
 
 CRM_ROLES = ('L1', 'L2', 'L3')
-CLIENT_CHANGE_FIELDS = ('name', 'email', 'plan', 'status')
+CLIENT_CHANGE_FIELDS = ('name', 'email', 'plan', 'status', 'commercial_responsible_id')
 
 
 def require_crm_reader(user: dict) -> None:
@@ -125,9 +126,24 @@ def service_next_due_date(service: ContractedService, as_of: date | None = None)
 def active_commercial_actor(user: dict) -> Collaborator:
     if user.get('role') != 'L2':
         raise HTTPException(status_code=403, detail='El registro y modificación del compromiso corresponde a L2')
-    actor = Collaborator.objects.filter(pk=user.get('collaborator_id'), is_active=True, role__level='L2').first()
+    actor = Collaborator.objects.filter(
+        pk=user.get('collaborator_id'), is_active=True, role__is_active=True, role__level='L2',
+    ).first()
     if actor is None:
         raise HTTPException(status_code=403, detail='El colaborador L2 no está activo')
+    return actor
+
+
+def active_client_change_authority(user: dict) -> Collaborator:
+    if user.get('role') not in ('L1', 'L2'):
+        raise HTTPException(status_code=403, detail='Solo L1 o L2 puede gestionar responsables comerciales')
+    require_user_permission(user, 'clients', 'resolveChange')
+    actor = Collaborator.objects.filter(
+        pk=user.get('collaborator_id'), is_active=True, role__is_active=True,
+        role__level=user.get('role'),
+    ).first()
+    if actor is None:
+        raise HTTPException(status_code=403, detail='El colaborador no tiene autoridad CRM vigente')
     return actor
 
 
@@ -178,9 +194,9 @@ def selected_features(
 # ------------------------------------------------------------------------------
 # FUNCIÓN AUXILIAR — Convertir objeto Django Client a dict
 # ------------------------------------------------------------------------------
-def client_to_response(client: Client) -> dict:
+def client_to_response(client: Client, *, disclose_responsible: bool = False) -> dict:
     domain_price = float(client.domain_price) if client.domain_price is not None else None
-    return {
+    result = {
         'id': client.id,
         'cupe': client.cupe,
         'name': client.name,
@@ -217,6 +233,17 @@ def client_to_response(client: Client) -> dict:
         'created_at': client.created_at,
         'updated_at': client.updated_at,
     }
+    if disclose_responsible:
+        result['commercial_responsible_id'] = client.commercial_responsible_id
+        result['commercial_responsible_name'] = (
+            f'{client.commercial_responsible.first_name} {client.commercial_responsible.last_name}'.strip()
+            if client.commercial_responsible_id else None
+        )
+        result['commercial_responsible_active'] = bool(
+            client.commercial_responsible_id and client.commercial_responsible.is_active
+            and client.commercial_responsible.role_id and client.commercial_responsible.role.is_active
+        )
+    return result
 
 
 # ------------------------------------------------------------------------------
@@ -237,7 +264,9 @@ def get_clients(
     user: dict = Depends(get_current_user)
 ):
     require_crm_reader(user)
-    clients = Client.objects.select_related('web_type', 'created_by').prefetch_related('features__feature').all()
+    clients = Client.objects.select_related(
+        'web_type', 'created_by', 'commercial_responsible', 'commercial_responsible__role',
+    ).prefetch_related('features__feature').all()
 
     if status:
         clients = clients.filter(status=status)
@@ -249,7 +278,7 @@ def get_clients(
             | Q(email__icontains=search) | Q(document_number__icontains=search)
         )
 
-    return [client_to_response(c) for c in clients]
+    return [client_to_response(c, disclose_responsible=user.get('role') in ('L1', 'L2')) for c in clients]
 
 
 # ------------------------------------------------------------------------------
@@ -267,14 +296,16 @@ def get_client(
 ):
     require_crm_reader(user)
     try:
-        client = Client.objects.select_related('web_type', 'created_by').get(id=client_id)
+        client = Client.objects.select_related(
+            'web_type', 'created_by', 'commercial_responsible', 'commercial_responsible__role',
+        ).get(id=client_id)
     except Client.DoesNotExist:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f'Cliente con id {client_id} no encontrado'
         )
 
-    return client_to_response(client)
+    return client_to_response(client, disclose_responsible=user.get('role') in ('L1', 'L2'))
 
 
 # ------------------------------------------------------------------------------
@@ -397,7 +428,7 @@ def create_client(
     # Recargar el cliente con las relaciones para la respuesta
     client = Client.objects.select_related('web_type', 'created_by').prefetch_related('features__feature').get(id=client.id)
 
-    return client_to_response(client)
+    return client_to_response(client, disclose_responsible=user.get('role') in ('L1', 'L2'))
 
 
 # ------------------------------------------------------------------------------
@@ -449,7 +480,18 @@ def request_client_change(client_id: int, payload: dict = Body(...), user: dict 
     proposed = payload.get('changes')
     reason = str(payload.get('reason', '')).strip()
     if not isinstance(proposed, dict) or not proposed or set(proposed) - set(CLIENT_CHANGE_FIELDS):
-        raise HTTPException(status_code=422, detail='Indica únicamente nombre, correo, plan o estado')
+        raise HTTPException(status_code=422, detail='Indica únicamente los campos habilitados para el flujo CRM')
+    if 'commercial_responsible_id' in proposed:
+        if user.get('role') not in ('L1', 'L2'):
+            raise HTTPException(status_code=403, detail='Solo L1 o L2 puede proponer la designación comercial')
+        responsible_id = proposed['commercial_responsible_id']
+        if responsible_id is not None:
+            if isinstance(responsible_id, bool) or not isinstance(responsible_id, int) or responsible_id <= 0:
+                raise HTTPException(status_code=422, detail='El responsable comercial indicado no es válido')
+            if not Collaborator.objects.filter(
+                pk=responsible_id, is_active=True, role__is_active=True,
+            ).exists():
+                raise HTTPException(status_code=409, detail='El responsable debe ser un colaborador activo')
     if not reason:
         raise HTTPException(status_code=422, detail='El motivo del cambio es obligatorio')
     for field in ('name', 'email'):
@@ -565,6 +607,12 @@ def resolve_client_request(request_id: int, payload: dict = Body(...), user: dic
                 client.save(update_fields=['status', 'updated_at'])
             else:
                 changes = item.proposed_data
+                if 'commercial_responsible_id' in changes:
+                    target_id = changes['commercial_responsible_id']
+                    if target_id is not None and not Collaborator.objects.filter(
+                        pk=target_id, is_active=True, role__is_active=True,
+                    ).exists():
+                        raise HTTPException(status_code=409, detail='El responsable propuesto ya no está activo')
                 if 'status' in changes and (before['status'] == 'inactivo' or changes['status'] == 'inactivo'):
                     raise HTTPException(status_code=409, detail='El estado inactivo requiere el procedimiento de baja')
                 if changes.get('status') == 'activo' and before['status'] == 'desarrollo' and not client.delivery_date:
@@ -597,9 +645,71 @@ def get_client_history(client_id: int, user: dict = Depends(get_current_user)):
     require_crm_reader(user)
     if not Client.objects.filter(pk=client_id).exists():
         raise HTTPException(status_code=404, detail='Cliente no encontrado')
-    return list(ClientHistory.objects.filter(client_id=client_id).values(
+    rows = list(ClientHistory.objects.filter(client_id=client_id).values(
         'id', 'request_id', 'actor_id', 'event_type', 'occurred_at', 'reason', 'before_data', 'after_data',
     ))
+    if user.get('role') not in ('L1', 'L2'):
+        for row in rows:
+            row['before_data'] = {k: v for k, v in (row['before_data'] or {}).items() if k != 'commercial_responsible_id'}
+            row['after_data'] = {k: v for k, v in (row['after_data'] or {}).items() if k != 'commercial_responsible_id'}
+    return rows
+
+
+@router.get('/commercial-responsibles/eligible')
+def list_eligible_commercial_responsibles(user: dict = Depends(get_current_user)):
+    active_client_change_authority(user)
+    return [{
+        'id': person.id,
+        'name': f'{person.first_name} {person.last_name}'.strip(),
+        'role': person.role.level,
+    } for person in Collaborator.objects.filter(
+        is_active=True, role__is_active=True,
+    ).select_related('role').order_by('last_name', 'first_name', 'id')]
+
+
+def payment_due_response(item: DocumentedPaymentDue) -> dict:
+    return {
+        'id': item.id, 'client_id': item.client_id, 'service_id': item.service_id,
+        'service_name': item.service.service_name, 'due_date': item.due_date,
+        'obligation_reference': item.obligation_reference,
+        'evidence_reference': item.evidence_reference,
+        'recorded_by_id': item.recorded_by_id, 'recorded_at': item.recorded_at,
+    }
+
+
+@router.get('/{client_id}/documented-payment-dues')
+def list_documented_payment_dues(client_id: int, user: dict = Depends(get_current_user)):
+    if user.get('role') not in ('L1', 'L2') or not Collaborator.objects.filter(
+        pk=user.get('collaborator_id'), is_active=True, role__is_active=True, role__level=user.get('role'),
+    ).exists():
+        raise HTTPException(status_code=403, detail='No tienes acceso a los compromisos comerciales')
+    if not Client.objects.filter(pk=client_id).exists():
+        raise HTTPException(status_code=404, detail='Cliente no encontrado')
+    return [payment_due_response(item) for item in DocumentedPaymentDue.objects.filter(
+        client_id=client_id,
+    ).select_related('service', 'recorded_by')]
+
+
+@router.post('/{client_id}/documented-payment-dues', status_code=status.HTTP_201_CREATED)
+def record_documented_payment_due(
+    client_id: int, payload: DocumentedPaymentDueCreate, user: dict = Depends(get_current_user),
+):
+    actor = active_commercial_actor(user)
+    with transaction.atomic():
+        client = Client.objects.select_for_update().filter(pk=client_id).first()
+        if client is None:
+            raise HTTPException(status_code=404, detail='Cliente no encontrado')
+        service = ContractedService.objects.select_for_update(of=('self',)).filter(
+            pk=payload.service_id, client=client,
+        ).first()
+        if service is None:
+            raise HTTPException(status_code=409, detail='El servicio contratado no corresponde al cliente')
+        item = DocumentedPaymentDue.objects.create(
+            client=client, service=service, due_date=payload.due_date,
+            obligation_reference=payload.obligation_reference or '',
+            evidence_reference=payload.evidence_reference or '', recorded_by=actor,
+        )
+    return payment_due_response(DocumentedPaymentDue.objects.select_related('service').get(pk=item.pk))
 
 
 @router.get('/{client_id}/contracted-services')

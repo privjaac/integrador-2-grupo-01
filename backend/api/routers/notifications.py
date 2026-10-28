@@ -9,7 +9,7 @@ from api.router import APIRouter
 from api.schemas.safe_input import SafeInputModel
 from api.routers.tasks import task_queryset
 from clients.models import (
-    Collaborator, InternalNotification, TaskDeadlineNotificationConfig,
+    Client, Collaborator, InternalNotification, TaskDeadlineNotificationConfig,
     TaskDeadlineNotificationConfigEvent,
 )
 
@@ -33,6 +33,13 @@ def task_deadline_config_response(config):
             'occurred_at': event.occurred_at,
         } for event in config.history.select_related('actor')[:50]],
     }
+
+
+def require_own_commercial_inbox_scope(user: dict) -> None:
+    if 'tasks.view' in user.get('permissions', []):
+        return
+    if not Client.objects.filter(commercial_responsible_id=user['collaborator_id']).exists():
+        raise HTTPException(status_code=403, detail='El rol no tiene un ámbito propio de notificaciones')
 
 
 @router.get('/task-deadline-settings')
@@ -72,16 +79,20 @@ def update_task_deadline_settings(
 
 @router.get('/')
 def list_internal_notifications(user: dict = Depends(get_current_user)):
+    require_own_commercial_inbox_scope(user)
     own_notifications = InternalNotification.objects.filter(recipient_id=user['collaborator_id'])
-    if 'tasks.view' not in user.get('permissions', []):
-        own_notifications = own_notifications.none()
-    else:
+    allowed_scope = Q(
+        commercial_due__client__commercial_responsible_id=user['collaborator_id'],
+        recipient__is_active=True, recipient__role__is_active=True,
+    )
+    if 'tasks.view' in user.get('permissions', []):
         readable_task_ids = task_queryset(user).values_list('pk', flat=True)
-        own_notifications = own_notifications.filter(
+        allowed_scope |= (
             Q(task_id__in=readable_task_ids)
             | Q(event__task_id__in=readable_task_ids)
             | Q(event__event_type='ejecutor_reasignado', event__previous_assignee_id=user['collaborator_id'])
         )
+    own_notifications = own_notifications.filter(allowed_scope)
     rows = list(
         own_notifications.select_related('event')[:50]
     )
@@ -90,7 +101,7 @@ def list_internal_notifications(user: dict = Depends(get_current_user)):
         'unread_count': unread,
         'items': [{
             'id': item.id,
-            'task_id': item.task_id or item.event.task_id,
+            'task_id': item.task_id or (item.event.task_id if item.event_id else None),
             'event_type': item.event.event_type if item.event_id else item.notice_type,
             'title': item.title,
             'message': item.message,
@@ -104,16 +115,20 @@ def list_internal_notifications(user: dict = Depends(get_current_user)):
 def mark_internal_notification_read(
     notification_id: int, user: dict = Depends(get_current_user),
 ):
+    require_own_commercial_inbox_scope(user)
     allowed = InternalNotification.objects.filter(recipient_id=user['collaborator_id'])
+    allowed_scope = Q(
+        commercial_due__client__commercial_responsible_id=user['collaborator_id'],
+        recipient__is_active=True, recipient__role__is_active=True,
+    )
     if 'tasks.view' in user.get('permissions', []):
         readable_task_ids = task_queryset(user).values_list('pk', flat=True)
-        allowed = allowed.filter(
+        allowed_scope |= (
             Q(task_id__in=readable_task_ids)
             | Q(event__task_id__in=readable_task_ids)
             | Q(event__event_type='ejecutor_reasignado', event__previous_assignee_id=user['collaborator_id'])
         )
-    else:
-        allowed = allowed.none()
+    allowed = allowed.filter(allowed_scope)
     updated = allowed.filter(
         pk=notification_id, read_at__isnull=True,
     ).update(read_at=timezone.now())

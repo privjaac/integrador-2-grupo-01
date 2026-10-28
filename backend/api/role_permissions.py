@@ -107,14 +107,17 @@ def effective_permissions(role) -> list[str]:
 ROUTE_CAPABILITIES = {
     'get_task_deadline_settings': 'notifications.configure',
     'update_task_deadline_settings': 'notifications.configure',
-    'list_internal_notifications': 'tasks.view',
-    'mark_internal_notification_read': 'tasks.view',
+    # Notification handlers enforce the recipient's own task or assigned
+    # commercial scope; no module-wide permission is granted by these routes.
     # CRM and client operations.
     'get_clients': 'clients.view', 'get_client': 'clients.view',
     'create_client': 'clients.create', 'update_client': 'clients.edit',
     'delete_client': 'clients.delete', 'request_client_change': 'clients.edit',
     'request_client_deactivation': 'clients.delete', 'list_client_requests': 'clients.resolveChange',
     'get_client_history': 'clients.view',
+    'list_eligible_commercial_responsibles': 'clients.resolveChange',
+    'list_documented_payment_dues': 'clients.view',
+    'record_documented_payment_due': 'clients.edit',
     # Resolution checks the request-type-specific capability in the handler.
     'resolve_client_request': 'clients.resolveChange',
     'list_contracted_services': 'clients.view', 'record_contracted_service': 'clients.edit',

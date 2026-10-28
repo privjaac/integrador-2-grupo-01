@@ -80,6 +80,10 @@ def require_route_permission(request: Request, user: dict = Depends(get_current_
     # A collaborator may always retrieve their own identity after login.
     if route_name in {'get_me', 'resolve_client_request'}:
         return
+    # The inbox is not protected by a broad module permission: its handlers
+    # return only notifications in the caller's own current scope.
+    if route_name in {'list_internal_notifications', 'mark_internal_notification_read'}:
+        return
     if route_name == 'get_task_context':
         if any(permission.startswith('tasks.') for permission in user.get('permissions', [])):
             return

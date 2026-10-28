@@ -106,6 +106,21 @@ export async function getClientHistory(id) {
   return response.data;
 }
 
+export async function getEligibleCommercialResponsibles() {
+  const response = await axiosInstance.get('/api/clients/commercial-responsibles/eligible');
+  return response.data;
+}
+
+export async function getDocumentedPaymentDues(clientId) {
+  const response = await axiosInstance.get(`/api/clients/${clientId}/documented-payment-dues`);
+  return response.data;
+}
+
+export async function recordDocumentedPaymentDue(clientId, payload) {
+  const response = await axiosInstance.post(`/api/clients/${clientId}/documented-payment-dues`, payload);
+  return response.data;
+}
+
 export async function getContractedServices(clientId) {
   const response = await axiosInstance.get(`/api/clients/${clientId}/contracted-services`);
   return response.data;

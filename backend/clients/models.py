@@ -365,6 +365,10 @@ class Client(models.Model):
         blank=True,
         related_name='clients_created'
     )
+    commercial_responsible = models.ForeignKey(
+        'Collaborator', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='commercially_responsible_clients',
+    )
 
     # Fechas automáticas
     created_at = models.DateTimeField(auto_now_add=True)
@@ -1228,6 +1232,10 @@ class InternalNotification(models.Model):
     task = models.ForeignKey(
         Task, on_delete=models.CASCADE, related_name='internal_notifications', null=True, blank=True,
     )
+    commercial_due = models.ForeignKey(
+        'DocumentedPaymentDue', on_delete=models.PROTECT, related_name='internal_notifications',
+        null=True, blank=True,
+    )
     recipient = models.ForeignKey(
         Collaborator, on_delete=models.CASCADE, related_name='internal_notifications',
     )
@@ -1470,6 +1478,75 @@ class ContractedServiceHistory(models.Model):
 
     def delete(self, *args, **kwargs):
         raise ValueError('El historial de servicios contratados es inmutable')
+
+
+class DocumentedPaymentDue(models.Model):
+    """L2-recorded payment due date, distinct from renewals and receipts."""
+    client = models.ForeignKey(Client, on_delete=models.PROTECT, related_name='documented_payment_dues')
+    service = models.ForeignKey(ContractedService, on_delete=models.PROTECT, related_name='documented_payment_dues')
+    due_date = models.DateField()
+    obligation_reference = models.CharField(max_length=200, blank=True, default='')
+    evidence_reference = models.CharField(max_length=300, blank=True, default='')
+    recorded_by = models.ForeignKey(Collaborator, on_delete=models.PROTECT, related_name='documented_payment_dues_recorded')
+    recorded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'documented_payment_dues'
+        ordering = ['due_date', 'id']
+        constraints = [models.CheckConstraint(
+            condition=models.Q(obligation_reference__gt='') | models.Q(evidence_reference__gt=''),
+            name='documented_due_has_reference_or_evidence',
+        )]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValueError('El vencimiento documentado es inmutable')
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError('El vencimiento documentado se conserva en el historial')
+
+
+class CommercialPaymentNotice(models.Model):
+    """Idempotent notice record; it never claims external delivery."""
+    CHANNELS = [('whatsapp', 'WhatsApp'), ('email', 'Correo'), ('internal', 'Interna')]
+    STATUSES = [('preparada', 'Preparada'), ('disponible', 'Disponible'), ('fallida', 'Fallida')]
+
+    due = models.ForeignKey(DocumentedPaymentDue, on_delete=models.PROTECT, related_name='notices')
+    channel = models.CharField(max_length=12, choices=CHANNELS)
+    anticipation_days = models.PositiveSmallIntegerField()
+    recipient = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, null=True, blank=True, related_name='commercial_payment_notices',
+    )
+    destination_snapshot = models.CharField(max_length=254, blank=True, default='')
+    source_key = models.CharField(max_length=200, unique=True)
+    status = models.CharField(max_length=12, choices=STATUSES)
+    title = models.CharField(max_length=100)
+    message = models.CharField(max_length=300)
+    error_message = models.CharField(max_length=200, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    available_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'commercial_payment_notices'
+        ordering = ['-created_at', '-id']
+        constraints = [
+            models.CheckConstraint(condition=models.Q(channel__in=['whatsapp', 'email', 'internal']), name='commercial_notice_channel_valid'),
+            models.CheckConstraint(condition=models.Q(anticipation_days__in=[1, 3, 7]), name='commercial_notice_anticipation_valid'),
+            models.CheckConstraint(condition=models.Q(status__in=['preparada', 'disponible', 'fallida']), name='commercial_notice_status_valid'),
+            models.CheckConstraint(
+                condition=(models.Q(status='disponible', available_at__isnull=False) | ~models.Q(status='disponible')),
+                name='commercial_notice_availability_consistent',
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValueError('El registro de aviso comercial es inmutable')
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError('El registro de aviso comercial se conserva en el historial')
 
 
 class ProjectContractedService(models.Model):

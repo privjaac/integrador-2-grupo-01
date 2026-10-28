@@ -78,7 +78,8 @@ class ClientAdmin(admin.ModelAdmin):
     search_fields = ['cupe', 'name', 'document_number', 'email']
 
     # Campos de solo lectura
-    readonly_fields = ['cupe', 'created_at', 'updated_at']
+    # Commercial responsibility is changed only through the audited CRM request flow.
+    readonly_fields = ['cupe', 'created_at', 'updated_at', 'commercial_responsible']
 
     # Orden: los más recientes primero
     ordering = ['-created_at']

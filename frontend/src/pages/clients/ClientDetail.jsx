@@ -6,7 +6,7 @@
 // El historial de cambios se muestra al final de la página.
 // ==============================================================================
 
-import { useState, useEffect } from "react";
+import { useCallback, useState, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { can } from "../../utils/permissions";
@@ -25,6 +25,7 @@ import LoadingSpinner from "../../components/ui/LoadingSpinner";
 import CupeChangeModal from "../../components/ui/CupeChangeModal";
 import ContractedServicesPanel from "./ContractedServicesPanel";
 import ClientPaymentsPanel from "./ClientPaymentsPanel";
+import CommercialObligationsPanel from "./CommercialObligationsPanel";
 
 function DetailRow({ label, value, valueColor }) {
   return (
@@ -132,7 +133,7 @@ export default function ClientDetail() {
 
   // ── CARGA ──────────────────────────────────────────────────────────────────
 
-  const loadClient = async () => {
+  const loadClient = useCallback(async () => {
     try {
       const [clientData, history, crmHistory] = await Promise.all([
         getClientById(id),
@@ -150,11 +151,11 @@ export default function ClientDetail() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [id]);
 
   useEffect(() => {
     loadClient();
-  }, [id]);
+  }, [loadClient]);
 
   // ── DAR DE BAJA ────────────────────────────────────────────────────────────
 
@@ -186,7 +187,7 @@ export default function ClientDetail() {
     try {
       const newCupe = await getNextCupe("client");
       setCupeModal({ isOpen: true, newCupe });
-    } catch (err) {
+    } catch {
       setErrorModal({
         isOpen: true,
         message: "Error al generar el nuevo CUPE.",
@@ -753,6 +754,7 @@ export default function ClientDetail() {
 
       {can(user, "clients", "view") && <ContractedServicesPanel clientId={Number(id)} canManage={user?.role === "L2"} />}
       {can(user, "clients", "view") && (user?.role === "L1" || user?.role === "L2") && <ClientPaymentsPanel clientId={Number(id)} canManage={user?.role === "L2"} />}
+      <CommercialObligationsPanel client={client} user={user} onUpdated={loadClient} />
 
       {/* ── MODALES ─────────────────────────────────────────────────────────── */}
 

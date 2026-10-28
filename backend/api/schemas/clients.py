@@ -116,6 +116,9 @@ class ClientResponse(BaseModel):
     notes: Optional[str]
     created_by_id: Optional[int]        # ID del colaborador que registró al cliente
     created_by_name: Optional[str]      # Nombre del colaborador que registró
+    commercial_responsible_id: Optional[int] = None
+    commercial_responsible_name: Optional[str] = None
+    commercial_responsible_active: Optional[bool] = None
     created_at: datetime
     updated_at: datetime
 
@@ -220,3 +223,21 @@ class PaymentAdjustmentWrite(SafeInputModel):
         if not value:
             raise ValueError('El valor es obligatorio')
         return value
+
+
+class DocumentedPaymentDueCreate(SafeInputModel):
+    service_id: int = Field(gt=0)
+    due_date: date
+    obligation_reference: Optional[str] = Field(default=None, max_length=200)
+    evidence_reference: Optional[str] = Field(default=None, max_length=300)
+
+    @field_validator('obligation_reference', 'evidence_reference', mode='before')
+    @classmethod
+    def trim_optional_due_reference(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode='after')
+    def require_due_reference_or_evidence(self):
+        if not (self.obligation_reference or self.evidence_reference):
+            raise ValueError('Indica una referencia de obligación o una evidencia documental')
+        return self
