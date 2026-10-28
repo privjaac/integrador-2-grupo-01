@@ -101,4 +101,4 @@ def update_elomux_platform(
             )
     except IntegrityError as exc:
         raise HTTPException(status_code=409, detail='Esta plataforma ya se encuentra registrada') from exc
-    return platform_response(platform)\n
+    return platform_response(platform)
