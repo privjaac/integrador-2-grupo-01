@@ -6,6 +6,7 @@ subset of the capabilities allowed for that level.
 """
 
 CAPABILITY_LEVELS = {
+    'notifications.view': {'L1', 'L2', 'L3'},
     'notifications.configure': {'L1', 'L2'},
     'clients.view': {'L1', 'L2', 'L3'},
     'clients.create': {'L1', 'L2'},
@@ -105,6 +106,12 @@ def effective_permissions(role) -> list[str]:
 
 
 ROUTE_CAPABILITIES = {
+    'get_commercial_notice_config': 'notifications.configure',
+    'update_commercial_notice_config': 'notifications.configure',
+    'list_upcoming_commercial_notices': 'notifications.view',
+    'list_commercial_notice_logs': 'notifications.view',
+    'get_commercial_notice_detail': 'notifications.view',
+    'resend_internal_commercial_notice': 'notifications.configure',
     'get_task_deadline_settings': 'notifications.configure',
     'update_task_deadline_settings': 'notifications.configure',
     # Notification handlers enforce the recipient's own task or assigned

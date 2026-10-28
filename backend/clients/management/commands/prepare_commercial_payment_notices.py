@@ -8,15 +8,9 @@ from django.db import transaction
 from django.utils import timezone
 
 from clients.models import (
-    Client, Collaborator, CommercialPaymentNotice, DocumentedPaymentDue, InternalNotification,
+    Client, Collaborator, CommercialPaymentNotice, CommercialPaymentNoticeConfig,
+    DocumentedPaymentDue, InternalNotification,
 )
-
-
-NOTICE_WINDOWS = {
-    'whatsapp': (7, 3, 1),
-    'email': (7,),
-    'internal': (7, 3, 1),
-}
 
 
 class Command(BaseCommand):
@@ -24,15 +18,18 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         today = timezone.localdate()
-        due_dates = {today + timedelta(days=days): days for days in (1, 3, 7)}
+        configs = list(CommercialPaymentNoticeConfig.objects.filter(is_active=True))
+        windows = {config.channel: set(config.anticipation_days) for config in configs}
+        configured_days = set().union(*windows.values()) if windows else set()
+        due_dates = {today + timedelta(days=days): days for days in configured_days}
         candidates = list(DocumentedPaymentDue.objects.filter(
             due_date__in=due_dates, client__status='activo',
         ).values_list('pk', 'due_date'))
         created = 0
         skipped = 0
         for due_id, due_date in candidates:
-            for channel, offsets in NOTICE_WINDOWS.items():
-                days = due_dates.get(due_date)
+            days = due_dates[due_date]
+            for channel, offsets in windows.items():
                 if days not in offsets:
                     continue
                 was_created = self._prepare_one(due_id, channel, days, today)
@@ -43,6 +40,11 @@ class Command(BaseCommand):
     @staticmethod
     def _prepare_one(due_id, channel, days, today):
         with transaction.atomic():
+            config = CommercialPaymentNoticeConfig.objects.select_for_update().filter(
+                channel=channel, is_active=True,
+            ).first()
+            if config is None or days not in config.anticipation_days:
+                return False
             due = DocumentedPaymentDue.objects.select_for_update().select_related(
                 'service',
             ).get(pk=due_id)

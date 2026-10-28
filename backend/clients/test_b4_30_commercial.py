@@ -9,7 +9,8 @@ from api.main import app
 from api.routers.auth import hash_password
 from clients.models import (
     Client, ClientChangeRequest, ClientHistory, Collaborator, CommercialPaymentNotice,
-    ContractedService, DocumentedPaymentDue, InternalNotification, Role, WebCatalog,
+    CommercialPaymentNoticeConfig, ContractedService, DocumentedPaymentDue,
+    InternalNotification, Role, WebCatalog,
 )
 
 class B430CommercialWorkflowTests(TransactionTestCase):
@@ -55,6 +56,14 @@ class B430CommercialWorkflowTests(TransactionTestCase):
             })
             self.assertEqual(response.status_code, 200, response.text)
             self.headers[level] = {'Authorization': f"Bearer {response.json()['access_token']}"}
+
+        # TransactionTestCase flushes data-migration rows between tests.
+        for channel, days in {
+            'whatsapp': [7, 3, 1], 'email': [7], 'internal': [7, 3, 1],
+        }.items():
+            CommercialPaymentNoticeConfig.objects.get_or_create(
+                channel=channel, defaults={'anticipation_days': days, 'is_active': True},
+            )
 
     def test_responsible_assignment_uses_crm_approval_and_preserves_history(self):
         self.people['L5'].is_active = False

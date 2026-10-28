@@ -31,6 +31,7 @@ const ProjectsPage = lazy(() => import("./pages/projects/ProjectsPage"));
 const ProjectExceptionalWorklist = lazy(() => import("./pages/projects/ProjectExceptionalWorklist"));
 const TasksPage = lazy(() => import("./pages/tasks/TasksPage"));
 const TaskDeadlineSettingsPage = lazy(() => import("./pages/notifications/TaskDeadlineSettingsPage"));
+const CommercialNotificationsPage = lazy(() => import("./pages/notifications/CommercialNotificationsPage"));
 
 export default function App() {
   return (
@@ -57,6 +58,7 @@ export default function App() {
             <Route path="/tareas" element={<TasksPage />} />
             <Route path="/tareas/detalle/:taskId" element={<TasksPage />} />
             <Route path="/notificaciones/configuracion" element={<TaskDeadlineSettingsPage />} />
+            <Route path="/notificaciones-alertas" element={<CommercialNotificationsPage />} />
             <Route path="/clientes/nuevo" element={<ClientForm />} />
             <Route path="/clientes/:id" element={<ClientDetail />} />
             <Route path="/clientes/:id/editar" element={<ClientForm />} />

@@ -96,6 +96,7 @@ export const ROLES = {
 
 const PERMISSIONS = {
   notifications: {
+    view: ["L1", "L2", "L3"],
     configure: ["L1", "L2"],
   },
   // ── MÓDULO CLIENTES ──────────────────────────────────────────────────────
@@ -319,6 +320,7 @@ export function canAccessRoute(user, route) {
   const routePermission = {
     "/proyectos/excepcionales": ["projects", "resolveExceptionalCancellation"],
     "/notificaciones/configuracion": ["notifications", "configure"],
+    "/notificaciones-alertas": ["notifications", "view"],
     "/dashboard": ["dashboard", "view"],
     "/clientes": ["clients", "view"],
     "/proyectos": ["projects", "view"],

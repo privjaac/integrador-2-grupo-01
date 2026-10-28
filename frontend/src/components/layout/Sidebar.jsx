@@ -108,6 +108,13 @@ const NAV_ITEMS = [
         icon: <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><rect x="2" y="5" width="20" height="14" rx="2" /><path d="M2 10h20M7 15h3" /></svg>,
       },
       {
+        path: "/notificaciones-alertas",
+        label: "Alertas comerciales",
+        module: "notifications",
+        action: "view",
+        icon: <svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg>,
+      },
+      {
         path: "/notificaciones/configuracion",
         label: "Avisos de tareas",
         module: "notifications",

@@ -16,3 +16,15 @@ test("task deadline settings are available only to L1 and L2 with the capability
   assert.equal(canAccessRoute({ role: "L2", permissions: [] }, "/notificaciones/configuracion"), false);
   assert.equal(canAccessRoute({ role: "L2", permissions: ["notifications.configure"] }, "/notificaciones/configuracion"), true);
 });
+
+test("commercial notifications are visible to L1-L3 and configurable only by L1-L2", () => {
+  for (const role of ["L1", "L2", "L3"]) {
+    assert.equal(can({ role }, "notifications", "view"), true);
+    assert.equal(canAccessRoute({ role }, "/notificaciones-alertas"), true);
+  }
+  for (const role of ["L4", "L5"]) {
+    assert.equal(can({ role }, "notifications", "view"), false);
+    assert.equal(canAccessRoute({ role }, "/notificaciones-alertas"), false);
+  }
+  assert.equal(canAccessRoute({ role: "L3", permissions: [] }, "/notificaciones-alertas"), false);
+});

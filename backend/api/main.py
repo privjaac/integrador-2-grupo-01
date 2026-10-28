@@ -62,6 +62,7 @@ from api.routers import (
     dashboard,
     collaborator_payments,
     notifications,
+    commercial_notifications,
     elomux_platforms,
 )
 
@@ -216,6 +217,13 @@ app.include_router(
     notifications.router,
     prefix='/api/notifications/internal',
     tags=['Notificaciones internas'],
+    dependencies=[Depends(require_route_permission)],
+)
+
+app.include_router(
+    commercial_notifications.router,
+    prefix='/api/notifications',
+    tags=['Avisos comerciales'],
     dependencies=[Depends(require_route_permission)],
 )
 

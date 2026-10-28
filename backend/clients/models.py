@@ -1526,17 +1526,35 @@ class CommercialPaymentNotice(models.Model):
     error_message = models.CharField(max_length=200, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
     available_at = models.DateTimeField(null=True, blank=True)
+    resend_of = models.ForeignKey(
+        'self', on_delete=models.PROTECT, null=True, blank=True, related_name='resend_attempts',
+    )
+    resent_by = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, null=True, blank=True, related_name='commercial_notice_resends',
+    )
+    attempt_number = models.PositiveIntegerField(default=0)
 
     class Meta:
         db_table = 'commercial_payment_notices'
         ordering = ['-created_at', '-id']
         constraints = [
             models.CheckConstraint(condition=models.Q(channel__in=['whatsapp', 'email', 'internal']), name='commercial_notice_channel_valid'),
-            models.CheckConstraint(condition=models.Q(anticipation_days__in=[1, 3, 7]), name='commercial_notice_anticipation_valid'),
+            models.CheckConstraint(condition=models.Q(anticipation_days__gte=1), name='commercial_notice_anticipation_positive'),
             models.CheckConstraint(condition=models.Q(status__in=['preparada', 'disponible', 'fallida']), name='commercial_notice_status_valid'),
             models.CheckConstraint(
                 condition=(models.Q(status='disponible', available_at__isnull=False) | ~models.Q(status='disponible')),
                 name='commercial_notice_availability_consistent',
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(resend_of__isnull=True, resent_by__isnull=True, attempt_number=0)
+                    | models.Q(resend_of__isnull=False, resent_by__isnull=False, attempt_number__gt=0)
+                ),
+                name='commercial_notice_resend_metadata_consistent',
+            ),
+            models.UniqueConstraint(
+                fields=['resend_of', 'attempt_number'], condition=models.Q(resend_of__isnull=False),
+                name='commercial_notice_resend_sequence_unique',
             ),
         ]
 
@@ -1547,6 +1565,50 @@ class CommercialPaymentNotice(models.Model):
 
     def delete(self, *args, **kwargs):
         raise ValueError('El registro de aviso comercial se conserva en el historial')
+
+
+class CommercialPaymentNoticeConfig(models.Model):
+    """Audited per-channel schedule for commercial payment notices."""
+    CHANNELS = [('whatsapp', 'WhatsApp'), ('email', 'Correo'), ('internal', 'Interna')]
+
+    channel = models.CharField(max_length=12, choices=CHANNELS, unique=True)
+    anticipation_days = models.JSONField(default=list)
+    is_active = models.BooleanField(default=True)
+    updated_by = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='commercial_notice_configs_updated',
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'commercial_payment_notice_configs'
+        ordering = ['channel']
+
+
+class CommercialPaymentNoticeConfigEvent(models.Model):
+    config = models.ForeignKey(
+        CommercialPaymentNoticeConfig, on_delete=models.PROTECT, related_name='history',
+    )
+    actor = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='commercial_notice_config_events',
+    )
+    previous_days = models.JSONField()
+    new_days = models.JSONField()
+    previous_active = models.BooleanField()
+    new_active = models.BooleanField()
+    occurred_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'commercial_payment_notice_config_events'
+        ordering = ['-occurred_at', '-id']
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValueError('El historial de configuración de avisos es inmutable')
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError('El historial de configuración de avisos se conserva')
 
 
 class ProjectContractedService(models.Model):
