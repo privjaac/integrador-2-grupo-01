@@ -11,7 +11,7 @@ from api.routers.projects import require_project_creator, require_project_reader
 from api.main import app
 from api.routers.auth import hash_password
 from fastapi.testclient import TestClient
-from clients.models import (Client, Collaborator, Project, ProjectCommercialAuthorization,
+from clients.models import (Client, Collaborator, InternalNotification, Project, ProjectCommercialAuthorization,
                             ProjectCommercialAuthorizationEvent, ProjectCoordination,
                             ProjectCancellation, ProjectCancellationEvent,
                             ProjectDeliveryAuthorization, ProjectDeliveryAuthorizationEvent,
@@ -409,6 +409,19 @@ class ProjectApiTests(TransactionTestCase):
             f'/api/projects/{project.id}/cancellations', headers=self.tokens['L2'], json=payload,
         )
 
+    def evaluate_project_cancellation_commercially(self, project, cancellation_id, **overrides):
+        payload = {
+            'within_l2_competence': True,
+            'commercial_consequences': 'Compromisos revisados; sin efectos financieros automáticos',
+            'effectivity_conditions': 'Condiciones aplicables documentadas',
+            'evidence': 'Evaluación comercial EC-01',
+        }
+        payload.update(overrides)
+        return self.api.post(
+            f'/api/projects/{project.id}/cancellations/{cancellation_id}/commercial-evaluation',
+            headers=self.tokens['L2'], json=payload,
+        )
+
     def test_project_cancellation_requires_l2_scope_l3_review_and_effective_conditions(self):
         project = Project.objects.create(
             client=self.client_record, name='Cancelación ordinaria', scope='Módulos A y B',
@@ -471,6 +484,7 @@ class ProjectApiTests(TransactionTestCase):
             headers=self.tokens['L3'], json={
                 'affected_tasks_assessment': 'Tareas revisadas',
                 'obligations_assessment': 'Obligaciones identificadas', 'evidence': 'Informe técnico',
+                'l1_intervention_required': False,
             },
         )
         self.assertEqual(outside_scope.status_code, 404)
@@ -484,11 +498,30 @@ class ProjectApiTests(TransactionTestCase):
                 'affected_tasks_assessment': 'Se identificaron y conservaron los estados de las tareas',
                 'obligations_assessment': 'Compromisos y obligaciones residuales evaluados',
                 'evidence': 'Informe técnico de cancelación',
+                'l1_intervention_required': False,
             },
         )
         self.assertEqual(evaluated.status_code, 200, evaluated.text)
         self.assertEqual(project.status, 'En ejecución')
         self.assertIn('task_snapshot', evaluated.json()['events'][-1]['data'])
+
+        unrelated_task = Task.objects.create(
+            project=project, title='Aviso urgente ajeno al caso',
+            created_by=Collaborator.objects.get(username='project-api-L2'),
+            responsible=Collaborator.objects.get(username='project-api-L4'),
+        )
+        InternalNotification.objects.create(
+            task=unrelated_task, recipient=Collaborator.objects.get(username='project-api-L2'),
+            notice_type='urgent', title='Aviso urgente no relacionado',
+            message='Este aviso no solicita intervención L1 en la cancelación actual',
+        )
+        commercial = self.evaluate_project_cancellation_commercially(
+            project, cancellation_id,
+            commercial_consequences='Compromisos revisados; no se ordenan pagos ni devoluciones',
+            effectivity_conditions='La condición documentada está satisfecha',
+        )
+        self.assertEqual(commercial.status_code, 200, commercial.text)
+        self.assertEqual(commercial.json()['events'][-1]['event_type'], 'evaluacion_comercial')
 
         decided = self.api.post(
             f'/api/projects/{project.id}/cancellations/{cancellation_id}/decision',
@@ -497,54 +530,41 @@ class ProjectApiTests(TransactionTestCase):
                 'evidence': 'Acta comercial AC-01',
                 'commercial_consequences': 'Compromisos revisados; no se ordenan pagos ni devoluciones',
                 'effectivity_conditions': 'La condición documentada está satisfecha',
-                'planned_effective_at': (timezone.now() + timedelta(hours=1)).isoformat(),
+                'planned_effective_at': (timezone.now() + timedelta(seconds=2)).isoformat(),
             },
         )
-        self.assertEqual(decided.status_code, 409, decided.text)
-        self.assertIn('competencia ordinaria L2 no puede acreditarse', decided.json()['detail'])
+        self.assertEqual(decided.status_code, 200, decided.text)
+        self.assertEqual(decided.json()['events'][-1]['event_type'], 'autorizada')
         persisted_events = list(ProjectCancellationEvent.objects.filter(
             cancellation_id=cancellation_id,
         ).order_by('id'))
-        self.assertEqual([event.event_type for event in persisted_events], ['solicitada', 'evaluacion_tecnica'])
-        self.assertIn('task_snapshot', persisted_events[-1].data)
+        self.assertEqual([event.event_type for event in persisted_events], [
+            'solicitada', 'evaluacion_tecnica', 'evaluacion_comercial', 'autorizada',
+        ])
+        self.assertIn('task_snapshot', persisted_events[1].data)
         project.refresh_from_db()
         self.assertEqual(project.status, 'En ejecución')
-        self.assertEqual(ProjectEvent.objects.filter(project=project).count(), 2)
-        self.assertFalse(ProjectCancellationEvent.objects.filter(
-            cancellation_id=cancellation_id, event_type__in=['autorizada', 'efectiva'],
-        ).exists())
-
-        # Simulate a pre-existing authorization record to prove the effectivity
-        # endpoint independently enforces the same competence guard.
-        l2_actor = Collaborator.objects.get(username='project-api-L2')
-        legacy_authorization = ProjectCancellationEvent.objects.create(
-            cancellation_id=cancellation_id, event_type='autorizada', actor=l2_actor,
-            reason='Registro previo de prueba', evidence='AC-legacy',
-            data={
-                'commercial_consequences': 'Consecuencias registradas',
-                'effectivity_conditions': 'Condición pendiente',
-                'planned_effective_at': (timezone.now() - timedelta(minutes=1)).isoformat(),
-                'authority': 'L2 ordinary cancellation',
-            },
-        )
-        project_event_count = ProjectEvent.objects.filter(project=project).count()
-        before_events = ProjectCancellationEvent.objects.filter(cancellation_id=cancellation_id).count()
-        blocked_effectivity = self.api.post(
+        self.assertEqual(ProjectEvent.objects.filter(project=project).count(), 3)
+        with patch('api.routers.projects.timezone.now', return_value=timezone.now() + timedelta(seconds=3)):
+            effective = self.api.post(
             f'/api/projects/{project.id}/cancellations/{cancellation_id}/effectivity',
             headers=self.tokens['L2'], json={
-                'conditions_satisfied': True, 'reason': 'Intento de efectividad', 'evidence': 'EV-EFFECT',
+                'conditions_satisfied': True, 'reason': 'Condiciones satisfechas', 'evidence': 'EV-EFFECT',
             },
-        )
-        self.assertEqual(blocked_effectivity.status_code, 409, blocked_effectivity.text)
-        self.assertIn('competencia ordinaria L2 no puede acreditarse', blocked_effectivity.json()['detail'])
-        self.assertEqual(ProjectCancellationEvent.objects.filter(cancellation_id=cancellation_id).count(), before_events)
-        self.assertTrue(ProjectCancellationEvent.objects.filter(pk=legacy_authorization.pk).exists())
-        self.assertEqual(ProjectCancellationEvent.objects.filter(
-            cancellation_id=cancellation_id, event_type='efectiva',
-        ).count(), 0)
-        self.assertEqual(ProjectEvent.objects.filter(project=project).count(), project_event_count)
+            )
+        self.assertEqual(effective.status_code, 200, effective.text)
+        effective_event = ProjectCancellationEvent.objects.get(cancellation_id=cancellation_id, event_type='efectiva')
+        self.assertEqual(effective_event.actor_id, Collaborator.objects.get(username='project-api-L2').id)
+        self.assertIsNotNone(effective_event.effective_at)
+        self.assertEqual(ProjectEvent.objects.filter(project=project).count(), 4)
         project.refresh_from_db()
         self.assertEqual(project.status, 'En ejecución')
+        self.assertEqual(Task.objects.get(pk=unrelated_task.id).status, 'Pendiente')
+        with patch('api.routers.tasks.timezone.now', return_value=effective_event.effective_at + timedelta(seconds=1)):
+            blocked_task = self.api.post('/api/tasks/', headers=self.tokens['L3'], json={
+                'project_id': project.id, 'title': 'Nueva tarea luego de cancelación efectiva', 'status': 'Pendiente',
+            })
+        self.assertEqual(blocked_task.status_code, 409, blocked_task.text)
 
     def test_project_cancellation_future_effectivity_and_denial_preserve_history(self):
         project = Project.objects.create(
@@ -558,8 +578,13 @@ class ProjectApiTests(TransactionTestCase):
             headers=self.tokens['L3'], json={
                 'affected_tasks_assessment': 'Tareas analizadas',
                 'obligations_assessment': 'Obligaciones conservadas', 'evidence': 'EV-1',
+                'l1_intervention_required': False,
             },
         )
+        commercial = self.evaluate_project_cancellation_commercially(
+            project, cancellation_id, commercial_consequences='Evaluadas', effectivity_conditions='Fecha acordada',
+        )
+        self.assertEqual(commercial.status_code, 200, commercial.text)
         future = self.api.post(
             f'/api/projects/{project.id}/cancellations/{cancellation_id}/decision',
             headers=self.tokens['L2'], json={
@@ -568,8 +593,8 @@ class ProjectApiTests(TransactionTestCase):
                 'planned_effective_at': (timezone.now() + timedelta(hours=1)).isoformat(),
             },
         )
-        self.assertEqual(future.status_code, 409, future.text)
-        self.assertFalse(ProjectCancellationEvent.objects.filter(
+        self.assertEqual(future.status_code, 200, future.text)
+        self.assertTrue(ProjectCancellationEvent.objects.filter(
             cancellation_id=cancellation_id, event_type='autorizada',
         ).exists())
         premature = self.api.post(
@@ -593,6 +618,7 @@ class ProjectApiTests(TransactionTestCase):
             headers=self.tokens['L3'], json={
                 'affected_tasks_assessment': 'Tareas evaluadas',
                 'obligations_assessment': 'Obligaciones evaluadas', 'evidence': 'EV-DENY',
+                'l1_intervention_required': False,
             },
         )
         denial = self.api.post(
@@ -613,6 +639,184 @@ class ProjectApiTests(TransactionTestCase):
         self.assertEqual(ProjectEvent.objects.filter(project=denied_project).count(), 3)
         self.assertFalse(ProjectCancellationEvent.objects.filter(
             cancellation_id=denied_case.json()['id'], event_type='efectiva',
+        ).exists())
+
+    def test_l3_documented_exception_blocks_l2_and_cannot_be_overridden(self):
+        project = Project.objects.create(
+            client=self.client_record, name='Excepción técnica L1', status='En ejecución', scope='Alcance completo',
+        )
+        self.coordinate_l3(project)
+        requested = self.open_project_cancellation(project)
+        cancellation_id = requested.json()['id']
+        technical = self.api.post(
+            f'/api/projects/{project.id}/cancellations/{cancellation_id}/technical-evaluation',
+            headers=self.tokens['L3'], json={
+                'affected_tasks_assessment': 'Evaluación técnica completa',
+                'obligations_assessment': 'Obligaciones identificadas', 'evidence': 'Informe técnico EX-1',
+                'l1_intervention_required': True, 'l1_exception_reason': 'Impacto fuera del tratamiento ordinario',
+            },
+        )
+        self.assertEqual(technical.status_code, 200, technical.text)
+        commercial = self.evaluate_project_cancellation_commercially(project, cancellation_id)
+        self.assertEqual(commercial.status_code, 200, commercial.text)
+        attempt = self.api.post(
+            f'/api/projects/{project.id}/cancellations/{cancellation_id}/decision',
+            headers=self.tokens['L2'], json={
+                'authorized': True, 'reason': 'Intento de autorización', 'evidence': 'ACTA-EX-1',
+                'commercial_consequences': 'Compromisos revisados; sin efectos financieros automáticos',
+                'effectivity_conditions': 'Condiciones aplicables documentadas',
+                'planned_effective_at': (timezone.now() + timedelta(hours=1)).isoformat(),
+            },
+        )
+        self.assertEqual(attempt.status_code, 409, attempt.text)
+        self.assertIn('requiere intervención L1', attempt.json()['detail'])
+        self.assertEqual(
+            list(ProjectCancellationEvent.objects.filter(cancellation_id=cancellation_id).values_list('event_type', flat=True)),
+            ['solicitada', 'evaluacion_tecnica', 'evaluacion_comercial'],
+        )
+        self.assertEqual(Project.objects.get(pk=project.id).status, 'En ejecución')
+
+    def test_l2_commercial_overreach_is_historical_and_blocks_self_override(self):
+        project = Project.objects.create(
+            client=self.client_record, name='Exceso comercial L2', status='En ejecución', scope='Alcance completo',
+        )
+        self.coordinate_l3(project)
+        requested = self.open_project_cancellation(project)
+        cancellation_id = requested.json()['id']
+        technical = self.api.post(
+            f'/api/projects/{project.id}/cancellations/{cancellation_id}/technical-evaluation',
+            headers=self.tokens['L3'], json={
+                'affected_tasks_assessment': 'Sin excepción técnica identificada',
+                'obligations_assessment': 'Obligaciones revisadas', 'evidence': 'Informe técnico OK',
+                'l1_intervention_required': False,
+            },
+        )
+        self.assertEqual(technical.status_code, 200, technical.text)
+        commercial = self.evaluate_project_cancellation_commercially(
+            project, cancellation_id, within_l2_competence=False,
+            commercial_consequences='Consecuencias fuera de facultades L2',
+        )
+        self.assertEqual(commercial.status_code, 200, commercial.text)
+        self.assertEqual(commercial.json()['events'][-1]['event_type'], 'escalamiento_l1')
+        override = self.evaluate_project_cancellation_commercially(project, cancellation_id)
+        self.assertEqual(override.status_code, 409, override.text)
+        attempt = self.api.post(
+            f'/api/projects/{project.id}/cancellations/{cancellation_id}/decision',
+            headers=self.tokens['L2'], json={
+                'authorized': True, 'reason': 'Intento de normalización', 'evidence': 'ACTA-OVERRIDE',
+                'commercial_consequences': 'Compromisos revisados; sin efectos financieros automáticos',
+                'effectivity_conditions': 'Condiciones aplicables documentadas',
+                'planned_effective_at': (timezone.now() + timedelta(hours=1)).isoformat(),
+            },
+        )
+        self.assertEqual(attempt.status_code, 409, attempt.text)
+        self.assertFalse(ProjectCancellationEvent.objects.filter(
+            cancellation_id=cancellation_id, event_type='autorizada',
+        ).exists())
+
+    def test_formal_linked_l1_escalation_blocks_authorization_and_is_idempotent(self):
+        project = Project.objects.create(
+            client=self.client_record, name='Comunicación L1', status='En ejecución', scope='Alcance completo',
+        )
+        self.coordinate_l3(project)
+        requested = self.open_project_cancellation(project)
+        cancellation_id = requested.json()['id']
+        technical = self.api.post(
+            f'/api/projects/{project.id}/cancellations/{cancellation_id}/technical-evaluation',
+            headers=self.tokens['L3'], json={
+                'affected_tasks_assessment': 'Sin excepción técnica conocida',
+                'obligations_assessment': 'Obligaciones evaluadas', 'evidence': 'Informe técnico',
+                'l1_intervention_required': False,
+            },
+        )
+        self.assertEqual(technical.status_code, 200, technical.text)
+        commercial = self.evaluate_project_cancellation_commercially(project, cancellation_id)
+        self.assertEqual(commercial.status_code, 200, commercial.text)
+        escalation_payload = {
+            'reason': 'Comunicación solicita intervención L1',
+            'source_origin': 'Documento recibido e incorporado al expediente',
+            'source_reference': 'DOC-L1-2026-01',
+            'received_at': timezone.now().isoformat(),
+            'evidence': 'Expediente/ANEXO-L1-01',
+        }
+        route = f'/api/projects/{project.id}/cancellations/{cancellation_id}/escalations/l1'
+        escalated = self.api.post(route, headers=self.tokens['L2'], json=escalation_payload)
+        self.assertEqual(escalated.status_code, 200, escalated.text)
+        event = ProjectCancellationEvent.objects.get(cancellation_id=cancellation_id, event_type='escalamiento_l1')
+        self.assertEqual(event.actor.username, 'project-api-L2')
+        self.assertEqual(event.data['source_reference'], 'DOC-L1-2026-01')
+        duplicate = self.api.post(route, headers=self.tokens['L2'], json=escalation_payload)
+        self.assertEqual(duplicate.status_code, 409, duplicate.text)
+        forbidden_l3_escalation = self.api.post(route, headers=self.tokens['L3'], json={
+            **escalation_payload, 'source_reference': 'DOC-L1-L3-UNAUTHORIZED',
+        })
+        self.assertEqual(forbidden_l3_escalation.status_code, 403, forbidden_l3_escalation.text)
+        attempt = self.api.post(
+            f'/api/projects/{project.id}/cancellations/{cancellation_id}/decision',
+            headers=self.tokens['L2'], json={
+                'authorized': True, 'reason': 'No se puede superar el escalamiento', 'evidence': 'ACTA-ESC',
+                'commercial_consequences': 'Compromisos revisados; sin efectos financieros automáticos',
+                'effectivity_conditions': 'Condiciones aplicables documentadas',
+                'planned_effective_at': (timezone.now() + timedelta(hours=1)).isoformat(),
+            },
+        )
+        self.assertEqual(attempt.status_code, 409, attempt.text)
+        self.assertEqual(Project.objects.get(pk=project.id).status, 'En ejecución')
+        self.assertFalse(ProjectCancellationEvent.objects.filter(
+            cancellation_id=cancellation_id, event_type='autorizada',
+        ).exists())
+
+    def test_escalation_and_authorization_orders_keep_effectivity_blocked(self):
+        project = Project.objects.create(
+            client=self.client_record, name='Orden autorización y escalamiento',
+            status='En ejecución', scope='Alcance completo',
+        )
+        self.coordinate_l3(project)
+        requested = self.open_project_cancellation(project)
+        cancellation_id = requested.json()['id']
+        self.api.post(
+            f'/api/projects/{project.id}/cancellations/{cancellation_id}/technical-evaluation',
+            headers=self.tokens['L3'], json={
+                'affected_tasks_assessment': 'Sin excepción técnica',
+                'obligations_assessment': 'Obligaciones evaluadas', 'evidence': 'EV-ORDER',
+                'l1_intervention_required': False,
+            },
+        )
+        self.evaluate_project_cancellation_commercially(project, cancellation_id)
+        decision_body = {
+            'authorized': True, 'reason': 'Autorización anterior al aviso', 'evidence': 'ACTA-ORDER',
+            'commercial_consequences': 'Compromisos revisados; sin efectos financieros automáticos',
+            'effectivity_conditions': 'Condiciones aplicables documentadas',
+            'planned_effective_at': (timezone.now() + timedelta(hours=1)).isoformat(),
+        }
+        authorized = self.api.post(
+            f'/api/projects/{project.id}/cancellations/{cancellation_id}/decision',
+            headers=self.tokens['L2'], json=decision_body,
+        )
+        self.assertEqual(authorized.status_code, 200, authorized.text)
+        escalation = self.api.post(
+            f'/api/projects/{project.id}/cancellations/{cancellation_id}/escalations/l1',
+            headers=self.tokens['L2'], json={
+                'reason': 'Llegó solicitud formal de intervención L1',
+                'source_origin': 'Expediente del proyecto', 'source_reference': 'DOC-ORDER-01',
+                'received_at': timezone.now().isoformat(), 'evidence': 'EXP-ORDER-ANEXO-01',
+            },
+        )
+        self.assertEqual(escalation.status_code, 200, escalation.text)
+        effective = self.api.post(
+            f'/api/projects/{project.id}/cancellations/{cancellation_id}/effectivity',
+            headers=self.tokens['L2'], json={
+                'conditions_satisfied': True, 'reason': 'Intento posterior al escalamiento', 'evidence': 'EV-ORDER-2',
+            },
+        )
+        self.assertEqual(effective.status_code, 409, effective.text)
+        self.assertEqual(
+            list(ProjectCancellationEvent.objects.filter(cancellation_id=cancellation_id).values_list('event_type', flat=True)),
+            ['solicitada', 'evaluacion_tecnica', 'evaluacion_comercial', 'autorizada', 'escalamiento_l1'],
+        )
+        self.assertEqual(Project.objects.get(pk=project.id).status, 'En ejecución')
+        self.assertFalse(ProjectCancellationEvent.objects.filter(
+            cancellation_id=cancellation_id, event_type='efectiva',
         ).exists())
 
     def test_l2_authorization_and_scoped_l3_start_are_explicit_and_historical(self):

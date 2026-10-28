@@ -12,6 +12,7 @@ from api.schemas.projects import (
     ProjectCommercialAuthorizationCreate, ProjectCommercialAuthorizationWithdrawal,
     ProjectCancellationCreate, ProjectCancellationDecision,
     ProjectCancellationEffectivity, ProjectCancellationTechnicalEvaluation,
+    ProjectCancellationCommercialEvaluation, ProjectCancellationL1Escalation,
     ProjectCreate, ProjectDeliveryAuthorizationCreate, ProjectExecutionReturn,
     ProjectDeliveryCreate, ProjectDeliveryFormalizeInput, ProjectDeliveryTechnicalReviewInput,
     ProjectReadyForDeliveryInput, ProjectResponse, ProjectStartReadiness,
@@ -94,17 +95,37 @@ def cancellation_is_open(cancellation: ProjectCancellation) -> bool:
     return latest is None or latest.event_type not in {'denegada', 'efectiva'}
 
 
-def require_accredited_ordinary_cancellation_competence() -> None:
-    # DEC-B4-23-COMP-01: PR-04.2/TR-01.3.3 assign ordinary cases to L2,
-    # but no ratified positive criteria currently distinguish them from L1 cases.
-    # A role check, L3 review, or L2-authored declaration cannot fill that gap.
-    raise HTTPException(
-        status_code=409,
-        detail=(
-            'La competencia ordinaria L2 no puede acreditarse con criterios funcionales ratificados; '
-            'la solicitud permanece pendiente de determinación'
-        ),
-    )
+def require_accredited_ordinary_cancellation_competence(cancellation: ProjectCancellation) -> dict:
+    """Enforce DEC-B4-23-COMP-01/02 from immutable, case-linked evaluations."""
+    events = list(cancellation.events.order_by('occurred_at', 'id'))
+    technical = next((item for item in events if item.event_type == 'evaluacion_tecnica'), None)
+    commercial = next((item for item in reversed(events) if item.event_type == 'evaluacion_comercial'), None)
+    if technical is None or 'l1_intervention_required' not in technical.data:
+        raise HTTPException(
+            status_code=409,
+            detail='La evaluación técnica no acredita si el caso requiere intervención L1',
+        )
+    if technical.data.get('l1_intervention_required') is not False:
+        if technical.data.get('l1_intervention_required') is not True:
+            raise HTTPException(
+                status_code=409,
+                detail='La evaluación técnica no acredita de forma válida la competencia ordinaria L2',
+            )
+        raise HTTPException(
+            status_code=409,
+            detail='La evaluación técnica documenta una excepción que requiere intervención L1',
+        )
+    if any(item.event_type == 'escalamiento_l1' for item in events):
+        raise HTTPException(
+            status_code=409,
+            detail='Existe un escalamiento formal vigente que requiere intervención L1',
+        )
+    if commercial is None or commercial.data.get('within_l2_competence') is not True:
+        raise HTTPException(
+            status_code=409,
+            detail='La evaluación comercial no acredita que el caso permanezca dentro de la competencia L2',
+        )
+    return commercial.data
 
 
 def cancellation_response(cancellation: ProjectCancellation) -> dict:
@@ -1341,7 +1362,7 @@ def evaluate_project_cancellation(
             ).first()
             if cancellation is None:
                 raise HTTPException(status_code=404, detail='Solicitud de cancelación no encontrada')
-            if cancellation_latest_event(cancellation).event_type != 'solicitada':
+            if cancellation_latest_event(cancellation).event_type not in {'solicitada', 'escalamiento_l1'}:
                 raise HTTPException(status_code=409, detail='La solicitud ya recibió una evaluación o decisión')
             task_snapshot, _tasks = current_task_snapshot(project.id, lock=True)
             event = ProjectCancellationEvent.objects.create(
@@ -1351,6 +1372,8 @@ def evaluate_project_cancellation(
                 data={
                     'affected_tasks_assessment': payload.affected_tasks_assessment,
                     'obligations_assessment': payload.obligations_assessment,
+                    'l1_intervention_required': payload.l1_intervention_required,
+                    'l1_exception_reason': payload.l1_exception_reason,
                     'task_snapshot': task_snapshot,
                 },
             )
@@ -1361,6 +1384,96 @@ def evaluate_project_cancellation(
             })
     except IntegrityError:
         raise HTTPException(status_code=409, detail='No se pudo registrar la evaluación técnica')
+    return cancellation_response(ProjectCancellation.objects.select_related('opened_by').prefetch_related(
+        'events__actor',
+    ).get(pk=cancellation_id))
+
+
+@router.post('/{project_id}/cancellations/{cancellation_id}/commercial-evaluation')
+def evaluate_project_cancellation_commercially(
+    project_id: int, cancellation_id: int, payload: ProjectCancellationCommercialEvaluation,
+    user: dict = Depends(get_current_user),
+):
+    actor = active_l2_actor(user)
+    try:
+        with transaction.atomic():
+            project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
+            if project is None:
+                raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+            cancellation = ProjectCancellation.objects.select_for_update(of=('self',)).filter(
+                pk=cancellation_id, project=project,
+            ).first()
+            if cancellation is None:
+                raise HTTPException(status_code=404, detail='Solicitud de cancelación no encontrada')
+            latest = cancellation_latest_event(cancellation)
+            if latest is None or latest.event_type not in {'evaluacion_tecnica', 'escalamiento_l1'}:
+                raise HTTPException(status_code=409, detail='L3 debe evaluar técnicamente antes de la evaluación comercial L2')
+            if any(
+                item.data.get('source') == 'evaluacion_comercial_l2'
+                for item in cancellation.events.filter(event_type__in=['evaluacion_comercial', 'escalamiento_l1'])
+            ):
+                raise HTTPException(status_code=409, detail='La evaluación comercial ya fue registrada')
+            if not payload.within_l2_competence:
+                event_type = 'escalamiento_l1'
+                reason = 'La evaluación comercial identifica consecuencias fuera de la competencia ordinaria L2'
+            else:
+                event_type = 'evaluacion_comercial'
+                reason = 'Evaluación comercial dentro de la competencia ordinaria L2'
+            ProjectCancellationEvent.objects.create(
+                cancellation=cancellation, event_type=event_type, actor=actor,
+                reason=reason, evidence=payload.evidence,
+                data={
+                    'within_l2_competence': payload.within_l2_competence,
+                    'commercial_consequences': payload.commercial_consequences,
+                    'effectivity_conditions': payload.effectivity_conditions,
+                    'l1_escalation_required': not payload.within_l2_competence,
+                    'source': 'evaluacion_comercial_l2',
+                },
+            )
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail='No se pudo registrar la evaluación comercial')
+    return cancellation_response(ProjectCancellation.objects.select_related('opened_by').prefetch_related(
+        'events__actor',
+    ).get(pk=cancellation_id))
+
+
+@router.post('/{project_id}/cancellations/{cancellation_id}/escalations/l1')
+def record_project_cancellation_l1_escalation(
+    project_id: int, cancellation_id: int, payload: ProjectCancellationL1Escalation,
+    user: dict = Depends(get_current_user),
+):
+    actor = active_l2_actor(user)
+    try:
+        with transaction.atomic():
+            project = Project.objects.select_for_update(of=('self',)).filter(pk=project_id).first()
+            if project is None:
+                raise HTTPException(status_code=404, detail='Proyecto no encontrado')
+            cancellation = ProjectCancellation.objects.select_for_update(of=('self',)).filter(
+                pk=cancellation_id, project=project,
+            ).first()
+            if cancellation is None:
+                raise HTTPException(status_code=404, detail='Solicitud de cancelación no encontrada')
+            latest = cancellation_latest_event(cancellation)
+            if latest is None or latest.event_type in {'denegada', 'efectiva'}:
+                raise HTTPException(status_code=409, detail='El caso ya no admite nuevos escalamientos')
+            duplicate = any(
+                item.data.get('source_reference') == payload.source_reference
+                for item in cancellation.events.filter(event_type='escalamiento_l1')
+            )
+            if duplicate:
+                raise HTTPException(status_code=409, detail='La referencia de escalamiento ya está registrada')
+            ProjectCancellationEvent.objects.create(
+                cancellation=cancellation, event_type='escalamiento_l1', actor=actor,
+                reason=payload.reason, evidence=payload.evidence,
+                data={
+                    'requests_l1_intervention': True,
+                    'source_origin': payload.source_origin,
+                    'source_reference': payload.source_reference,
+                    'received_at': payload.received_at.isoformat(),
+                },
+            )
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail='No se pudo registrar el escalamiento formal')
     return cancellation_response(ProjectCancellation.objects.select_related('opened_by').prefetch_related(
         'events__actor',
     ).get(pk=cancellation_id))
@@ -1383,13 +1496,22 @@ def decide_project_cancellation(
             if cancellation is None:
                 raise HTTPException(status_code=404, detail='Solicitud de cancelación no encontrada')
             latest = cancellation_latest_event(cancellation)
-            if latest is None or latest.event_type != 'evaluacion_tecnica':
+            if latest is None or latest.event_type not in {
+                'evaluacion_tecnica', 'evaluacion_comercial', 'escalamiento_l1',
+            }:
                 raise HTTPException(status_code=409, detail='L3 debe evaluar primero las consecuencias técnicas')
             if not payload.authorized:
                 event_type = 'denegada'
                 data = {'commercial_consequences': 'No se autorizó la cancelación ordinaria'}
             else:
-                require_accredited_ordinary_cancellation_competence()
+                if latest.event_type != 'evaluacion_comercial':
+                    raise HTTPException(status_code=409, detail='Se requiere una evaluación comercial L2 vigente antes de autorizar')
+                commercial = require_accredited_ordinary_cancellation_competence(cancellation)
+                if (
+                    payload.commercial_consequences != commercial.get('commercial_consequences')
+                    or payload.effectivity_conditions != commercial.get('effectivity_conditions')
+                ):
+                    raise HTTPException(status_code=409, detail='La autorización debe conservar la evaluación comercial registrada')
                 ensure_project_not_cancelled(project_id)
                 if ProjectCancellation.objects.filter(project=project).exclude(pk=cancellation_id).filter(
                     events__event_type='efectiva', events__effective_at__lte=timezone.now(),
@@ -1437,7 +1559,7 @@ def record_project_cancellation_effectivity(
             latest = cancellation_latest_event(cancellation)
             if latest is None or latest.event_type != 'autorizada':
                 raise HTTPException(status_code=409, detail='Solo una cancelación autorizada puede hacerse efectiva')
-            require_accredited_ordinary_cancellation_competence()
+            require_accredited_ordinary_cancellation_competence(cancellation)
             effective_at = timezone.now()
             planned = datetime.fromisoformat(latest.data['planned_effective_at'])
             if planned > effective_at:

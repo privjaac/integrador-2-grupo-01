@@ -135,6 +135,8 @@ ROUTE_CAPABILITIES = {
     'open_project_cancellation': 'projects.requestProjectCancellation',
     'evaluate_project_cancellation': 'projects.evaluateProjectCancellation',
     'decide_project_cancellation': 'projects.resolveProjectCancellation',
+    'evaluate_project_cancellation_commercially': 'projects.resolveProjectCancellation',
+    'record_project_cancellation_l1_escalation': 'projects.resolveProjectCancellation',
     'record_project_cancellation_effectivity': 'projects.resolveProjectCancellation',
     # Tasks and project coordination.
     'get_task_context': 'tasks.view', 'list_tasks': 'tasks.view', 'get_task': 'tasks.view',

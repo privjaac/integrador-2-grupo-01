@@ -342,6 +342,8 @@ class ProjectCancellationTechnicalEvaluation(SafeInputModel):
     affected_tasks_assessment: str = Field(min_length=1)
     obligations_assessment: str = Field(min_length=1)
     evidence: str = Field(min_length=1)
+    l1_intervention_required: bool
+    l1_exception_reason: str | None = None
 
     @field_validator('affected_tasks_assessment', 'obligations_assessment', 'evidence')
     @classmethod
@@ -349,6 +351,57 @@ class ProjectCancellationTechnicalEvaluation(SafeInputModel):
         if not value.strip():
             raise ValueError('La evaluación técnica debe documentar tareas, obligaciones y evidencia')
         return value.strip()
+
+    @field_validator('l1_exception_reason')
+    @classmethod
+    def normalize_l1_exception_reason(cls, value):
+        if value is not None and not value.strip():
+            raise ValueError('La excepción técnica requiere una explicación no vacía')
+        return value.strip() if value is not None else value
+
+    @model_validator(mode='after')
+    def validate_l1_exception(self):
+        if self.l1_intervention_required and not self.l1_exception_reason:
+            raise ValueError('Una intervención L1 requerida debe documentar la circunstancia técnica')
+        if not self.l1_intervention_required and self.l1_exception_reason:
+            raise ValueError('No se puede registrar una excepción técnica si no requiere L1')
+        return self
+
+
+class ProjectCancellationCommercialEvaluation(SafeInputModel):
+    within_l2_competence: bool
+    commercial_consequences: str = Field(min_length=1)
+    effectivity_conditions: str = Field(min_length=1)
+    evidence: str = Field(min_length=1)
+
+    @field_validator('commercial_consequences', 'effectivity_conditions', 'evidence')
+    @classmethod
+    def reject_blank_commercial_evaluation(cls, value):
+        if not value.strip():
+            raise ValueError('La evaluación comercial requiere consecuencias, condiciones y evidencia')
+        return value.strip()
+
+
+class ProjectCancellationL1Escalation(SafeInputModel):
+    reason: str = Field(min_length=1)
+    source_origin: str = Field(min_length=1, max_length=200)
+    source_reference: str = Field(min_length=1, max_length=200)
+    received_at: datetime
+    evidence: str = Field(min_length=1)
+
+    @field_validator('reason', 'source_origin', 'source_reference', 'evidence')
+    @classmethod
+    def reject_blank_escalation_details(cls, value):
+        if not value.strip():
+            raise ValueError('El escalamiento requiere procedencia, referencia, motivo y evidencia verificables')
+        return value.strip()
+
+    @field_validator('received_at')
+    @classmethod
+    def require_aware_escalation_date(cls, value):
+        if value.utcoffset() is None:
+            raise ValueError('La fecha de recepción debe incluir zona horaria')
+        return value
 
 
 class ProjectCancellationDecision(SafeInputModel):

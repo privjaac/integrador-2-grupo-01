@@ -674,6 +674,8 @@ class ProjectCancellationEvent(models.Model):
     EVENT_CHOICES = [
         ('solicitada', 'Cancelación solicitada'),
         ('evaluacion_tecnica', 'Evaluación técnica'),
+        ('evaluacion_comercial', 'Evaluación comercial'),
+        ('escalamiento_l1', 'Escalamiento formal a L1'),
         ('autorizada', 'Cancelación autorizada'),
         ('denegada', 'Cancelación denegada'),
         ('efectiva', 'Cancelación efectiva'),
