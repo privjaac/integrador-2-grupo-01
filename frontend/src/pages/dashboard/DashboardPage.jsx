@@ -10,12 +10,20 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { getClients } from "../../api/clients";
-import { getCollaborators } from "../../api/users";
-import { formatPrice } from "../../utils/formatPrice";
+import { useAuth } from "../../hooks/useAuth";
+import { getDashboardSummary } from "../../api/dashboard";
 import { formatDate } from "../../utils/formatDate";
 import Badge from "../../components/ui/Badge";
 import LoadingSpinner from "../../components/ui/LoadingSpinner";
+import ActiveServicesList from "./ActiveServicesList";
+
+function formatCurrencyAmount(amount, currency) {
+  try {
+    return new Intl.NumberFormat("es-PE", { style: "currency", currency }).format(Number(amount) || 0);
+  } catch {
+    return `${currency} ${(Number(amount) || 0).toFixed(2)}`;
+  }
+}
 
 const MONTHS_SHORT = [
   "Ene",
@@ -74,11 +82,12 @@ function getYTicks(maxVal) {
   return ticks;
 }
 
-function fmtY(v, isPrice) {
+function fmtY(v, isPrice, currency = "PEN") {
   if (isPrice) {
-    if (v >= 1000000) return `S/${(v / 1000000).toFixed(1)}M`;
-    if (v >= 1000) return `S/${(v / 1000).toFixed(0)}k`;
-    return `S/${v}`;
+    const prefix = currency === "PEN" ? "S/" : `${currency} `;
+    if (v >= 1000000) return `${prefix}${(v / 1000000).toFixed(1)}M`;
+    if (v >= 1000) return `${prefix}${(v / 1000).toFixed(0)}k`;
+    return `${prefix}${v}`;
   }
   return String(Math.round(v));
 }
@@ -461,6 +470,7 @@ function LineChart({
   height = 180,
   isPrice = false,
   chartId = "lc",
+  currency = "PEN",
 }) {
   if (!data?.length || data.length < 2)
     return (
@@ -543,7 +553,7 @@ function LineChart({
                 fill: "#8892a4",
               }}
             >
-              {fmtY(tick, isPrice)}
+              {fmtY(tick, isPrice, currency)}
             </text>
           </g>
         );
@@ -1051,9 +1061,16 @@ function ClientList({ clients, navigate }) {
 
 export default function DashboardPage() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [clients, setClients] = useState([]);
-  const [collaborators, setCollaborators] = useState([]);
+  const [collaboratorCounts, setCollaboratorCounts] = useState({ total: 0, active: 0, inactive: 0 });
+  const [serviceIndicators, setServiceIndicators] = useState({
+    active: [], upcoming_expirations_30_days: [], upcoming_recurrences_30_days: [], expired: [],
+  });
+  const [monthlyRevenue, setMonthlyRevenue] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const canViewFinance = ["L1", "L2"].includes(user?.role);
 
   const now = new Date();
   const currentYear = now.getFullYear();
@@ -1070,19 +1087,19 @@ export default function DashboardPage() {
   const [ncFrom, setNcFrom] = useState(0);
   const [ncTo, setNcTo] = useState(11);
 
-  // Filtros gráfico ingresos
-  const [incYear, setIncYear] = useState("all");
-  const [incFrom, setIncFrom] = useState(0);
-  const [incTo, setIncTo] = useState(11);
-
   useEffect(() => {
     const load = async () => {
       setIsLoading(true);
       try {
-        const [c, col] = await Promise.all([getClients(), getCollaborators()]);
-        setClients(c.clients || c);
-        setCollaborators(col);
+        const summary = await getDashboardSummary();
+        setClients(summary.clients || []);
+        setCollaboratorCounts(summary.collaborators || { total: 0, active: 0, inactive: 0 });
+        setServiceIndicators(summary.services || {
+          active: [], upcoming_expirations_30_days: [], upcoming_recurrences_30_days: [], expired: [],
+        });
+        setMonthlyRevenue(summary.monthly_revenue || []);
       } catch {
+        setLoadError(true);
       } finally {
         setIsLoading(false);
       }
@@ -1157,39 +1174,23 @@ export default function DashboardPage() {
           c.registration_date &&
           new Date(c.registration_date).getFullYear() === currentYear,
       ).length,
-      colaboradoresActivos: collaborators.filter((c) => c.is_active).length,
-      colaboradoresInactivos: collaborators.filter((c) => !c.is_active).length,
-      colaboradoresTotal: collaborators.length,
+      colaboradoresActivos: collaboratorCounts.active,
+      colaboradoresInactivos: collaboratorCounts.inactive,
+      colaboradoresTotal: collaboratorCounts.total,
     }),
-    [filtered, collaborators],
+    [filtered, collaboratorCounts],
   );
 
-  // Ingresos KPIs
-  const kpiIngresos = useMemo(() => {
-    const mes = filtered
-      .filter((c) => {
-        if (!c.registration_date) return false;
-        const d = new Date(c.registration_date);
-        return (
-          d.getMonth() === now.getMonth() &&
-          d.getFullYear() === now.getFullYear()
-        );
-      })
-      .reduce((s, c) => s + (parseFloat(c.total_price) || 0), 0);
-    const anio = filtered
-      .filter(
-        (c) =>
-          c.registration_date &&
-          new Date(c.registration_date).getFullYear() === currentYear,
-      )
-      .reduce((s, c) => s + (parseFloat(c.total_price) || 0), 0);
-    const meses = now.getMonth() + 1;
-    return {
-      mes,
-      anio,
-      proyectado: anio + (anio / (meses || 1)) * (12 - meses),
-    };
-  }, [filtered]);
+  const revenueSeries = useMemo(() => monthlyRevenue.map((series) => ({
+    currency: series.currency,
+    months: (series.months || []).map((month) => ({ ...month, value: Number(month.amount) || 0 })),
+  })), [monthlyRevenue]);
+
+  const monthlyTotals = useMemo(() => revenueSeries.map((series) => ({
+    ...series,
+    currentMonth: Number(series.months.find((item) => item.period === `${currentYear}-${String(currentMonth + 1).padStart(2, "0")}`)?.amount) || 0,
+    currentYear: series.months.filter((item) => item.period.startsWith(`${currentYear}-`)).reduce((sum, item) => sum + item.value, 0),
+  })), [revenueSeries, currentYear, currentMonth]);
 
   // Tortas
   const pieAlquilerEstado = useMemo(
@@ -1286,20 +1287,6 @@ export default function DashboardPage() {
     [filtered, ncYear, ncFrom, ncTo, availableYears],
   );
 
-  const incomeByMonth = useMemo(
-    () =>
-      buildMonthlyData(incYear, incFrom, incTo, (yr, m) =>
-        filtered
-          .filter((c) => {
-            if (!c.registration_date) return false;
-            const d = new Date(c.registration_date);
-            return d.getFullYear() === yr && d.getMonth() === m;
-          })
-          .reduce((s, c) => s + (parseFloat(c.total_price) || 0), 0),
-      ),
-    [filtered, incYear, incFrom, incTo, availableYears],
-  );
-
   // Top 10
   const top10Ventas = useMemo(() => {
     const count = {};
@@ -1339,26 +1326,16 @@ export default function DashboardPage() {
     [filtered, kpis],
   );
 
-  const venc = useMemo(() => {
-    const en5 = new Date(now);
-    en5.setDate(en5.getDate() + 5);
-    const en30 = new Date(now);
-    en30.setDate(en30.getDate() + 30);
-    return {
-      v5: clients.filter(
-        (c) =>
-          c.next_payment_date &&
-          new Date(c.next_payment_date) <= en5 &&
-          new Date(c.next_payment_date) >= now,
-      ),
-      v30: clients.filter(
-        (c) =>
-          c.next_payment_date &&
-          new Date(c.next_payment_date) <= en30 &&
-          new Date(c.next_payment_date) >= now,
-      ),
-    };
-  }, [clients]);
+  const venc = useMemo(() => ({
+    v5: serviceIndicators.upcoming_expirations_30_days.filter((item) => {
+      const due = new Date(`${item.documented_expiration}T12:00:00`);
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12);
+      return Math.ceil((due - today) / 86400000) <= 5;
+    }),
+    v30: serviceIndicators.upcoming_expirations_30_days,
+    recurrences: serviceIndicators.upcoming_recurrences_30_days,
+    expired: serviceIndicators.expired,
+  }), [serviceIndicators, now]);
 
   const handleChartFilter = (which, field, val) => {
     if (which === "nc") {
@@ -1369,15 +1346,6 @@ export default function DashboardPage() {
         setNcYear("all");
         setNcFrom(0);
         setNcTo(11);
-      }
-    } else {
-      if (field === "year") setIncYear(val);
-      else if (field === "from") setIncFrom(val);
-      else if (field === "to") setIncTo(val);
-      else {
-        setIncYear("all");
-        setIncFrom(0);
-        setIncTo(11);
       }
     }
   };
@@ -1391,6 +1359,8 @@ export default function DashboardPage() {
 
   if (isLoading)
     return <LoadingSpinner fullPage label="Cargando dashboard..." />;
+  if (loadError)
+    return <div role="alert" style={{ color: "#ff8888", padding: 24 }}>Error al cargar los indicadores del dashboard.</div>;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "2rem" }}>
@@ -1854,36 +1824,16 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* KPIs Ingresos */}
-      <div>
-        <SectionTitle>Ingresos</SectionTitle>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(3,1fr)",
-            gap: "1rem",
-          }}
-        >
-          <KpiCard
-            label="Ingresos este mes"
-            value={formatPrice(kpiIngresos.mes)}
-            color="#00ff88"
-            sub={MONTHS_FULL[currentMonth]}
-          />
-          <KpiCard
-            label="Ingresos este año"
-            value={formatPrice(kpiIngresos.anio)}
-            color="#3fe5e5"
-            sub={String(currentYear)}
-          />
-          <KpiCard
-            label="Proyectado fin de año"
-            value={formatPrice(kpiIngresos.proyectado)}
-            color="#ffb800"
-            sub="Basado en promedio mensual"
-          />
-        </div>
-      </div>
+      {canViewFinance && <div>
+        <SectionTitle>Ingresos confirmados</SectionTitle>
+        {monthlyTotals.length === 0 ? <p style={{ color: "#8892a4" }}>Sin cobros confirmados con moneda contractual disponible.</p> : <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: "1rem" }}>
+          {monthlyTotals.map((series) => <div key={series.currency} style={{ display: "contents" }}>
+            <KpiCard label={`Ingresos del mes · ${series.currency}`} value={formatCurrencyAmount(series.currentMonth, series.currency)} color="#00ff88" sub={MONTHS_FULL[currentMonth]} />
+            <KpiCard label={`Ingresos del año · ${series.currency}`} value={formatCurrencyAmount(series.currentYear, series.currency)} color="#3fe5e5" sub={String(currentYear)} />
+          </div>)}
+        </div>}
+        <p style={{ color: "#8892a4", fontSize: 12 }}>Solo cobros confirmados y ajustes confirmados. Cada moneda se muestra por separado.</p>
+      </div>}
 
       {/* Tortas estado alquiler + venta */}
       <div
@@ -2044,107 +1994,16 @@ export default function DashboardPage() {
         />
       </div>
 
-      {/* Línea: ingresos */}
-      <div style={card}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            marginBottom: "0.375rem",
-          }}
-        >
-          <div>
-            <p
-              style={{
-                fontFamily: "'Orbitron', monospace",
-                fontSize: "13px",
-                fontWeight: 700,
-                color: "white",
-                letterSpacing: "1px",
-                margin: 0,
-              }}
-            >
-              INGRESOS A LO LARGO DEL TIEMPO
-            </p>
-            <p
-              style={{
-                fontFamily: "'Share Tech Mono', monospace",
-                fontSize: "9px",
-                color: "#8892a4",
-                margin: "4px 0 0 0",
-              }}
-            >
-              Ingresos por período de registro
-            </p>
-          </div>
-          <div style={{ display: "flex", gap: "1.5rem" }}>
-            {[
-              {
-                label: "Mínimo",
-                value: formatPrice(
-                  Math.min(...incomeByMonth.map((d) => d.value)),
-                ),
-                color: "#ff3366",
-              },
-              {
-                label: "Promedio",
-                value: formatPrice(
-                  incomeByMonth.reduce((s, d) => s + d.value, 0) /
-                    (incomeByMonth.length || 1),
-                ),
-                color: "#ffb800",
-              },
-              {
-                label: "Máximo",
-                value: formatPrice(
-                  Math.max(...incomeByMonth.map((d) => d.value)),
-                ),
-                color: "#00ff88",
-              },
-            ].map(({ label, value, color }) => (
-              <div key={label} style={{ textAlign: "center" }}>
-                <p
-                  style={{
-                    fontFamily: "'Share Tech Mono', monospace",
-                    fontSize: "8px",
-                    color: "#8892a4",
-                    margin: 0,
-                    textTransform: "uppercase",
-                  }}
-                >
-                  {label}
-                </p>
-                <p
-                  style={{
-                    fontFamily: "'Orbitron', monospace",
-                    fontSize: "13px",
-                    color,
-                    margin: "2px 0 0 0",
-                  }}
-                >
-                  {value}
-                </p>
-              </div>
-            ))}
-          </div>
-        </div>
-        <ChartFilter
-          years={availableYears}
-          selectedYear={incYear}
-          selectedMonthFrom={incFrom}
-          selectedMonthTo={incTo}
-          onChange={(f, v) => handleChartFilter("inc", f, v)}
-        />
-        <LineChart
-          data={incomeByMonth}
-          color="#3fe5e5"
-          height={180}
-          isPrice={true}
-          chartId="inc"
-        />
-      </div>
-
+      {/* Ingresos confirmados, separados por moneda */}
+      {canViewFinance && <div>
+        <SectionTitle>Ingresos confirmados por mes</SectionTitle>
+        {revenueSeries.length === 0 ? <p style={{ color: "#8892a4" }}>No hay cobros confirmados ni monedas registradas en compromisos.</p> : <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))", gap: "1rem" }}>
+          {revenueSeries.map((series) => <div key={series.currency} style={card}>
+            <h3 style={{ color: "white", fontFamily: "'Orbitron', monospace", fontSize: 13 }}>{series.currency}</h3>
+            <LineChart data={series.months} color="#3fe5e5" height={180} isPrice currency={series.currency} chartId={`income-${series.currency}`} />
+          </div>)}
+        </div>}
+      </div>}
       {/* Top 10 */}
       <div
         style={{
@@ -2316,30 +2175,52 @@ export default function DashboardPage() {
         </div>
       </div>
 
+      <ActiveServicesList
+        services={serviceIndicators.active}
+        onClientClick={(clientId) => navigate(`/clientes/${clientId}`)}
+      />
+
       {/* Vencimientos */}
       <div>
-        <SectionTitle>Próximos vencimientos</SectionTitle>
+        <SectionTitle>Vigencias de servicios</SectionTitle>
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "1fr 1fr",
+            gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))",
             gap: "1.5rem",
           }}
         >
           {[
             {
-              title: "VENCEN EN 5 DÍAS",
+              title: "EXPIRAN EN 5 DÍAS",
               list: venc.v5,
               color: "#ff3366",
               bg: "rgba(255,51,102,",
+              dateField: "documented_expiration",
             },
             {
-              title: "VENCEN EN 30 DÍAS",
+              title: "EXPIRAN EN 30 DÍAS",
               list: venc.v30,
               color: "#ffb800",
               bg: "rgba(255,184,0,",
+              dateField: "documented_expiration",
             },
-          ].map(({ title, list, color, bg }) => (
+            {
+              title: "RECURRENCIAS PREVISTAS EN 30 DÍAS",
+              list: venc.recurrences,
+              color: "#00c8ff",
+              bg: "rgba(0,200,255,",
+              dateField: "next_recurrence_date",
+            },
+            {
+              title: "SERVICIOS VENCIDOS",
+              list: venc.expired,
+              color: "#ff3366",
+              bg: "rgba(255,51,102,",
+              expired: true,
+              dateField: "documented_expiration",
+            },
+          ].map(({ title, list, color, bg, expired = false, dateField }) => (
             <div key={title} style={{ ...card, border: `1px solid ${bg}0.2)` }}>
               {/* Header */}
               <div
@@ -2405,15 +2286,19 @@ export default function DashboardPage() {
                   }}
                 >
                   {list.map((c, i) => {
+                    const indicatorDate = c[dateField];
+                    const dueDate = new Date(`${indicatorDate}T12:00:00`);
+                    const today = new Date();
+                    today.setHours(12, 0, 0, 0);
                     const daysLeft = Math.ceil(
-                      (new Date(c.next_payment_date) - new Date()) /
+                      (dueDate - today) /
                         (1000 * 60 * 60 * 24),
                     );
-                    const urgente = daysLeft <= 2;
+                    const urgente = !expired && daysLeft <= 2;
                     return (
                       <div
-                        key={i}
-                        onClick={() => navigate(`/clientes/${c.id}`)}
+                        key={c.service_id || i}
+                        onClick={() => navigate(`/clientes/${c.client_id}`)}
                         style={{
                           padding: "0.625rem 0.875rem",
                           borderRadius: "0.375rem",
@@ -2453,7 +2338,7 @@ export default function DashboardPage() {
                               whiteSpace: "nowrap",
                             }}
                           >
-                            {c.name}
+                            {c.name} · {c.service_name}
                           </p>
                           <div
                             style={{
@@ -2470,7 +2355,7 @@ export default function DashboardPage() {
                                 color,
                               }}
                             >
-                              {formatDate(c.next_payment_date)}
+                              {formatDate(indicatorDate)}
                             </span>
                             <span
                               style={{
@@ -2485,7 +2370,9 @@ export default function DashboardPage() {
                                 marginTop: "2px",
                               }}
                             >
-                              {daysLeft === 0
+                              {expired
+                                ? `VENCIDO ${Math.abs(daysLeft)} ${Math.abs(daysLeft) === 1 ? "día" : "días"}`
+                                : daysLeft === 0
                                 ? "¡HOY!"
                                 : daysLeft === 1
                                   ? "MAÑANA"
@@ -2511,10 +2398,9 @@ export default function DashboardPage() {
                               color: `${bg}0.9)`,
                             }}
                           >
-                            {c.cupe}
+                            {c.cupe || "Sin CUPE"}
                           </span>
-                          <Badge status={c.plan} />
-                          <Badge status={c.status} />
+                          <span style={{ color: "#8892a4", fontSize: 11 }}>{c.documented_expiration ? `Vigencia: ${formatDate(c.documented_expiration)}` : "Sin vencimiento documentado"}</span>
                         </div>
                       </div>
                     );
@@ -2539,6 +2425,9 @@ export default function DashboardPage() {
             </div>
           ))}
         </div>
+        <p style={{ color: "#8892a4", fontSize: 12, marginTop: 8 }}>
+          Las recurrencias son fechas calculadas desde el inicio y frecuencia del compromiso. No acreditan un pago ni una renovación.
+        </p>
       </div>
 
       {/* Lista de clientes */}

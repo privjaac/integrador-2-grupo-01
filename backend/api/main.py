@@ -58,6 +58,7 @@ from api.routers import (
     cupe_log,
     projects,
     tasks,
+    dashboard,
 )
 
 
@@ -189,6 +190,12 @@ app.include_router(
     tasks.router,
     prefix='/api/tasks',
     tags=['Tareas'],
+)
+
+app.include_router(
+    dashboard.router,
+    prefix='/api/dashboard',
+    tags=['Dashboard'],
 )
 
 

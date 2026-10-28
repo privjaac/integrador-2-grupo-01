@@ -55,14 +55,14 @@ export const ROLES = {
     level: 2,
     label: "Scrum Master",
     // Scrum Master ve todo excepto gestión de roles
-    routes: ["/clientes", "/proyectos", "/usuarios", "/catalogo", "/tareas"],
+    routes: ["/dashboard", "/clientes", "/proyectos", "/usuarios", "/catalogo", "/tareas"],
   },
 
   L3: {
     level: 3,
     label: "Tech Lead",
     // Tech Lead gestiona clientes, usuarios y catálogo
-    routes: ["/clientes", "/proyectos", "/usuarios", "/catalogo", "/tareas"],
+    routes: ["/dashboard", "/clientes", "/proyectos", "/usuarios", "/catalogo", "/tareas"],
   },
 
   L4: {
@@ -191,9 +191,9 @@ const PERMISSIONS = {
     delete: ["L1"],
   },
 
-  //MODULO DASHBOARD — SOLO EL SUPERADMIN PUEDE VER EL DASHBOARD
+  // PB-REP-003/006/009: dashboard por rol; finanzas se filtran en backend.
   dashboard: {
-    view: ["L1"], // solo el superadmin puede ver el dashboard
+    view: ["L1", "L2", "L3"],
     create: [],
     edit: [],
     delete: [],

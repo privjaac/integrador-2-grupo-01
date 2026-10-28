@@ -15,7 +15,7 @@ const NAV_ITEMS = [
       {
         path: "/dashboard",
         label: "Dashboard",
-        module: null, // visible para todos
+        module: "dashboard",
         icon: (
           <svg
             width="18"
@@ -243,7 +243,7 @@ export default function Sidebar() {
         {NAV_ITEMS.map((section) => {
           // Filtra los items según permisos del usuario
           const visibleItems = section.items.filter((item) => {
-            if (!item.module) return true; // Dashboard visible para todos
+            if (!item.module) return true;
             return can(user, item.module, "view") ||
               (item.path === "/tareas" && can(user, "tasks", "designate"));
           });
