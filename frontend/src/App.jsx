@@ -29,6 +29,7 @@ const DashboardPage = lazy(() => import("./pages/dashboard/DashboardPage"));
 const CatalogPage = lazy(() => import("./pages/catalog/CatalogPage"));
 const ProjectsPage = lazy(() => import("./pages/projects/ProjectsPage"));
 const TasksPage = lazy(() => import("./pages/tasks/TasksPage"));
+const TaskDeadlineSettingsPage = lazy(() => import("./pages/notifications/TaskDeadlineSettingsPage"));
 
 export default function App() {
   return (
@@ -53,6 +54,7 @@ export default function App() {
             <Route path="/proyectos" element={<ProjectsPage />} />
             <Route path="/tareas" element={<TasksPage />} />
             <Route path="/tareas/detalle/:taskId" element={<TasksPage />} />
+            <Route path="/notificaciones/configuracion" element={<TaskDeadlineSettingsPage />} />
             <Route path="/clientes/nuevo" element={<ClientForm />} />
             <Route path="/clientes/:id" element={<ClientDetail />} />
             <Route path="/clientes/:id/editar" element={<ClientForm />} />

@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import time
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
@@ -14,7 +14,9 @@ from django.db import transaction
 from django.utils import timezone
 
 from api.role_permissions import effective_permissions
-from clients.models import Collaborator, InternalNotification, Task
+from clients.models import (
+    Collaborator, InternalNotification, Task, TaskDeadlineNotificationConfig,
+)
 
 logger = logging.getLogger(__name__)
 TERMINAL_STATUSES = {'Finalizada', 'Cancelada'}
@@ -125,8 +127,14 @@ class Command(BaseCommand):
         from api.routers.tasks import task_queryset
 
         now = timezone.now()
+        config = TaskDeadlineNotificationConfig.objects.get(key='task_deadline')
+        try:
+            reminder_cutoff = now + timedelta(days=config.days_before)
+        except OverflowError:
+            reminder_cutoff = datetime.max.replace(tzinfo=now.tzinfo)
+        reminder_window_hours = config.days_before * 24
         candidates = list(Task.objects.filter(
-            due_at__isnull=False, due_at__lte=now + timedelta(hours=24),
+            due_at__isnull=False, due_at__lte=reminder_cutoff,
         ).select_related('responsible__role', 'created_by__role').order_by('id'))
         if not candidates:
             self.stdout.write(
@@ -159,6 +167,7 @@ class Command(BaseCommand):
                 str(task.pk), encode_field(task.status), encode_field(task.title),
                 str(due_millis), str(now_millis),
                 str(allowed['responsible'] or 0), str(allowed['creator'] or 0),
+                str(reminder_window_hours),
             )))
 
         output = compile_and_run_java('\n'.join(input_lines) + '\n')
@@ -201,7 +210,7 @@ class Command(BaseCommand):
                     or task.status in TERMINAL_STATUSES
                     or (kind == 'tarea_recordatorio' and task.responsible_id != recipient_id)
                     or (kind == 'tarea_vencida' and recipient_id not in {task.responsible_id, task.created_by_id})
-                    or (kind == 'tarea_recordatorio' and not (now < task.due_at <= now + timedelta(hours=24)))
+                    or (kind == 'tarea_recordatorio' and not (now < task.due_at <= reminder_cutoff))
                     or (kind == 'tarea_vencida' and task.due_at > now)
                 ):
                     skipped_count += 1

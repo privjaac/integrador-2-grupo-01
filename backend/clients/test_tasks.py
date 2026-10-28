@@ -15,7 +15,8 @@ from api.main import app
 from api.routers.auth import hash_password
 from clients.models import (
     Client, Collaborator, InternalNotification, Project, ProjectCoordination, ProjectLeadership,
-    Role, Task, TaskComment, TaskEvent, TeamMembership, WebCatalog,
+    Role, Task, TaskComment, TaskDeadlineNotificationConfig,
+    TaskDeadlineNotificationConfigEvent, TaskEvent, TeamMembership, WebCatalog,
 )
 
 
@@ -24,6 +25,9 @@ class TaskWorkflowApiTests(TransactionTestCase):
 
     def setUp(self):
         self.api = TestClient(app)
+        TaskDeadlineNotificationConfig.objects.get_or_create(
+            key='task_deadline', defaults={'days_before': 1},
+        )
         self.people = {}
         self.headers = {}
         for level in ('L1', 'L2', 'L3', 'L4', 'L5'):
@@ -1564,6 +1568,65 @@ class TaskWorkflowApiTests(TransactionTestCase):
         call_command('process_task_deadline_notifications', stdout=second)
         self.assertIn('ya existentes: 3', second.getvalue())
         self.assertEqual(InternalNotification.objects.count(), 3)
+
+    def test_deadline_reminder_uses_configured_days_and_keeps_overdue_notices(self):
+        config = TaskDeadlineNotificationConfig.objects.get(key='task_deadline')
+        config.days_before = 3
+        config.save(update_fields=['days_before'])
+        within_window = Task.objects.create(
+            project=self.project, title='Vence en dos días', status='Pendiente',
+            created_by=self.people['L3'], responsible=self.people['L4'],
+            due_at=timezone.now() + timedelta(days=2),
+        )
+        outside_window = Task.objects.create(
+            project=self.project, title='Vence en cuatro días', status='Pendiente',
+            created_by=self.people['L3'], responsible=self.people['L4'],
+            due_at=timezone.now() + timedelta(days=4),
+        )
+        overdue = Task.objects.create(
+            project=self.project, title='Vencida con ventana configurada', status='Pendiente',
+            created_by=self.people['L3'], responsible=self.people['L4'],
+            due_at=timezone.now() - timedelta(hours=1),
+        )
+
+        call_command('process_task_deadline_notifications', stdout=StringIO())
+
+        self.assertEqual(InternalNotification.objects.filter(task=within_window).count(), 1)
+        self.assertFalse(InternalNotification.objects.filter(task=outside_window).exists())
+        self.assertEqual(InternalNotification.objects.filter(task=overdue, notice_type='tarea_vencida').count(), 2)
+
+    def test_deadline_settings_api_is_scoped_and_audited(self):
+        config = TaskDeadlineNotificationConfig.objects.get(key='task_deadline')
+        endpoint = '/api/notifications/internal/task-deadline-settings'
+        read = self.api.get(endpoint, headers=self.headers['L2'])
+        self.assertEqual(read.status_code, 200, read.text)
+        self.assertEqual(read.json()['days_before'], 1)
+        self.assertEqual(read.json()['history'], [])
+
+        forbidden_read = self.api.get(endpoint, headers=self.headers['L3'])
+        forbidden_update = self.api.put(endpoint, headers=self.headers['L3'], json={'days_before': 2})
+        self.assertEqual(forbidden_read.status_code, 403)
+        self.assertEqual(forbidden_update.status_code, 403)
+
+        invalid = self.api.put(endpoint, headers=self.headers['L2'], json={'days_before': 0})
+        self.assertEqual(invalid.status_code, 422)
+        config.refresh_from_db()
+        self.assertEqual(config.days_before, 1)
+        self.assertEqual(TaskDeadlineNotificationConfigEvent.objects.count(), 0)
+
+        updated = self.api.put(endpoint, headers=self.headers['L2'], json={'days_before': 4})
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertEqual(updated.json()['days_before'], 4)
+        self.assertEqual(len(updated.json()['history']), 1)
+        event = TaskDeadlineNotificationConfigEvent.objects.get()
+        self.assertEqual(event.actor_id, self.people['L2'].id)
+        self.assertEqual((event.previous_days_before, event.new_days_before), (1, 4))
+
+        unchanged = self.api.put(endpoint, headers=self.headers['L2'], json={'days_before': 4})
+        self.assertEqual(unchanged.status_code, 200, unchanged.text)
+        self.assertEqual(TaskDeadlineNotificationConfigEvent.objects.count(), 1)
+        with self.assertRaises(ValueError):
+            event.delete()
 
     def test_deadline_command_check_verifies_java_without_database_writes(self):
         from unittest.mock import patch

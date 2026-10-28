@@ -95,6 +95,9 @@ export const ROLES = {
 // ==============================================================================
 
 const PERMISSIONS = {
+  notifications: {
+    configure: ["L1", "L2"],
+  },
   // ── MÓDULO CLIENTES ──────────────────────────────────────────────────────
   clients: {
     // CRM-002/003/008/009: lectura L1/L2/L3.
@@ -306,6 +309,7 @@ export function canAccessRoute(user, route) {
   if (!user || !user.role) return false;
 
   const routePermission = {
+    "/notificaciones/configuracion": ["notifications", "configure"],
     "/dashboard": ["dashboard", "view"],
     "/clientes": ["clients", "view"],
     "/proyectos": ["projects", "view"],

@@ -1,13 +1,73 @@
 from django.utils import timezone
+from django.db import transaction
 from django.db.models import Q
 from fastapi import Depends, HTTPException
+from pydantic import Field
 
 from api.dependencies import get_current_user
 from api.router import APIRouter
+from api.schemas.safe_input import SafeInputModel
 from api.routers.tasks import task_queryset
-from clients.models import InternalNotification
+from clients.models import (
+    Collaborator, InternalNotification, TaskDeadlineNotificationConfig,
+    TaskDeadlineNotificationConfigEvent,
+)
 
 router = APIRouter()
+
+
+class TaskDeadlineSettingsInput(SafeInputModel):
+    days_before: int = Field(ge=1, le=2147483647)
+
+
+def task_deadline_config_response(config):
+    return {
+        'days_before': config.days_before,
+        'updated_by_id': config.updated_by_id,
+        'updated_at': config.updated_at,
+        'history': [{
+            'previous_days_before': event.previous_days_before,
+            'new_days_before': event.new_days_before,
+            'actor_id': event.actor_id,
+            'actor_name': f'{event.actor.first_name} {event.actor.last_name}'.strip(),
+            'occurred_at': event.occurred_at,
+        } for event in config.history.select_related('actor')[:50]],
+    }
+
+
+@router.get('/task-deadline-settings')
+def get_task_deadline_settings(user: dict = Depends(get_current_user)):
+    try:
+        config = TaskDeadlineNotificationConfig.objects.get(key='task_deadline')
+    except TaskDeadlineNotificationConfig.DoesNotExist as exc:
+        raise HTTPException(status_code=503, detail='La configuración de recordatorios no está inicializada') from exc
+    return task_deadline_config_response(config)
+
+
+@router.put('/task-deadline-settings')
+def update_task_deadline_settings(
+    payload: TaskDeadlineSettingsInput, user: dict = Depends(get_current_user),
+):
+    actor = Collaborator.objects.select_related('role').filter(
+        pk=user['collaborator_id'], is_active=True, role__is_active=True,
+    ).first()
+    if actor is None:
+        raise HTTPException(status_code=403, detail='El colaborador no está activo')
+    try:
+        with transaction.atomic():
+            config = TaskDeadlineNotificationConfig.objects.select_for_update().get(key='task_deadline')
+            previous_days_before = config.days_before
+            if previous_days_before != payload.days_before:
+                config.days_before = payload.days_before
+                config.updated_by = actor
+                config.save(update_fields=['days_before', 'updated_by', 'updated_at'])
+                TaskDeadlineNotificationConfigEvent.objects.create(
+                    config=config, actor=actor,
+                    previous_days_before=previous_days_before, new_days_before=config.days_before,
+                )
+    except TaskDeadlineNotificationConfig.DoesNotExist as exc:
+        raise HTTPException(status_code=503, detail='La configuración de recordatorios no está inicializada') from exc
+    return task_deadline_config_response(config)
 
 
 @router.get('/')

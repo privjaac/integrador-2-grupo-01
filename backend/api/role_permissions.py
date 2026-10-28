@@ -6,6 +6,7 @@ subset of the capabilities allowed for that level.
 """
 
 CAPABILITY_LEVELS = {
+    'notifications.configure': {'L1', 'L2'},
     'clients.view': {'L1', 'L2', 'L3'},
     'clients.create': {'L1', 'L2'},
     'clients.edit': {'L1', 'L2', 'L3'},
@@ -96,6 +97,8 @@ def effective_permissions(role) -> list[str]:
 
 
 ROUTE_CAPABILITIES = {
+    'get_task_deadline_settings': 'notifications.configure',
+    'update_task_deadline_settings': 'notifications.configure',
     'list_internal_notifications': 'tasks.view',
     'mark_internal_notification_read': 'tasks.view',
     # CRM and client operations.

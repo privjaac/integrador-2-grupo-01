@@ -18,6 +18,7 @@
 
 from django.db import models
 from django.db.models.functions import Lower
+from django.core.validators import MinValueValidator
 import uuid
 
 
@@ -1104,6 +1105,50 @@ class InternalNotification(models.Model):
         constraints = [models.UniqueConstraint(
             fields=['event', 'recipient'], name='internal_notification_event_recipient_unique',
         )]
+
+
+class TaskDeadlineNotificationConfig(models.Model):
+    """Configuration for the existing internal task deadline reminder."""
+
+    key = models.CharField(max_length=40, unique=True, default='task_deadline')
+    days_before = models.PositiveIntegerField(default=1, validators=[MinValueValidator(1)])
+    updated_by = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, null=True, blank=True,
+        related_name='task_deadline_notification_configs',
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'task_deadline_notification_configs'
+        constraints = [models.CheckConstraint(
+            condition=models.Q(days_before__gte=1), name='task_deadline_days_before_positive',
+        )]
+
+
+class TaskDeadlineNotificationConfigEvent(models.Model):
+    """Immutable audit entries for changes to reminder configuration."""
+
+    config = models.ForeignKey(
+        TaskDeadlineNotificationConfig, on_delete=models.PROTECT, related_name='history',
+    )
+    actor = models.ForeignKey(
+        Collaborator, on_delete=models.PROTECT, related_name='task_deadline_notification_config_events',
+    )
+    previous_days_before = models.PositiveIntegerField()
+    new_days_before = models.PositiveIntegerField()
+    occurred_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'task_deadline_notification_config_events'
+        ordering = ['occurred_at', 'id']
+
+    def save(self, *args, **kwargs):
+        if self.pk:
+            raise ValueError('El historial de configuración de alertas es inmutable')
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError('El historial de configuración de alertas es inmutable')
 
 
 # ------------------------------------------------------------------------------

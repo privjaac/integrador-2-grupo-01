@@ -15,6 +15,7 @@ const ROUTE_TITLES = {
   "/roles": "Roles y Jerarquías",
   "/catalogo": "Catálogo de Servicios",
   "/tareas": "Tareas",
+  "/notificaciones/configuracion": "Configuración de notificaciones",
 };
 
 export default function Topbar() {
