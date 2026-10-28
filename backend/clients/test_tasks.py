@@ -2,12 +2,12 @@ from django.test import TransactionTestCase
 from django.utils import timezone
 from fastapi.testclient import TestClient
 from unittest.mock import patch
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 
 from api.main import app
 from api.routers.auth import hash_password
 from clients.models import (
-    Client, Collaborator, Project, ProjectCoordination, ProjectLeadership,
+    Client, Collaborator, InternalNotification, Project, ProjectCoordination, ProjectLeadership,
     Role, Task, TaskEvent, TeamMembership, WebCatalog,
 )
 
@@ -1228,3 +1228,89 @@ class TaskWorkflowApiTests(TransactionTestCase):
         task.refresh_from_db()
         self.assertEqual(task.status, 'Asignada')
         self.assertEqual(TaskEvent.objects.filter(task=task).count(), before_events)
+
+    def test_internal_notifications_follow_assignment_and_status_events(self):
+        created = self.create('L4', status='Asignada', assignee=self.people['L5'])
+        self.assertEqual(created.status_code, 201, created.text)
+        task_id = created.json()['id']
+        notice = InternalNotification.objects.get(recipient=self.people['L5'])
+        self.assertEqual(notice.event.event_type, 'creada')
+        self.assertIn('Nueva tarea', notice.message)
+        self.assertFalse(InternalNotification.objects.filter(recipient=self.people['L4']).exists())
+
+        started = self.api.post(f'/api/tasks/{task_id}/start', headers=self.headers['L5'])
+        self.assertEqual(started.status_code, 200, started.text)
+        self.assertTrue(InternalNotification.objects.filter(
+            event__event_type='iniciada', recipient=self.people['L4'],
+        ).exists())
+        self.assertFalse(InternalNotification.objects.filter(
+            event__event_type='iniciada', recipient=self.people['L5'],
+        ).exists())
+
+    def test_reassignment_notifies_new_and_previous_assignee_without_duplicates(self):
+        created = self.create('L4', status='Asignada', assignee=self.people['L5'])
+        self.assertEqual(created.status_code, 201, created.text)
+        task_id = created.json()['id']
+        self.assertEqual(self.api.post(
+            f'/api/tasks/{task_id}/start', headers=self.headers['L5'],
+        ).status_code, 200)
+        task = Task.objects.get(pk=task_id)
+        TeamMembership.objects.create(
+            leadership=self.leadership, developer=self.people['L5C'], added_by=self.people['L4'],
+        )
+        response = self.api.post(
+            f'/api/tasks/{task.id}/reassignment', headers=self.headers['L4'],
+            json={'assignee_id': self.people['L5C'].id, 'reason': 'Redistribución'},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        event = TaskEvent.objects.get(task=task, event_type='ejecutor_reasignado')
+        self.assertEqual(set(InternalNotification.objects.filter(event=event).values_list(
+            'recipient_id', flat=True,
+        )), {self.people['L5'].id, self.people['L5C'].id})
+        previous_assignee_notices = self.api.get(
+            '/api/notifications/internal/', headers=self.headers['L5'],
+        ).json()['items']
+        self.assertEqual(len(previous_assignee_notices), 1)
+        self.assertIn('removido', previous_assignee_notices[0]['message'])
+        event.save()
+        self.assertEqual(InternalNotification.objects.filter(event=event).count(), 2)
+
+    def test_notification_listing_and_read_are_scoped_to_authenticated_recipient(self):
+        created = self.create('L4', status='Asignada', assignee=self.people['L5'])
+        self.assertEqual(created.status_code, 201, created.text)
+        notification = InternalNotification.objects.get(recipient=self.people['L5'])
+        own = self.api.get('/api/notifications/internal/', headers=self.headers['L5'])
+        self.assertEqual(own.status_code, 200, own.text)
+        self.assertEqual(own.json()['unread_count'], 1)
+        self.assertEqual(own.json()['items'][0]['id'], notification.id)
+        self.assertEqual(self.api.get(
+            '/api/notifications/internal/', headers=self.headers['L2'],
+        ).status_code, 403)
+        foreign = self.api.patch(
+            f'/api/notifications/internal/{notification.id}/read', headers=self.headers['L4'],
+        )
+        self.assertEqual(foreign.status_code, 404)
+        notification.refresh_from_db()
+        self.assertIsNone(notification.read_at)
+        read = self.api.patch(
+            f'/api/notifications/internal/{notification.id}/read', headers=self.headers['L5'],
+        )
+        self.assertEqual(read.status_code, 200, read.text)
+        notification.refresh_from_db()
+        self.assertIsNotNone(notification.read_at)
+
+    def test_notification_failure_does_not_rollback_source_business_event(self):
+        with patch('clients.signals.InternalNotification.objects.bulk_create', side_effect=IntegrityError):
+            with transaction.atomic():
+                task = Task.objects.create(
+                    project=self.project, title='Atomic notification', status='Asignada',
+                    created_by=self.people['L4'], responsible=self.people['L4'],
+                    assignee=self.people['L5'], assigned_at=timezone.now(),
+                )
+                event = TaskEvent.objects.create(
+                    task=task, event_type='asignada', actor=self.people['L4'],
+                    previous_status='Pendiente', new_status='Asignada', assignee=self.people['L5'],
+                )
+        self.assertTrue(Task.objects.filter(title='Atomic notification').exists())
+        self.assertTrue(TaskEvent.objects.filter(pk=event.pk).exists())
+        self.assertFalse(InternalNotification.objects.filter(message__contains='Atomic notification').exists())

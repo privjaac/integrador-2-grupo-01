@@ -93,6 +93,8 @@ def effective_permissions(role) -> list[str]:
 
 
 ROUTE_CAPABILITIES = {
+    'list_internal_notifications': 'tasks.view',
+    'mark_internal_notification_read': 'tasks.view',
     # CRM and client operations.
     'get_clients': 'clients.view', 'get_client': 'clients.view',
     'create_client': 'clients.create', 'update_client': 'clients.edit',

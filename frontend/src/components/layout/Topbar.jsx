@@ -2,8 +2,11 @@
 // TOPBAR.JSX v4 — Sin position fixed, funciona con el layout sticky
 // ==============================================================================
 
-import { useLocation } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
+import { useToast } from "../ui/Toast";
+import { getInternalNotifications, markInternalNotificationRead } from "../../api/notifications";
 
 const ROUTE_TITLES = {
   "/dashboard": "Dashboard",
@@ -16,6 +19,61 @@ const ROUTE_TITLES = {
 export default function Topbar() {
   const { user } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
+  const { showToast } = useToast();
+  const seenNotificationIds = useRef(null);
+  const [notificationState, setNotificationState] = useState({ items: [], unread_count: 0 });
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notificationsError, setNotificationsError] = useState(false);
+
+  useEffect(() => {
+    if (!user) return undefined;
+    let active = true;
+    seenNotificationIds.current = null;
+    const load = async () => {
+      try {
+        const result = await getInternalNotifications();
+        if (active) {
+          const nextIds = new Set(result.items.map((item) => item.id));
+          if (seenNotificationIds.current) {
+            result.items.filter((item) => !seenNotificationIds.current.has(item.id))
+              .reverse().forEach((item) => showToast("info", item.title, item.message));
+          }
+          seenNotificationIds.current = nextIds;
+          setNotificationState(result);
+          setNotificationsError(false);
+        }
+      } catch {
+        if (active) setNotificationsError(true);
+      }
+    };
+    load();
+    const interval = window.setInterval(load, 15000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [user, showToast]);
+
+  async function openNotification(item) {
+    if (!item.read_at) {
+      try {
+        await markInternalNotificationRead(item.id);
+        setNotificationState((current) => ({
+          ...current,
+          unread_count: Math.max(0, current.unread_count - 1),
+          items: current.items.map((notice) => notice.id === item.id
+            ? { ...notice, read_at: new Date().toISOString() }
+            : notice),
+        }));
+      } catch {
+        setNotificationsError(true);
+        return;
+      }
+    }
+    setNotificationsOpen(false);
+    navigate(`/tareas/detalle/${item.task_id}`);
+  }
 
   const getPageTitle = () => {
     const path = location.pathname;
@@ -63,6 +121,24 @@ export default function Topbar() {
       {/* Info del usuario */}
       {user && (
         <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+          <div style={{ position: "relative" }}>
+            <button type="button" aria-label={`Notificaciones, ${notificationState.unread_count} sin leer`}
+              aria-expanded={notificationsOpen} onClick={() => setNotificationsOpen((open) => !open)}
+              style={{ position: "relative", border: "1px solid rgba(63,229,229,0.3)", borderRadius: 8, background: "#111427", color: "#3fe5e5", padding: "8px 10px", cursor: "pointer" }}>
+              🔔
+              {notificationState.unread_count > 0 && <span style={{ position: "absolute", top: -7, right: -7, minWidth: 18, height: 18, borderRadius: 10, background: "#ef4444", color: "white", fontSize: 11, lineHeight: "18px" }}>{notificationState.unread_count}</span>}
+            </button>
+            {notificationsOpen && <section aria-label="Notificaciones internas" style={{ position: "absolute", zIndex: 40, top: 42, right: 0, width: 340, maxHeight: 420, overflowY: "auto", background: "#111427", border: "1px solid rgba(63,229,229,0.25)", borderRadius: 10, boxShadow: "0 12px 32px #0009", padding: 12 }}>
+              <strong style={{ color: "white" }}>Notificaciones</strong>
+              {notificationsError && <p role="alert" style={{ color: "#fca5a5", fontSize: 13 }}>No fue posible cargar las notificaciones.</p>}
+              {!notificationsError && notificationState.items.length === 0 && <p style={{ color: "#8892a4", fontSize: 13 }}>No tienes notificaciones.</p>}
+              {notificationState.items.map((item) => <button key={item.id} type="button" onClick={() => openNotification(item)} style={{ width: "100%", textAlign: "left", marginTop: 8, padding: 10, border: 0, borderRadius: 7, cursor: "pointer", color: "#dbe4f0", background: item.read_at ? "#171b2e" : "rgba(63,229,229,0.12)" }}>
+                <span style={{ display: "block", fontWeight: 600 }}>{item.title}</span>
+                <span style={{ display: "block", color: "#aab2c5", fontSize: 12, marginTop: 3 }}>{item.message}</span>
+                <time style={{ display: "block", color: "#778196", fontSize: 11, marginTop: 5 }}>{new Date(item.created_at).toLocaleString()}</time>
+              </button>)}
+            </section>}
+          </div>
           <div
             style={{
               display: "flex",

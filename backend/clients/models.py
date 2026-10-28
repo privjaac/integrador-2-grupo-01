@@ -986,6 +986,26 @@ class TaskEvent(models.Model):
         ordering = ['occurred_at', 'id']
 
 
+class InternalNotification(models.Model):
+    """User-scoped internal notice generated from an approved task event."""
+
+    event = models.ForeignKey(TaskEvent, on_delete=models.CASCADE, related_name='notifications')
+    recipient = models.ForeignKey(
+        Collaborator, on_delete=models.CASCADE, related_name='internal_notifications',
+    )
+    title = models.CharField(max_length=100)
+    message = models.CharField(max_length=300)
+    created_at = models.DateTimeField(auto_now_add=True)
+    read_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'internal_notifications'
+        ordering = ['-created_at', '-id']
+        constraints = [models.UniqueConstraint(
+            fields=['event', 'recipient'], name='internal_notification_event_recipient_unique',
+        )]
+
+
 # ------------------------------------------------------------------------------
 # WEBFEATURE — Funcionalidades adicionales
 #

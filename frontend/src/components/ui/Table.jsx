@@ -59,6 +59,7 @@ Table.Body = function TableBody({ children }) {
 Table.Row = function TableRow({
   children,
   onClick,
+  id,
   isSelected = false,
   index,
   className = "",
@@ -72,6 +73,7 @@ Table.Row = function TableRow({
 
   return (
     <tr
+        id={id}
       role="row"
       className={className}
       onClick={onClick}

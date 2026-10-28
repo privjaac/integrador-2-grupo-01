@@ -61,6 +61,7 @@ from api.routers import (
     tasks,
     dashboard,
     collaborator_payments,
+    notifications,
 )
 
 
@@ -119,7 +120,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ALLOWED_ORIGINS,
     allow_credentials=False,
-    allow_methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allow_methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allow_headers=['Authorization', 'Content-Type', 'Accept'],
 )
 
@@ -207,6 +208,13 @@ app.include_router(
     tasks.router,
     prefix='/api/tasks',
     tags=['Tareas'],
+    dependencies=[Depends(require_route_permission)],
+)
+
+app.include_router(
+    notifications.router,
+    prefix='/api/notifications/internal',
+    tags=['Notificaciones internas'],
     dependencies=[Depends(require_route_permission)],
 )
 

@@ -52,6 +52,7 @@ export default function App() {
             <Route path="/clientes" element={<ClientsPage />} />
             <Route path="/proyectos" element={<ProjectsPage />} />
             <Route path="/tareas" element={<TasksPage />} />
+            <Route path="/tareas/detalle/:taskId" element={<TasksPage />} />
             <Route path="/clientes/nuevo" element={<ClientForm />} />
             <Route path="/clientes/:id" element={<ClientDetail />} />
             <Route path="/clientes/:id/editar" element={<ClientForm />} />
