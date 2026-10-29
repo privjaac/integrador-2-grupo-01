@@ -142,6 +142,14 @@ class Command(BaseCommand):
             action='store_true',
             help='Confirma que la base configurada es local y exclusiva para demo.',
         )
+        parser.add_argument(
+            '--preserve-existing-records',
+            action='store_true',
+            help=(
+                'Añade registros demo sin rechazar ni modificar datos históricos '
+                'existentes. Solo debe usarse en la base B5 aislada.'
+            ),
+        )
 
     def handle(self, *args, **options):
         if not options['confirm_demo_database']:
@@ -153,7 +161,9 @@ class Command(BaseCommand):
 
         try:
             with transaction.atomic(using=DATABASE_ALIAS):
-                catalog, features, clients = self._seed()
+                catalog, features, clients = self._seed(
+                    preserve_existing=options['preserve_existing_records'],
+                )
         except DatabaseError as exc:
             raise CommandError(
                 'No se completó la carga; la transacción fue revertida. '
@@ -221,9 +231,9 @@ class Command(BaseCommand):
                 'No se admite PGSERVICE para evitar destinos PostgreSQL indirectos.'
             )
 
-    def _seed(self):
+    def _seed(self, preserve_existing=False):
         using = DATABASE_ALIAS
-        self._validate_existing_data()
+        self._validate_existing_data(preserve_existing=preserve_existing)
 
         created_catalogs = {}
         for item in CATALOG_DATA:
@@ -298,17 +308,20 @@ class Command(BaseCommand):
             sum(created_clients.values()),
         )
 
-    def _validate_existing_data(self):
+    def _validate_existing_data(self, preserve_existing=False):
         """Rechaza datos fuera del conjunto demo y conflictos sin sobrescribirlos."""
         using = DATABASE_ALIAS
-        self._validate_bootstrap_baseline()
+        self._validate_bootstrap_baseline(preserve_existing=preserve_existing)
 
         expected_catalogs = {item['name']: item for item in CATALOG_DATA}
         existing_catalogs = {
             row.name: row for row in WebCatalog.objects.using(using).all()
         }
-        self._reject_unrecognized(existing_catalogs, expected_catalogs, 'catálogo')
+        if not preserve_existing:
+            self._reject_unrecognized(existing_catalogs, expected_catalogs, 'catálogo')
         for name, row in existing_catalogs.items():
+            if preserve_existing and name not in expected_catalogs:
+                continue
             expected = expected_catalogs[name]
             if any(getattr(row, key) != expected[key] for key in (
                 'base_price_rent', 'base_price_sale',
@@ -319,11 +332,14 @@ class Command(BaseCommand):
         existing_features = {
             row.name: row for row in WebFeature.objects.using(using).all()
         }
-        self._reject_unrecognized(existing_features, expected_features, 'funcionalidad')
+        if not preserve_existing:
+            self._reject_unrecognized(existing_features, expected_features, 'funcionalidad')
         catalog_ids = {
             row.name: row.pk for row in WebCatalog.objects.using(using).all()
         }
         for name, row in existing_features.items():
+            if preserve_existing and name not in expected_features:
+                continue
             expected = expected_features[name]
             if row.extra_price != expected['extra_price'] or not row.is_active:
                 raise CommandError(f'Conflicto con la funcionalidad demo "{name}".')
@@ -339,8 +355,11 @@ class Command(BaseCommand):
         existing_clients = {
             row.document_number: row for row in Client.objects.using(using).all()
         }
-        self._reject_unrecognized(existing_clients, expected_clients, 'cliente')
+        if not preserve_existing:
+            self._reject_unrecognized(existing_clients, expected_clients, 'cliente')
         for document_number, row in existing_clients.items():
+            if preserve_existing and document_number not in expected_clients:
+                continue
             expected = expected_clients[document_number]
             scalar_fields = (
                 'cupe', 'name', 'document_type', 'email', 'plan', 'status',
@@ -369,8 +388,14 @@ class Command(BaseCommand):
             for client in CLIENT_DATA
             for feature_name in client['features']
         }
+        demo_client_ids = [
+            row.pk for row in Client.objects.using(using).filter(
+                document_number__in=expected_clients,
+            )
+        ]
         actual_links = set(
             ClientFeature.objects.using(using)
+            .filter(client_id__in=demo_client_ids)
             .values_list('client__document_number', 'feature__name')
         )
         if not actual_links.issubset(expected_links):
@@ -378,12 +403,12 @@ class Command(BaseCommand):
                 'La base contiene asociaciones cliente-funcionalidad ajenas al conjunto demo.'
             )
 
-        if CupeLog.objects.using(using).exists():
+        if not preserve_existing and CupeLog.objects.using(using).exists():
             raise CommandError(
                 'La base contiene historial CUPE; la carga demo requiere una base aislada.'
             )
 
-    def _validate_bootstrap_baseline(self):
+    def _validate_bootstrap_baseline(self, preserve_existing=False):
         using = DATABASE_ALIAS
         expected_roles = {
             level: (name, description)
@@ -393,19 +418,23 @@ class Command(BaseCommand):
             role.level: (role.name, role.description)
             for role in Role.objects.using(using).all()
         }
-        if any(level not in expected_roles for level in roles) or any(
+        if any(level not in expected_roles for level in roles) or (not preserve_existing and any(
             expected_roles[level] != values for level, values in roles.items()
-        ):
+        )):
             raise CommandError(
                 'La base contiene roles ajenos o modificados; carga demo rechazada.'
             )
-        if roles and set(roles) != set(expected_roles):
+        if roles and set(roles) != set(expected_roles) and not preserve_existing:
             raise CommandError(
                 'La base contiene un conjunto parcial de roles; carga demo rechazada.'
             )
+        if preserve_existing and set(roles) != set(expected_roles):
+            raise CommandError(
+                'La base debe conservar los cinco niveles de rol antes de cargar demo.'
+            )
 
         collaborators = list(Collaborator.objects.using(using).select_related('role'))
-        if collaborators and not (
+        if collaborators and not preserve_existing and not (
             len(collaborators) == 1
             and collaborators[0].cupe == BOOTSTRAP_CUPE
             and collaborators[0].role_id is not None
