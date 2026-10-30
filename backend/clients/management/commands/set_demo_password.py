@@ -8,6 +8,31 @@ from django.db import connections, transaction
 from api.routers.auth import hash_password
 from clients.models import Collaborator
 
+LOCAL_DEMO_DATABASES = {
+    'elisa_b5_demo_20261028',
+    'elisa_b5_staging',
+}
+
+
+def assert_local_demo_database(connection, expected_name):
+    if (
+        connection.vendor != 'postgresql'
+        or expected_name not in LOCAL_DEMO_DATABASES
+        or connection.settings_dict.get('NAME') != expected_name
+        or connection.settings_dict.get('HOST') not in ('127.0.0.1', 'localhost', '::1')
+    ):
+        raise CommandError(
+            'El cambio de contraseña solo admite las bases B5 locales autorizadas.'
+        )
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT current_database(), current_setting('server_version'), "
+            'inet_server_port(), current_user'
+        )
+        identity = cursor.fetchone()
+    if identity != (expected_name, '18.6', 5433, 'postgres'):
+        raise CommandError('La identidad SQL no coincide con una base B5 local autorizada.')
+
 
 class Command(BaseCommand):
     help = 'Asigna una contraseña a una cuenta demo B5 sin mostrarla ni guardarla en archivos.'
@@ -27,21 +52,7 @@ class Command(BaseCommand):
             if expected_name not in (':memory:', sqlite_name):
                 raise CommandError('El nombre de base de prueba debe ser SQLite en memoria.')
         else:
-            if (
-                connection.vendor != 'postgresql'
-                or expected_name != 'elisa_b5_demo_20261028'
-                or connection.settings_dict.get('NAME') != expected_name
-                or connection.settings_dict.get('HOST') not in ('127.0.0.1', 'localhost', '::1')
-            ):
-                raise CommandError('El cambio de contraseña solo admite la base B5 local autorizada.')
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    "SELECT current_database(), current_setting('server_version'), "
-                    'inet_server_port(), current_user'
-                )
-                identity = cursor.fetchone()
-            if identity != ('elisa_b5_demo_20261028', '18.6', 5433, 'postgres'):
-                raise CommandError('La identidad SQL no coincide con la base B5 autorizada.')
+            assert_local_demo_database(connection, expected_name)
 
         username = options['username']
         if not username.startswith('demo-b5-'):

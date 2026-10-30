@@ -1,6 +1,7 @@
 import secrets
 
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import TransactionTestCase
 
 from clients.management.commands.bootstrap_elisa import DEFAULT_ROLES
@@ -142,3 +143,57 @@ class SeedElisaB5ScenarioTests(TransactionTestCase):
         account = Collaborator.objects.get(username='demo-b5-l3')
         self.assertNotEqual(account.password_hash, password)
         self.assertTrue(verify_password(password, account.password_hash))
+
+    def test_password_command_accepts_only_the_exact_local_staging_identity(self):
+        from unittest.mock import MagicMock
+
+        from clients.management.commands.set_demo_password import assert_local_demo_database
+
+        for database_name in ('elisa_b5_demo_20261028', 'elisa_b5_staging'):
+            with self.subTest(database_name=database_name):
+                connection = MagicMock()
+                connection.vendor = 'postgresql'
+                connection.settings_dict = {
+                    'NAME': database_name,
+                    'HOST': '127.0.0.1',
+                }
+                connection.cursor.return_value.__enter__.return_value.fetchone.return_value = (
+                    database_name, '18.6', 5433, 'postgres',
+                )
+
+                self.assertIsNone(
+                    assert_local_demo_database(connection, database_name)
+                )
+
+    def test_password_command_rejects_an_unlisted_database_name(self):
+        from unittest.mock import MagicMock
+
+        from clients.management.commands.set_demo_password import assert_local_demo_database
+
+        connection = MagicMock()
+        connection.vendor = 'postgresql'
+        connection.settings_dict = {
+            'NAME': 'elisa_b5_staging_copy',
+            'HOST': '127.0.0.1',
+        }
+
+        with self.assertRaises(CommandError):
+            assert_local_demo_database(connection, 'elisa_b5_staging_copy')
+
+    def test_password_command_rejects_staging_identity_mismatch(self):
+        from unittest.mock import MagicMock
+
+        from clients.management.commands.set_demo_password import assert_local_demo_database
+
+        connection = MagicMock()
+        connection.vendor = 'postgresql'
+        connection.settings_dict = {
+            'NAME': 'elisa_b5_staging',
+            'HOST': '127.0.0.1',
+        }
+        connection.cursor.return_value.__enter__.return_value.fetchone.return_value = (
+            'elisa_b5_staging', '18.6', 5432, 'postgres',
+        )
+
+        with self.assertRaises(CommandError):
+            assert_local_demo_database(connection, 'elisa_b5_staging')
