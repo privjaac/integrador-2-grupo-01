@@ -8,15 +8,17 @@
 // ==============================================================================
 
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { useToast } from "../../components/ui/Toast";
 import { loginApi } from "../../api/auth";
+import { getInitialRoute } from "../../utils/permissions";
 
 export default function LoginPage() {
   const { login } = useAuth();
   const { showToast } = useToast();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -41,7 +43,8 @@ export default function LoginPage() {
       );
       // login() ahora acepta 3 parámetros: accessToken, refreshToken, userData
       login(access_token, refresh_token, user);
-      navigate("/clientes", { replace: true });
+      const requestedPath = location.state?.from?.pathname;
+      navigate(getInitialRoute(user, requestedPath) || "/dashboard", { replace: true });
     } catch (err) {
       showToast(
         "error",

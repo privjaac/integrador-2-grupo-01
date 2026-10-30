@@ -359,6 +359,27 @@ export function canAccessRoute(user, route) {
   );
 }
 
+// Preserva Clientes como destino habitual cuando está autorizado. Para roles
+// operativos sin acceso al CRM, usa Tareas, cuya capacidad se verifica con la
+// misma matriz efectiva que protege la ruta.
+export function getInitialRoute(user, preferredRoute = null) {
+  const candidates = [
+    preferredRoute,
+    "/clientes",
+    "/tareas",
+    "/proyectos",
+    "/usuarios",
+    "/roles",
+    "/catalogo",
+    "/dashboard",
+    "/colaboradores/pagos",
+    "/notificaciones-alertas",
+    "/notificaciones/configuracion",
+    "/proyectos/excepcionales",
+  ];
+  return candidates.find((route) => route && canAccessRoute(user, route)) || null;
+}
+
 // ------------------------------------------------------------------------------
 // getAccessibleRoutes — Retorna todas las rutas accesibles para un usuario
 //

@@ -12,14 +12,13 @@
 // Flujo de verificación:
 //   1. isLoading     → spinner (verificando sesión)
 //   2. !isAuthenticated → redirige a /login
-//   3. !canAccessRoute  → redirige a /clientes (ruta segura por defecto)
+//   3. !canAccessRoute  → redirige a la primera ruta autorizada o informa 403
 //   4. Todo OK          → renderiza el contenido
 //
 // Seguridad:
 //   - Doble verificación: autenticación + autorización.
 //   - El backend también valida — esta es solo la capa de UI.
-//   - Redirige a /clientes en lugar de mostrar un 403 explícito
-//     para no revelar qué rutas existen en el sistema.
+//   - Nunca redirige a una ruta que el usuario no puede abrir.
 // ==============================================================================
 
 // ------------------------------------------------------------------------------
@@ -28,7 +27,7 @@
 
 import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
-import { canAccessRoute } from "../../utils/permissions";
+import { canAccessRoute, getInitialRoute } from "../../utils/permissions";
 import LoadingSpinner from "../ui/LoadingSpinner";
 
 // ==============================================================================
@@ -67,18 +66,24 @@ export default function ProtectedRoute({ children }) {
   // --------------------------------------------------------------------------
   // SECCIÓN 5 — VERIFICACIÓN 2: PERMISOS DE RUTA POR ROL
   //
-  // Si el usuario está autenticado pero su rol no tiene acceso a esta ruta,
-  // lo redirige a /clientes (la ruta más básica accesible para todos).
-  //
-  // Ejemplo: un Developer (L5) intenta acceder a /roles directamente
-  // escribiendo la URL → lo redirige a /clientes silenciosamente.
+  // Si el usuario está autenticado pero carece de acceso a esta ruta, se
+  // redirige a un destino permitido. Si no existe, se presenta un aviso.
   //
   // Verifica la ruta completa para respetar capacidades específicas de
   // subrutas, además de las rutas principales y sus subrutas existentes.
   // --------------------------------------------------------------------------
 
   if (!canAccessRoute(user, location.pathname)) {
-    return <Navigate to="/clientes" replace />;
+    const safeRoute = getInitialRoute(user);
+    if (safeRoute && safeRoute !== location.pathname) {
+      return <Navigate to={safeRoute} replace />;
+    }
+    return (
+      <main role="alert" style={{ padding: 32, color: "#e2e8f0" }}>
+        <h1>Acceso no disponible</h1>
+        <p>Tu cuenta no tiene una pantalla autorizada para esta dirección.</p>
+      </main>
+    );
   }
 
   // --------------------------------------------------------------------------
