@@ -7,6 +7,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { useToast } from "../ui/Toast";
 import { getInternalNotifications, markInternalNotificationRead } from "../../api/notifications";
+import { isNotificationInboxOutOfScope, notificationDestination } from "../../utils/notificationErrors";
 
 const ROUTE_TITLES = {
   "/dashboard": "Dashboard",
@@ -45,8 +46,14 @@ export default function Topbar() {
           setNotificationState(result);
           setNotificationsError(false);
         }
-      } catch {
-        if (active) setNotificationsError(true);
+      } catch (error) {
+        if (!active) return;
+        if (isNotificationInboxOutOfScope(error)) {
+          setNotificationState({ items: [], unread_count: 0 });
+          setNotificationsError(false);
+          return;
+        }
+        setNotificationsError(true);
       }
     };
     load();
@@ -74,7 +81,9 @@ export default function Topbar() {
       }
     }
     setNotificationsOpen(false);
-    navigate(`/tareas/detalle/${item.task_id}`);
+    setNotificationsError(false);
+    const destination = notificationDestination(item, user);
+    if (destination) navigate(destination);
   }
 
   const getPageTitle = () => {
@@ -130,10 +139,10 @@ export default function Topbar() {
               🔔
               {notificationState.unread_count > 0 && <span style={{ position: "absolute", top: -7, right: -7, minWidth: 18, height: 18, borderRadius: 10, background: "#ef4444", color: "white", fontSize: 11, lineHeight: "18px" }}>{notificationState.unread_count}</span>}
             </button>
-            {notificationsOpen && <section aria-label="Notificaciones internas" style={{ position: "absolute", zIndex: 40, top: 42, right: 0, width: 340, maxHeight: 420, overflowY: "auto", background: "#111427", border: "1px solid rgba(63,229,229,0.25)", borderRadius: 10, boxShadow: "0 12px 32px #0009", padding: 12 }}>
+            {notificationsOpen && <section aria-label="Notificaciones internas" style={{ position: "absolute", zIndex: 40, top: 42, right: 0, width: "min(340px, calc(100vw - 2rem))", maxHeight: 420, overflowY: "auto", background: "#111427", border: "1px solid rgba(63,229,229,0.25)", borderRadius: 10, boxShadow: "0 12px 32px #0009", padding: 12 }}>
               <strong style={{ color: "white" }}>Notificaciones</strong>
               {notificationsError && <p role="alert" style={{ color: "#fca5a5", fontSize: 13 }}>No fue posible cargar las notificaciones.</p>}
-              {!notificationsError && notificationState.items.length === 0 && <p style={{ color: "#8892a4", fontSize: 13 }}>No tienes notificaciones.</p>}
+              {!notificationsError && notificationState.items.length === 0 && <p style={{ color: "#8892a4", fontSize: 13 }}>No tienes notificaciones disponibles para tu ámbito.</p>}
               {notificationState.items.map((item) => <button key={item.id} type="button" onClick={() => openNotification(item)} style={{ width: "100%", textAlign: "left", marginTop: 8, padding: 10, border: 0, borderRadius: 7, cursor: "pointer", color: "#dbe4f0", background: item.read_at ? "#171b2e" : "rgba(63,229,229,0.12)" }}>
                 <span style={{ display: "block", fontWeight: 600 }}>{item.title}</span>
                 <span style={{ display: "block", color: "#aab2c5", fontSize: 12, marginTop: 3 }}>{item.message}</span>

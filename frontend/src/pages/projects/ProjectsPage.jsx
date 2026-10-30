@@ -15,7 +15,15 @@ import {
 import { useAuth } from "../../hooks/useAuth";
 import { can } from "../../utils/permissions";
 
-const fieldStyle = { padding: "10px 12px", background: "#0b0d1a", color: "white", border: "1px solid #34394a", borderRadius: 6 };
+const fieldStyle = {
+  boxSizing: "border-box",
+  padding: "10px 12px",
+  background: "#0b0d1a",
+  color: "white",
+  border: "1px solid rgba(63,229,229,.28)",
+  borderRadius: 6,
+  font: "inherit",
+};
 
 export default function ProjectsPage() {
   const { user } = useAuth();
@@ -398,24 +406,32 @@ export default function ProjectsPage() {
     setFormalizationInputs((items) => ({ ...items, [projectId]: { ...items[projectId], [field]: value } }));
   }
 
-  return <section style={{ color: "white", maxWidth: 1050, margin: "0 auto" }}>
-    <h1>Proyectos</h1>
-    <p style={{ color: "#aab2c5" }}>Los proyectos nuevos se crean en estado Planificado.</p>
+  return <section className="projects-page" style={{ color: "white", maxWidth: 1200, margin: "0 auto" }}>
+    <header style={{ marginBottom: 20 }}>
+      <h1 style={{ marginBottom: 6 }}>Proyectos</h1>
+      <p style={{ color: "#aab2c5", margin: 0 }}>Los proyectos nuevos se crean en estado Planificado. Las acciones disponibles dependen del rol, la coordinación y el estado de cada proyecto.</p>
+    </header>
     {error && <p role="alert" style={{ color: "#ff718b" }}>{String(error)}</p>}
-    {canCreate && <form onSubmit={submit} style={{ display: "grid", gap: 12, margin: "24px 0", maxWidth: 600 }}>
-      <h2>Crear proyecto</h2>
-      <select required value={form.client_id} onChange={(e) => setForm({ ...form, client_id: e.target.value })} style={fieldStyle}>
-        <option value="">Selecciona un cliente</option>{clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
-      </select>
-      <input required maxLength={200} placeholder="Nombre del proyecto" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} style={fieldStyle} />
-      <textarea placeholder="Objetivo (opcional)" value={form.objective} onChange={(e) => setForm({ ...form, objective: e.target.value })} style={fieldStyle} />
-      <textarea placeholder="Alcance (opcional)" value={form.scope} onChange={(e) => setForm({ ...form, scope: e.target.value })} style={fieldStyle} />
-      <button type="submit" style={{ ...fieldStyle, cursor: "pointer" }}>Crear proyecto</button>
-    </form>}
-    <h2>Proyectos registrados</h2>
-    {loading ? <p>Cargando…</p> : projects.length === 0 ? <p>No hay proyectos registrados.</p> : <div style={{ overflowX: "auto" }}><table style={{ width: "100%", borderCollapse: "collapse" }}><thead><tr>{["Nombre", "Cliente", "Estado", "Objetivo", "Alcance", ...(user?.role === "L2" ? ["Coordinación L3"] : [])].map((label) => <th key={label} style={{ textAlign: "left", padding: 10, borderBottom: "1px solid #34394a" }}>{label}</th>)}</tr></thead><tbody>{projects.map((project) => {
+    {canCreate && <details style={{ margin: "0 0 24px", padding: "14px 16px", background: "#111427", border: "1px solid rgba(63,229,229,.16)", borderRadius: 8 }}>
+      <summary style={{ color: "#3fe5e5", cursor: "pointer", fontWeight: 600 }}>Crear proyecto</summary>
+      <form onSubmit={submit} style={{ display: "grid", gap: 12, marginTop: 16, maxWidth: 700 }}>
+        <h2 style={{ margin: 0 }}>Datos del nuevo proyecto</h2>
+        <label>Cliente<select required value={form.client_id} onChange={(e) => setForm({ ...form, client_id: e.target.value })} style={fieldStyle}>
+          <option value="">Selecciona un cliente</option>{clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
+        </select></label>
+        <label>Nombre del proyecto<input required maxLength={200} placeholder="Nombre del proyecto" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} style={fieldStyle} /></label>
+        <label>Objetivo (opcional)<textarea placeholder="Objetivo (opcional)" value={form.objective} onChange={(e) => setForm({ ...form, objective: e.target.value })} style={fieldStyle} /></label>
+        <label>Alcance (opcional)<textarea placeholder="Alcance (opcional)" value={form.scope} onChange={(e) => setForm({ ...form, scope: e.target.value })} style={fieldStyle} /></label>
+        <button type="submit" style={{ ...fieldStyle, cursor: "pointer" }}>Crear proyecto</button>
+      </form>
+    </details>}
+    <div style={{ marginBottom: 12 }}>
+      <h2 style={{ margin: "0 0 4px" }}>Proyectos registrados</h2>
+      {!loading && <p style={{ color: "#aab2c5", margin: 0 }}>{projects.length} proyecto{projects.length === 1 ? "" : "s"} en el ámbito disponible</p>}
+    </div>
+    {loading ? <p>Cargando…</p> : projects.length === 0 ? <p>No hay proyectos registrados.</p> : <div style={{ overflowX: "auto", border: "1px solid rgba(63,229,229,.15)", borderRadius: 8 }}><table aria-label="Proyectos registrados" style={{ width: "100%", minWidth: user?.role === "L2" ? 1120 : 900, borderCollapse: "collapse", tableLayout: "auto" }}><thead><tr>{["Nombre", "Cliente", "Estado", "Objetivo", "Alcance", ...(user?.role === "L2" ? ["Coordinación L3"] : [])].map((label) => <th key={label} scope="col" style={{ textAlign: "left", padding: "12px 10px", borderBottom: "1px solid #34394a", color: "#8892a4", fontSize: 12, textTransform: "uppercase", letterSpacing: ".06em", whiteSpace: "nowrap" }}>{label}</th>)}</tr></thead><tbody>{projects.map((project) => {
       const assigned = taskContext.coordination_assignments?.filter((item) => item.project_id === project.id) || [];
-      return <tr key={project.id}>{[project.name, project.client_name, project.status, project.objective || "—", project.scope || "—"].map((value, index) => <td key={index} style={{ padding: 10, borderBottom: "1px solid #202434" }}>{value}</td>)}{user?.role === "L2" && <td style={{ padding: 10, borderBottom: "1px solid #202434", minWidth: 240 }}>
+      return <tr key={project.id} style={{ background: "#111427" }}>{[project.name, project.client_name, project.status, project.objective || "—", project.scope || "—"].map((value, index) => <td key={index} style={{ padding: 12, borderBottom: "1px solid #202434", verticalAlign: "top", maxWidth: index >= 3 ? 280 : undefined, whiteSpace: index === 2 ? "nowrap" : "normal", overflowWrap: "anywhere", color: index === 2 ? "#3fe5e5" : "#eef1f7" }}>{value}</td>)}{user?.role === "L2" && <td style={{ padding: 12, borderBottom: "1px solid #202434", minWidth: 260, verticalAlign: "top" }}>
         <div style={{ color: "#aab2c5", marginBottom: 6 }}>{assigned.length ? assigned.map((item) => <div key={item.coordinator_id} style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}><span>{item.coordinator_name}</span>{can(user, "tasks", "withdrawCoordination") && item.can_remove && <button type="button" onClick={() => unassignCoordinator(project.id, item.coordinator_id)} style={{ ...fieldStyle, padding: "5px 8px", cursor: "pointer" }}>Retirar</button>}</div>) : "Sin coordinación"}</div>
         <div style={{ display: "flex", gap: 6 }}><select aria-label={`Coordinación de ${project.name}`} value={coordinatorSelection[project.id] || ""} onChange={(event) => setCoordinatorSelection({ ...coordinatorSelection, [project.id]: event.target.value })} style={fieldStyle}><option value="">Seleccionar L3</option>{taskContext.coordinators?.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" disabled={!coordinatorSelection[project.id]} onClick={() => assignCoordinator(project.id)} style={{ ...fieldStyle, cursor: "pointer" }}>Designar</button></div>
       </td>}</tr>;
@@ -528,7 +544,9 @@ export default function ProjectsPage() {
             {item.events?.map((event, index) => <p key={index}>{event.event_type} por {event.actor_name} · {event.reason}</p>)}
             {!item.events?.length && <button type="button" onClick={() => withdrawDelivery(project.id, item.id)} style={fieldStyle}>Retirar habilitación de entrega</button>}
           </div>)}
-          <form onSubmit={(event) => { event.preventDefault(); saveDeliveryAuthorization(project.id); }} style={{ display: "grid", gap: 8, maxWidth: 700 }}>
+          <details style={{ marginTop: 12 }}>
+            <summary style={{ color: "#3fe5e5", cursor: "pointer", fontWeight: 600 }}>{rows.length ? "Registrar otra habilitación de entrega" : "Registrar habilitación de entrega"}</summary>
+            <form onSubmit={(event) => { event.preventDefault(); saveDeliveryAuthorization(project.id); }} style={{ display: "grid", gap: 10, maxWidth: 760, marginTop: 12 }}>
             <label>Alcance autorizado<input required value={input.authorized_scope ?? project.scope ?? startRows[0]?.authorized_scope ?? ""} onChange={(event) => updateDeliveryAuthorization(project.id, "authorized_scope", event.target.value)} style={fieldStyle} /></label>
             <label>Condiciones de efectividad<textarea required value={input.effectivity_conditions || ""} onChange={(event) => updateDeliveryAuthorization(project.id, "effectivity_conditions", event.target.value)} style={fieldStyle} /></label>
             <label style={{ display: "flex", gap: 8 }}><input type="checkbox" checked={input.conditions_accredited || false} onChange={(event) => updateDeliveryAuthorization(project.id, "conditions_accredited", event.target.checked)} />Acredito las condiciones de efectividad de esta habilitación</label>
@@ -538,7 +556,8 @@ export default function ProjectsPage() {
             {replaceable.length > 0 && <label>Sustituir habilitación<select value={input.replaces_authorization_id || ""} onChange={(event) => updateDeliveryAuthorization(project.id, "replaces_authorization_id", event.target.value)} style={fieldStyle}><option value="">Nueva habilitación independiente</option>{replaceable.map((item) => <option key={item.id} value={item.id}>#{item.id} · {item.authorized_scope}</option>)}</select></label>}
             {input.replaces_authorization_id && <label>Motivo de sustitución<input required value={input.replacement_reason || ""} onChange={(event) => updateDeliveryAuthorization(project.id, "replacement_reason", event.target.value)} style={fieldStyle} /></label>}
             <button type="submit" disabled={!input.conditions_accredited} style={fieldStyle}>Registrar habilitación de entrega</button>
-          </form>
+            </form>
+          </details>
         </article>;
       })}
     </section>}
@@ -552,8 +571,9 @@ export default function ProjectsPage() {
         const auths = (deliveryAuthorizations[project.id] || []).filter((item) => item.conditions_accredited && new Date(item.effective_at).getTime() <= Date.now() && (!item.expires_at || new Date(item.expires_at).getTime() > Date.now()) && !item.events?.length);
         return <article key={project.id} style={{ border: "1px solid #34394a", borderRadius: 8, padding: 16, margin: "12px 0" }}>
           <h3>{project.name} · {project.status}</h3>
-          {canRecordDelivery && <div style={{ display: "grid", gap: 8, maxWidth: 760 }}>
-            <h4>Registrar transferencia efectiva (L2)</h4>
+          {canRecordDelivery && <details style={{ maxWidth: 760 }}>
+            <summary style={{ color: "#3fe5e5", cursor: "pointer", fontWeight: 600 }}>Registrar transferencia efectiva (L2)</summary>
+            <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
             {auths.length === 0 ? <p>No hay habilitación de preparación vigente.</p> : <>
               <label>Habilitación<select value={input.preparation_authorization_id || ""} onChange={(e) => updateDelivery(project.id, "preparation_authorization_id", e.target.value)} style={fieldStyle}><option value="">Seleccionar</option>{auths.map((a) => <option key={a.id} value={a.id}>#{a.id} · {a.authorized_scope}</option>)}</select></label>
               <label>Tipo<select value={input.delivery_type || "parcial"} onChange={(e) => updateDelivery(project.id, "delivery_type", e.target.value)} style={fieldStyle}><option value="parcial">Parcial</option><option value="integral" disabled={project.status !== "Listo para entrega"}>Integral</option></select></label>
@@ -567,9 +587,11 @@ export default function ProjectsPage() {
               <label>Fecha efectiva<input type="datetime-local" value={input.occurred_at || localDateTime(0)} onChange={(e) => updateDelivery(project.id, "occurred_at", e.target.value)} style={fieldStyle} /></label>
               <button type="button" disabled={!input.preparation_authorization_id || !input.scope?.trim() || !input.scope_within_authorization || !input.version_reference?.trim() || !input.recipient?.trim() || !input.delivery_method?.trim() || !input.performed_by?.trim() || !input.evidence_reference?.trim()} onClick={() => submitDelivery(project.id)} style={fieldStyle}>Registrar constancia</button>
             </>}
-          </div>}
-          {canReviewDeliveryVersion && project.status === "Listo para entrega" && <div style={{ display: "grid", gap: 6, maxWidth: 700, margin: "14px 0" }}>
-            <h4>Habilitar versión para entrega (L3)</h4>
+            </div>
+          </details>}
+          {canReviewDeliveryVersion && project.status === "Listo para entrega" && <details style={{ maxWidth: 760, margin: "14px 0" }}>
+            <summary style={{ color: "#3fe5e5", cursor: "pointer", fontWeight: 600 }}>Habilitar versión para entrega (L3)</summary>
+            <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
             <p style={{ color: "#aab2c5" }}>Registra la revisión técnica antes de la fecha efectiva de transferencia. Las versiones ya cubiertas por la evaluación integral no requieren otra revisión.</p>
             <label>Versión<input value={deliveryReviewInputs[project.id]?.version_reference || ""} onChange={(e) => updateDeliveryReview(project.id, "version_reference", e.target.value)} style={fieldStyle} /></label>
             <label><input type="checkbox" checked={deliveryReviewInputs[project.id]?.satisfactory || false} onChange={(e) => updateDeliveryReview(project.id, "satisfactory", e.target.checked)} />Resultado técnico satisfactorio</label>
@@ -577,7 +599,8 @@ export default function ProjectsPage() {
             <label>Resultado<input value={deliveryReviewInputs[project.id]?.result_summary || ""} onChange={(e) => updateDeliveryReview(project.id, "result_summary", e.target.value)} style={fieldStyle} /></label>
             <label>Evidencia<input value={deliveryReviewInputs[project.id]?.evidence || ""} onChange={(e) => updateDeliveryReview(project.id, "evidence", e.target.value)} style={fieldStyle} /></label>
             <button type="button" disabled={!deliveryReviewInputs[project.id]?.version_reference?.trim() || !deliveryReviewInputs[project.id]?.result_summary?.trim() || !deliveryReviewInputs[project.id]?.evidence?.trim()} onClick={() => submitDeliveryReview(project.id)} style={fieldStyle}>Registrar revisión técnica previa</button>
-          </div>}
+            </div>
+          </details>}
           <h4>Constancias e historial</h4>
           {rows.length === 0 ? <p>Sin constancias registradas.</p> : rows.map((delivery) => {
             return <div key={delivery.id} style={{ borderTop: "1px solid #34394a", padding: "8px 0" }}>
@@ -585,14 +608,16 @@ export default function ProjectsPage() {
               {delivery.technical_reviews.map((review, index) => <p key={index}>Revisión L3 de {review.version_reference} {review.actor_name}: {review.satisfactory ? "satisfactoria" : "no satisfactoria"}, habilitación {review.technical_enablement_status} · {review.evidence}</p>)}
             </div>;
           })}
-          {canFormalizeDelivery && project.status === "Listo para entrega" && rows.some((item) => !item.formalized) && <div style={{ display: "grid", gap: 8, maxWidth: 760 }}>
-            <h4>Formalizar alcance integral (L2)</h4>
+          {canFormalizeDelivery && project.status === "Listo para entrega" && rows.some((item) => !item.formalized) && <details style={{ maxWidth: 760 }}>
+            <summary style={{ color: "#3fe5e5", cursor: "pointer", fontWeight: 600 }}>Formalizar alcance integral (L2)</summary>
+            <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
             {rows.filter((item) => !item.formalized).map((item) => <label key={item.id}><input type="checkbox" checked={(formInput.delivery_ids || []).includes(item.id)} onChange={(e) => updateFormalization(project.id, "delivery_ids", e.target.checked ? [...(formInput.delivery_ids || []), item.id] : (formInput.delivery_ids || []).filter((id) => id !== item.id))} />Entrega #{item.id} · {item.delivery_type} · {item.scope}</label>)}
             <label><input type="checkbox" checked={formInput.integral_coverage_confirmed || false} onChange={(e) => updateFormalization(project.id, "integral_coverage_confirmed", e.target.checked)} />Confirmo que las entregas seleccionadas cubren integralmente el alcance vigente</label>
             <label>Evidencia de cobertura<input value={formInput.coverage_evidence || ""} onChange={(e) => updateFormalization(project.id, "coverage_evidence", e.target.value)} style={fieldStyle} /></label>
             <label>Motivo<input value={formInput.reason || ""} onChange={(e) => updateFormalization(project.id, "reason", e.target.value)} style={fieldStyle} /></label>
             <button type="button" disabled={!formInput.delivery_ids?.length || !formInput.integral_coverage_confirmed || !formInput.coverage_evidence?.trim() || !formInput.reason?.trim()} onClick={() => submitFormalization(project.id)} style={fieldStyle}>Formalizar entrega</button>
-          </div>}
+            </div>
+          </details>}
         </article>;
       })}
     </section>}
@@ -611,7 +636,9 @@ export default function ProjectsPage() {
             {item.events?.map((event, index) => <p key={index}>{event.event_type} por {event.actor_name} · {event.reason}</p>)}
             {!item.events?.length && <button type="button" onClick={() => withdrawAuthorization(project.id, item.id)} style={fieldStyle}>Retirar habilitación</button>}
           </div>)}
-          <form onSubmit={(event) => { event.preventDefault(); submitCommercialAuthorization(project.id); }} style={{ display: "grid", gap: 8, maxWidth: 700 }}>
+          <details style={{ marginTop: 12 }}>
+            <summary style={{ color: "#3fe5e5", cursor: "pointer", fontWeight: 600 }}>{rows.length ? "Registrar otra habilitación de inicio" : "Registrar habilitación de inicio"}</summary>
+            <form onSubmit={(event) => { event.preventDefault(); submitCommercialAuthorization(project.id); }} style={{ display: "grid", gap: 10, maxWidth: 760, marginTop: 12 }}>
             <label>Alcance autorizado<textarea required value={input.authorized_scope || ""} onChange={(event) => updateAuthorization(project.id, "authorized_scope", event.target.value)} style={fieldStyle} /></label>
             <label>Referencia del compromiso<input required value={input.commitment_reference || ""} onChange={(event) => updateAuthorization(project.id, "commitment_reference", event.target.value)} style={fieldStyle} /></label>
             <label>Condiciones de inicio acreditadas<textarea required value={input.start_conditions || ""} onChange={(event) => updateAuthorization(project.id, "start_conditions", event.target.value)} style={fieldStyle} /></label>
@@ -622,7 +649,8 @@ export default function ProjectsPage() {
             {replaceable.length > 0 && <label>Sustituir habilitación (opcional)<select value={input.replaces_authorization_id || ""} onChange={(event) => updateAuthorization(project.id, "replaces_authorization_id", event.target.value)} style={fieldStyle}><option value="">Nueva habilitación independiente</option>{replaceable.map((item) => <option key={item.id} value={item.id}>#{item.id} · {item.authorized_scope}</option>)}</select></label>}
             {input.replaces_authorization_id && <label>Motivo de sustitución<input required value={input.replacement_reason || ""} onChange={(event) => updateAuthorization(project.id, "replacement_reason", event.target.value)} style={fieldStyle} /></label>}
             <button type="submit" disabled={!input.start_conditions_accredited} style={fieldStyle}>Registrar habilitación positiva</button>
-          </form>
+            </form>
+          </details>
         </article>;
       })}
     </section>}

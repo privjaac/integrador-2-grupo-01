@@ -5,8 +5,10 @@ import {
   evaluateProjectResumption, getProjectCancellations, getProjectResumptions,
   openProjectCancellation, recordProjectCancellationEffectivity,
 } from "../../api/projects";
+import Button from "../../components/ui/Button";
 
-const fieldStyle = { padding: "9px 11px", background: "#0b0d1a", color: "white", border: "1px solid #34394a", borderRadius: 6, width: "100%" };
+const fieldStyle = { boxSizing: "border-box", padding: "10px 12px", background: "#0b0d1a", color: "white", border: "1px solid rgba(63,229,229,.28)", borderRadius: 6, width: "100%", font: "inherit" };
+const disclosureStyle = { color: "#3fe5e5", cursor: "pointer", fontWeight: 600, padding: "6px 0" };
 const labels = {
   solicitada: "Solicitud registrada",
   evaluacion_tecnica: "Evaluación técnica L3",
@@ -82,53 +84,67 @@ export default function ProjectCancellationPanel({ project, user, canRequest, ca
     }
   }
 
-  return <article style={{ border: "1px solid #34394a", borderRadius: 8, padding: 16, margin: "12px 0" }}>
-    <h3>Cancelación integral · {project.name}</h3>
-    <p style={{ color: "#aab2c5" }}>La cancelación no cambia el estado ni cancela tareas en bloque. Al hacerse efectiva, restringe el trabajo ordinario del alcance registrado.</p>
-    {isEffective && <p role="status">Cancelación efectiva: se conserva el estado ordinario «{project.status}» y el historial del proyecto.</p>}
+  return <article className="project-cancellation-panel" style={{ border: "1px solid rgba(63,229,229,.16)", background: "#111427", borderRadius: 8, padding: 16, margin: "12px 0", display: "grid", gap: 10 }}>
+    <header>
+      <h3 style={{ margin: "0 0 6px" }}>Cancelación integral · {project.name}</h3>
+      <p style={{ color: "#aab2c5", margin: 0 }}>Al hacerse efectiva, restringe el trabajo ordinario del alcance registrado. No cambia el estado ni cancela tareas en bloque.</p>
+    </header>
+    {isEffective && <p role="status" style={{ color: "#f3c969", margin: 0, padding: 10, background: "rgba(243,201,105,.08)", borderRadius: 6 }}>Cancelación efectiva: se conserva el estado ordinario «{project.status}» y el historial del proyecto.</p>}
     {error && <p role="alert" style={{ color: "#ff718b" }}>{error}</p>}
-    {canOpenCancellation && <div style={{ display: "grid", gap: 8, maxWidth: 760 }}>
+    {canOpenCancellation && <details>
+      <summary style={disclosureStyle}>Solicitar cancelación integral</summary>
+      <div style={{ display: "grid", gap: 10, maxWidth: 760, marginTop: 10 }}>
       <label style={{ display: "grid", gap: 4 }}>Alcance completo vigente<textarea required value={scope} onChange={(event) => setScope(event.target.value)} style={fieldStyle} /></label>
       <label style={{ display: "grid", gap: 4 }}>Motivo<textarea required value={reason} onChange={(event) => setReason(event.target.value)} style={fieldStyle} /></label>
       <label style={{ display: "grid", gap: 4 }}>Referencia de evidencia<input required value={evidence} onChange={(event) => setEvidence(event.target.value)} style={fieldStyle} /></label>
-      <button type="button" disabled={busy || !scope.trim() || !reason.trim() || !evidence.trim()} onClick={() => run(async () => {
+      <Button disabled={busy || !scope.trim() || !reason.trim() || !evidence.trim()} onClick={() => run(async () => {
         await openProjectCancellation(project.id, { cancelled_scope: scope, reason, evidence });
         setReason(""); setEvidence("");
-      })} style={fieldStyle}>Registrar solicitud integral</button>
-    </div>}
+      })}>Registrar solicitud integral</Button>
+      </div>
+    </details>}
     {current && <section style={{ display: "grid", gap: 8, marginTop: 14, maxWidth: 760 }}>
-      <p>Alcance: {current.cancelled_scope}</p>
-      {canReview && <>
+      <p style={{ margin: 0, color: "#aab2c5" }}>Expediente #{current.id} · etapa actual: <strong style={{ color: "#eef1f7" }}>{labels[latestEvent?.event_type] || latestEvent?.event_type}</strong> · alcance: {current.cancelled_scope}</p>
+      {canReview && <details>
+        <summary style={disclosureStyle}>Registrar evaluación técnica L3</summary>
+        <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
         <label style={{ display: "grid", gap: 4 }}>Consecuencias técnicas y tratamiento individual de tareas<textarea value={technical.affected_tasks_assessment} onChange={(event) => setTechnical({ ...technical, affected_tasks_assessment: event.target.value })} style={fieldStyle} /></label>
         <label style={{ display: "grid", gap: 4 }}>Obligaciones y actividades residuales<textarea value={technical.obligations_assessment} onChange={(event) => setTechnical({ ...technical, obligations_assessment: event.target.value })} style={fieldStyle} /></label>
         <label style={{ display: "grid", gap: 4 }}>Evidencia técnica<input value={technical.evidence} onChange={(event) => setTechnical({ ...technical, evidence: event.target.value })} style={fieldStyle} /></label>
         <label><input type="checkbox" checked={technical.l1_intervention_required} onChange={(event) => setTechnical({ ...technical, l1_intervention_required: event.target.checked, l1_exception_reason: "" })} /> Requiere intervención excepcional L1</label>
         {technical.l1_intervention_required && <label style={{ display: "grid", gap: 4 }}>Circunstancia técnica excepcional<textarea value={technical.l1_exception_reason} onChange={(event) => setTechnical({ ...technical, l1_exception_reason: event.target.value })} style={fieldStyle} /></label>}
-        <button type="button" disabled={busy || !technical.affected_tasks_assessment.trim() || !technical.obligations_assessment.trim() || !technical.evidence.trim() || (technical.l1_intervention_required && !technical.l1_exception_reason.trim())} onClick={() => run(async () => {
+        <Button disabled={busy || !technical.affected_tasks_assessment.trim() || !technical.obligations_assessment.trim() || !technical.evidence.trim() || (technical.l1_intervention_required && !technical.l1_exception_reason.trim())} onClick={() => run(async () => {
           await evaluateProjectCancellation(project.id, current.id, {
             ...technical,
             l1_exception_reason: technical.l1_intervention_required ? technical.l1_exception_reason : null,
           });
-        })} style={fieldStyle}>Registrar evaluación técnica L3</button>
-      </>}
+        })}>Registrar evaluación técnica L3</Button>
+        </div>
+      </details>}
       {canEvaluateCommercially && <div style={{ display: "grid", gap: 8 }}>
-        <h4>Evaluación comercial L2</h4>
+        <details>
+        <summary style={disclosureStyle}>Registrar evaluación comercial L2</summary>
+        <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
         <label><input type="checkbox" checked={commercial.within_l2_competence} onChange={(event) => setCommercial({ ...commercial, within_l2_competence: event.target.checked })} /> La evaluación acredita que permanece dentro de la competencia ordinaria L2</label>
         <label>Consecuencias comerciales<textarea value={commercial.commercial_consequences} onChange={(event) => setCommercial({ ...commercial, commercial_consequences: event.target.value })} style={fieldStyle} /></label>
         <label>Condiciones de efectividad<textarea value={commercial.effectivity_conditions} onChange={(event) => setCommercial({ ...commercial, effectivity_conditions: event.target.value })} style={fieldStyle} /></label>
         <label>Evidencia comercial<input value={commercial.evidence} onChange={(event) => setCommercial({ ...commercial, evidence: event.target.value })} style={fieldStyle} /></label>
-        <button type="button" disabled={busy || !commercial.commercial_consequences.trim() || !commercial.effectivity_conditions.trim() || !commercial.evidence.trim()} onClick={() => run(async () => {
+        <Button disabled={busy || !commercial.commercial_consequences.trim() || !commercial.effectivity_conditions.trim() || !commercial.evidence.trim()} onClick={() => run(async () => {
           await evaluateProjectCancellationCommercially(project.id, current.id, commercial);
           setCommercial({ within_l2_competence: false, commercial_consequences: "", effectivity_conditions: "", evidence: "" });
-        })} style={fieldStyle}>Registrar evaluación comercial y escalamiento si corresponde</button>
+        })}>Registrar evaluación comercial y escalamiento si corresponde</Button>
+        </div>
+        </details>
       </div>}
       {canDecideCommercially && <div style={{ display: "grid", gap: 8 }}>
-        <h4>Decisión ordinaria L2</h4>
+        <details>
+        <summary style={disclosureStyle}>Registrar decisión ordinaria L2</summary>
+        <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
         <label><input type="checkbox" checked={decision.authorized} onChange={(event) => setDecision({ ...decision, authorized: event.target.checked })} /> Autorizar conforme a la evaluación comercial registrada</label>
         {decision.authorized && <label>Fecha prevista de efectividad<input type="datetime-local" value={decision.planned_effective_at} onChange={(event) => setDecision({ ...decision, planned_effective_at: event.target.value })} style={fieldStyle} /></label>}
         <label>Motivo<textarea value={decision.reason} onChange={(event) => setDecision({ ...decision, reason: event.target.value })} style={fieldStyle} /></label>
         <label>Evidencia<input value={decision.evidence} onChange={(event) => setDecision({ ...decision, evidence: event.target.value })} style={fieldStyle} /></label>
-        <button type="button" disabled={busy || !decision.reason.trim() || !decision.evidence.trim() || (decision.authorized && !decision.planned_effective_at)} onClick={() => run(async () => {
+        <Button disabled={busy || !decision.reason.trim() || !decision.evidence.trim() || (decision.authorized && !decision.planned_effective_at)} onClick={() => run(async () => {
           const commercialEvent = [...current.events].reverse().find((event) => event.event_type === "evaluacion_comercial");
           await decideProjectCancellation(project.id, current.id, {
             authorized: Boolean(decision.authorized), reason: decision.reason, evidence: decision.evidence,
@@ -137,52 +153,68 @@ export default function ProjectCancellationPanel({ project, user, canRequest, ca
             planned_effective_at: decision.authorized ? new Date(decision.planned_effective_at).toISOString() : null,
           });
           setDecision({ authorized: false, reason: "", evidence: "", planned_effective_at: "" });
-        })} style={fieldStyle}>Registrar decisión L2</button>
+        })}>Registrar decisión L2</Button>
+        </div>
+        </details>
       </div>}
       {canMakeEffective && <p role="status">La efectividad L2 solo puede registrarse si se acredita la competencia ordinaria conforme a las decisiones vigentes.</p>}
       {canApplyEffectivity && <div style={{ display: "grid", gap: 8 }}>
-        <h4>Constancia de efectividad</h4>
+        <details>
+        <summary style={disclosureStyle}>Registrar constancia de efectividad</summary>
+        <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
         <label>Motivo<textarea value={effectivity.reason} onChange={(event) => setEffectivity({ ...effectivity, reason: event.target.value })} style={fieldStyle} /></label>
         <label>Evidencia<input value={effectivity.evidence} onChange={(event) => setEffectivity({ ...effectivity, evidence: event.target.value })} style={fieldStyle} /></label>
-        <button type="button" disabled={busy || !effectivity.reason.trim() || !effectivity.evidence.trim()} onClick={() => run(async () => {
+        <Button disabled={busy || !effectivity.reason.trim() || !effectivity.evidence.trim()} onClick={() => run(async () => {
           await recordProjectCancellationEffectivity(project.id, current.id, { conditions_satisfied: true, ...effectivity });
           setEffectivity({ reason: "", evidence: "" });
-        })} style={fieldStyle}>Registrar cancelación efectiva</button>
+        })}>Registrar cancelación efectiva</Button>
+        </div>
+        </details>
       </div>}
     </section>}
-    {cancellations.map((item) => <section key={item.id} style={{ borderTop: "1px solid #34394a", marginTop: 12, paddingTop: 8 }}>
+    {cancellations.length > 0 && <details style={{ borderTop: "1px solid #34394a", marginTop: 8, paddingTop: 8 }}>
+      <summary style={disclosureStyle}>Historial de cancelaciones ({cancellations.length})</summary>
+      {cancellations.map((item) => <section key={item.id} style={{ borderTop: "1px solid #34394a", marginTop: 12, paddingTop: 8 }}>
       <strong>Expediente #{item.id} · {item.cancelled_scope}</strong>
       <p>Registrado por {item.opened_by_name} · {new Date(item.opened_at).toLocaleString()} · {item.reason}</p>
-      {item.events.map((event, index) => <p key={`${event.event_type}-${index}`} style={{ color: "#aab2c5" }}>
+      {item.events.map((event, index) => <p key={`${event.event_type}-${index}`} style={{ color: "#aab2c5", borderLeft: "2px solid rgba(63,229,229,.3)", paddingLeft: 10 }}>
         {labels[event.event_type] || event.event_type} · {event.actor_name} · {new Date(event.occurred_at).toLocaleString()}
         {event.effective_at ? ` · Efectiva ${new Date(event.effective_at).toLocaleString()}` : ""} · {event.reason} · Evidencia: {event.evidence}
         {event.data && <pre style={{ whiteSpace: "pre-wrap", fontSize: 12 }}>{JSON.stringify(event.data, null, 2)}</pre>}
       </p>)}
-    </section>)}
-    {canEvaluateResume && <section style={{ display: "grid", gap: 8, marginTop: 16, maxWidth: 760 }}>
-      <h3>Evaluación técnica para reanudación · cancelación #{effectiveCancellation.id}</h3>
+      </section>)}
+    </details>}
+    {canEvaluateResume && <details style={{ marginTop: 12 }}>
+      <summary style={disclosureStyle}>Registrar evaluación técnica para reanudación · cancelación #{effectiveCancellation.id}</summary>
+      <section style={{ display: "grid", gap: 8, marginTop: 10, maxWidth: 760 }}>
       <label>Viabilidad<textarea value={resumptionTechnical.feasibility} onChange={(event) => setResumptionTechnical({ ...resumptionTechnical, feasibility: event.target.value })} style={fieldStyle} /></label>
       <label>Trabajo pendiente<textarea value={resumptionTechnical.pending_work} onChange={(event) => setResumptionTechnical({ ...resumptionTechnical, pending_work: event.target.value })} style={fieldStyle} /></label>
       <label>Evidencia técnica<input value={resumptionTechnical.evidence} onChange={(event) => setResumptionTechnical({ ...resumptionTechnical, evidence: event.target.value })} style={fieldStyle} /></label>
-      <button type="button" disabled={busy || !Object.values(resumptionTechnical).every((value) => value.trim())} onClick={() => run(async () => {
+      <Button disabled={busy || !Object.values(resumptionTechnical).every((value) => value.trim())} onClick={() => run(async () => {
         await evaluateProjectResumption(project.id, effectiveCancellation.id, resumptionTechnical);
         setResumptionTechnical({ feasibility: "", pending_work: "", evidence: "" });
-      })} style={fieldStyle}>Registrar evaluación técnica L3</button>
-    </section>}
-    {canDecideResume && <section style={{ display: "grid", gap: 8, marginTop: 16, maxWidth: 760 }}>
-      <h3>Decisión comercial L2 · reanudación #{existingResumption.id}</h3>
+      })}>Registrar evaluación técnica L3</Button>
+      </section>
+    </details>}
+    {canDecideResume && <details style={{ marginTop: 12 }}>
+      <summary style={disclosureStyle}>Registrar decisión comercial L2 · reanudación #{existingResumption.id}</summary>
+      <section style={{ display: "grid", gap: 8, marginTop: 10, maxWidth: 760 }}>
       <label><input type="checkbox" checked={resumptionDecision.authorized} onChange={(event) => setResumptionDecision({ ...resumptionDecision, authorized: event.target.checked })} /> Aprobar reanudación comercial</label>
       <label>Motivo<textarea value={resumptionDecision.reason} onChange={(event) => setResumptionDecision({ ...resumptionDecision, reason: event.target.value })} style={fieldStyle} /></label>
       <label>Condiciones<textarea value={resumptionDecision.conditions} onChange={(event) => setResumptionDecision({ ...resumptionDecision, conditions: event.target.value })} style={fieldStyle} /></label>
       <label>Evidencia<input value={resumptionDecision.evidence} onChange={(event) => setResumptionDecision({ ...resumptionDecision, evidence: event.target.value })} style={fieldStyle} /></label>
-      <button type="button" disabled={busy || !resumptionDecision.reason.trim() || !resumptionDecision.conditions.trim() || !resumptionDecision.evidence.trim()} onClick={() => run(async () => {
+      <Button disabled={busy || !resumptionDecision.reason.trim() || !resumptionDecision.conditions.trim() || !resumptionDecision.evidence.trim()} onClick={() => run(async () => {
         await decideProjectResumptionCommercially(existingResumption.id, resumptionDecision);
         setResumptionDecision({ authorized: false, reason: "", conditions: "", evidence: "" });
-      })} style={fieldStyle}>Registrar decisión comercial L2</button>
-    </section>}
-    {resumptions.map((item) => <section key={`resume-${item.id}`} style={{ borderTop: "1px solid #34394a", marginTop: 12, paddingTop: 8 }}>
+      })}>Registrar decisión comercial L2</Button>
+      </section>
+    </details>}
+    {resumptions.length > 0 && <details style={{ borderTop: "1px solid #34394a", marginTop: 8, paddingTop: 8 }}>
+      <summary style={disclosureStyle}>Historial de reanudaciones ({resumptions.length})</summary>
+      {resumptions.map((item) => <section key={`resume-${item.id}`} style={{ borderTop: "1px solid #34394a", marginTop: 12, paddingTop: 8 }}>
       <strong>Reanudación #{item.id} · cancelación #{item.cancellation_id}</strong>
       {item.events.map((event, index) => <p key={`${event.event_type}-${index}`} style={{ color: "#aab2c5" }}>{event.event_type} · {event.actor_name} · {new Date(event.occurred_at).toLocaleString()} · {event.reason} · {event.evidence}</p>)}
-    </section>)}
+      </section>)}
+    </details>}
   </article>;
 }

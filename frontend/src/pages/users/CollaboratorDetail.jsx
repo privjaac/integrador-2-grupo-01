@@ -2,12 +2,13 @@
 // COLLABORATORDETAIL.JSX v2 — Con cambio de CUPE + historial
 // ==============================================================================
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { can, canManageCollaborator } from "../../utils/permissions";
 import { getCollaboratorById, toggleCollaboratorStatus } from "../../api/users";
 import { getNextCupe, changeCupe, getCupeHistory } from "../../api/cupe";
+import { loadRecordWithOptionalHistories } from "../../utils/detailLoader";
 import { formatDate } from "../../utils/formatDate";
 import Badge from "../../components/ui/Badge";
 import Button from "../../components/ui/Button";
@@ -99,7 +100,9 @@ export default function CollaboratorDetail() {
 
   const [collab, setCollab] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [cupeHistory, setCupeHistory] = useState([]);
+  const [historyError, setHistoryError] = useState("");
 
   const [toggleModal, setToggleModal] = useState({ isOpen: false });
   const [isToggling, setIsToggling] = useState(false);
@@ -111,27 +114,28 @@ export default function CollaboratorDetail() {
     message: "",
   });
 
-  const loadCollab = async () => {
+  const loadCollab = useCallback(async () => {
+    setIsLoading(true);
+    setLoadError("");
     try {
-      const [collabData, history] = await Promise.all([
-        getCollaboratorById(id),
-        getCupeHistory("collaborator", id),
-      ]);
-      setCollab(collabData);
-      setCupeHistory(history);
+      const { record, histories, hasHistoryError } = await loadRecordWithOptionalHistories(
+        () => getCollaboratorById(id),
+        [() => getCupeHistory("collaborator", id)],
+      );
+      setCollab(record);
+      setCupeHistory(histories[0]);
+      setHistoryError(hasHistoryError ? "El colaborador está cargado, pero no se pudo cargar su historial." : "");
     } catch (err) {
-      setErrorModal({
-        isOpen: true,
-        message: err.userMessage || "Error al cargar el colaborador.",
-      });
+      setCollab(null);
+      setLoadError(err.userMessage || "No se pudo cargar el colaborador.");
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [id]);
 
   useEffect(() => {
     loadCollab();
-  }, [id]);
+  }, [loadCollab]);
 
   const handleToggleStatus = async () => {
     setIsToggling(true);
@@ -159,7 +163,7 @@ export default function CollaboratorDetail() {
     try {
       const newCupe = await getNextCupe("collaborator");
       setCupeModal({ isOpen: true, newCupe });
-    } catch (err) {
+    } catch {
       setErrorModal({
         isOpen: true,
         message: "Error al generar el nuevo CUPE.",
@@ -192,7 +196,7 @@ export default function CollaboratorDetail() {
   if (!collab)
     return (
       <div style={{ textAlign: "center", padding: "4rem", color: "#8892a4" }}>
-        <p>Colaborador no encontrado.</p>
+        <p role={loadError ? "alert" : undefined}>{loadError || "Colaborador no encontrado."}</p>
         <Button
           variant="secondary"
           onClick={() => navigate("/usuarios")}
@@ -217,6 +221,7 @@ export default function CollaboratorDetail() {
         gap: "1.5rem",
       }}
     >
+      {historyError && <p role="status" style={{ color: "#f3c969", margin: 0 }}>{historyError}</p>}
       {/* Header */}
       <div>
         <button

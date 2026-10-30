@@ -12,6 +12,7 @@ import { useAuth } from "../../hooks/useAuth";
 import { can } from "../../utils/permissions";
 import { getClientById, requestClientDeactivation, getClientHistory } from "../../api/clients";
 import { getNextCupe, changeCupe, getCupeHistory } from "../../api/cupe";
+import { loadRecordWithOptionalHistories } from "../../utils/detailLoader";
 import {
   formatDate,
   formatDateRelative,
@@ -112,8 +113,10 @@ export default function ClientDetail() {
 
   const [client, setClient] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [cupeHistory, setCupeHistory] = useState([]);
   const [clientHistory, setClientHistory] = useState([]);
+  const [historyError, setHistoryError] = useState("");
   const [deactivationReason, setDeactivationReason] = useState("");
 
   // Modal de dar de baja
@@ -134,20 +137,20 @@ export default function ClientDetail() {
   // ── CARGA ──────────────────────────────────────────────────────────────────
 
   const loadClient = useCallback(async () => {
+    setIsLoading(true);
+    setLoadError("");
     try {
-      const [clientData, history, crmHistory] = await Promise.all([
-        getClientById(id),
-        getCupeHistory("client", id),
-        getClientHistory(id),
-      ]);
-      setClient(clientData);
-      setCupeHistory(history);
-      setClientHistory(crmHistory);
+      const { record, histories, hasHistoryError } = await loadRecordWithOptionalHistories(
+        () => getClientById(id),
+        [() => getCupeHistory("client", id), () => getClientHistory(id)],
+      );
+      setClient(record);
+      setCupeHistory(histories[0]);
+      setClientHistory(histories[1]);
+      setHistoryError(hasHistoryError ? "El cliente está cargado, pero no se pudo cargar todo su historial." : "");
     } catch (err) {
-      setErrorModal({
-        isOpen: true,
-        message: err.userMessage || "Error al cargar el cliente.",
-      });
+      setClient(null);
+      setLoadError(err.userMessage || "No se pudo cargar el cliente.");
     } finally {
       setIsLoading(false);
     }
@@ -221,7 +224,7 @@ export default function ClientDetail() {
   if (!client)
     return (
       <div style={{ textAlign: "center", padding: "4rem", color: "#8892a4" }}>
-        <p>Cliente no encontrado.</p>
+        <p role={loadError ? "alert" : undefined}>{loadError || "Cliente no encontrado."}</p>
         <Button
           variant="secondary"
           onClick={() => navigate("/clientes")}
@@ -250,6 +253,7 @@ export default function ClientDetail() {
         gap: "1.5rem",
       }}
     >
+      {historyError && <p role="status" style={{ color: "#f3c969", margin: 0 }}>{historyError}</p>}
       {/* Header */}
       <div>
         <button

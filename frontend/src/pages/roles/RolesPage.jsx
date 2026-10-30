@@ -1,18 +1,61 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../../hooks/useAuth";
 import { can } from "../../utils/permissions";
 import { createRole, deleteRole, getPermissionCatalog, getRoles, updateRole } from "../../api/roles";
+import Badge from "../../components/ui/Badge";
+import Button from "../../components/ui/Button";
+import Table from "../../components/ui/Table";
+import { groupPermissionsByModule, permissionActionLabel } from "../../utils/rolePermissionLabels";
 
-const panelStyle = {
-  padding: 20, borderRadius: 10, color: "#e8edf5", background: "#111427",
-  border: "1px solid rgba(63,229,229,.18)",
+const PANEL_STYLE = {
+  padding: 20,
+  borderRadius: 12,
+  color: "#e8edf5",
+  background: "#111427",
+  border: "1px solid rgba(63,229,229,.14)",
 };
-const fieldStyle = {
-  boxSizing: "border-box", width: "100%", padding: 10, color: "white",
-  background: "#090d19", border: "1px solid #48516a", borderRadius: 6,
+const FIELD_STYLE = {
+  boxSizing: "border-box",
+  width: "100%",
+  padding: "10px 12px",
+  color: "white",
+  background: "#0b0d1a",
+  border: "1px solid rgba(63,229,229,.22)",
+  borderRadius: 6,
+  font: "inherit",
 };
-
+const LEVEL_COLORS = {
+  L1: ["#ff3366", "#ff6688", "#05060f"],
+  L2: ["#8235f2", "#a066ff", "white"],
+  L3: ["#4540d9", "#6b6fff", "white"],
+  L4: ["#3fe5e5", "#44ddff", "#05060f"],
+  L5: ["#8892a4", "#aabbcc", "#05060f"],
+};
 const EMPTY_FORM = { name: "", level: "L5", description: "", permissions: [], is_active: true };
+
+function LevelMark({ level, size = 40 }) {
+  const [start, end, color] = LEVEL_COLORS[level] || LEVEL_COLORS.L5;
+  return (
+    <span
+      aria-label={`Nivel ${level}`}
+      style={{
+        width: size,
+        height: size,
+        flex: `0 0 ${size}px`,
+        display: "inline-grid",
+        placeItems: "center",
+        clipPath: "polygon(50% 0%,100% 25%,100% 75%,50% 100%,0% 75%,0% 25%)",
+        background: `linear-gradient(135deg, ${start}, ${end})`,
+        color,
+        fontFamily: "'Orbitron', monospace",
+        fontSize: 12,
+        fontWeight: 700,
+      }}
+    >
+      {level}
+    </span>
+  );
+}
 
 export default function RolesPage() {
   const { user } = useAuth();
@@ -25,6 +68,7 @@ export default function RolesPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const editorHeadingRef = useRef(null);
 
   const mayCreate = can(user, "roles", "create");
   const mayEdit = can(user, "roles", "edit");
@@ -37,14 +81,20 @@ export default function RolesPage() {
       setRoles(roleRows);
       setCatalog(permissionRows);
       setError("");
-    } catch (e) {
-      setError(e.userMessage || e.response?.data?.detail || "No se pudieron cargar los roles.");
+    } catch (requestError) {
+      setError(requestError.userMessage || requestError.response?.data?.detail || "No se pudieron cargar los roles.");
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  useEffect(() => {
+    if (!showEditor) return;
+    editorHeadingRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    editorHeadingRef.current?.focus({ preventScroll: true });
+  }, [showEditor, editing]);
 
   const levelPermissions = useMemo(
     () => catalog.filter((item) => item.levels.includes(form.level)),
@@ -55,17 +105,22 @@ export default function RolesPage() {
     setShowEditor(true);
     setEditing(null);
     setForm({ ...EMPTY_FORM, level: user?.role || "L5" });
-    setNotice(""); setError("");
+    setNotice("");
+    setError("");
   }
 
   function startEdit(role) {
     setShowEditor(true);
     setEditing(role);
     setForm({
-      name: role.name, level: role.level, description: role.description || "",
-      permissions: [...(role.permissions || [])], is_active: role.is_active,
+      name: role.name,
+      level: role.level,
+      description: role.description || "",
+      permissions: [...(role.permissions || [])],
+      is_active: role.is_active,
     });
-    setNotice(""); setError("");
+    setNotice("");
+    setError("");
   }
 
   function togglePermission(key) {
@@ -78,82 +133,182 @@ export default function RolesPage() {
   }
 
   async function saveRole(event) {
-    event.preventDefault(); setSaving(true); setError(""); setNotice("");
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    setNotice("");
     try {
       const payload = {
-        name: form.name.trim(), description: form.description.trim(),
-        permissions: form.permissions, is_active: form.is_active,
+        name: form.name.trim(),
+        description: form.description.trim(),
+        permissions: form.permissions,
+        is_active: form.is_active,
       };
       if (editing) await updateRole(editing.id, payload);
       else await createRole({ ...payload, level: form.level });
-      setEditing(null); setShowEditor(false); setForm(EMPTY_FORM); setNotice("Rol guardado correctamente.");
+      setEditing(null);
+      setShowEditor(false);
+      setForm(EMPTY_FORM);
+      setNotice("Rol guardado correctamente.");
       await refresh();
-    } catch (e) {
-      setError(e.userMessage || e.response?.data?.detail || "No se pudo guardar el rol.");
-    } finally { setSaving(false); }
+    } catch (requestError) {
+      setError(requestError.userMessage || requestError.response?.data?.detail || "No se pudo guardar el rol.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function removeRole(role) {
     if (!window.confirm(`¿Eliminar el rol “${role.name}”? Se conservará su registro de auditoría.`)) return;
     setError("");
-    try { await deleteRole(role.id); setNotice("Rol eliminado; su historial se conserva."); await refresh(); }
-    catch (e) { setError(e.userMessage || e.response?.data?.detail || "No se pudo eliminar el rol."); }
+    try {
+      await deleteRole(role.id);
+      setNotice("Rol eliminado; su historial se conserva.");
+      await refresh();
+    } catch (requestError) {
+      setError(requestError.userMessage || requestError.response?.data?.detail || "No se pudo eliminar el rol.");
+    }
   }
 
   async function toggleActive(role) {
     const next = !role.is_active;
     if (role.level === "L1" && !next) return;
     setError("");
-    try { await updateRole(role.id, { is_active: next }); setNotice(next ? "Rol activado." : "Rol desactivado."); await refresh(); }
-    catch (e) { setError(e.userMessage || e.response?.data?.detail || "No se pudo cambiar el estado del rol."); }
+    try {
+      await updateRole(role.id, { is_active: next });
+      setNotice(next ? "Rol activado." : "Rol desactivado.");
+      await refresh();
+    } catch (requestError) {
+      setError(requestError.userMessage || requestError.response?.data?.detail || "No se pudo cambiar el estado del rol.");
+    }
   }
 
   return (
-    <main style={{ display: "grid", gap: 18 }}>
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-        <div><h1 style={{ color: "white", margin: 0 }}>Roles y permisos</h1>
-          <p style={{ color: "#9aa5bb" }}>Roles organizacionales asociados a los niveles funcionales fijos L1–L5.</p></div>
-        {mayCreate && <button type="button" onClick={startCreate}>Nuevo rol</button>}
+    <main style={{ display: "grid", gap: 20, maxWidth: 1200, margin: "0 auto", color: "white" }}>
+      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <h1 style={{ color: "white", margin: 0, fontFamily: "'Rajdhani', sans-serif", fontSize: 28, letterSpacing: ".04em" }}>Roles y permisos</h1>
+          <p style={{ color: "#9aa5bb", margin: "6px 0 0" }}>Roles organizacionales asociados a los niveles funcionales fijos L1–L5.</p>
+        </div>
+        {mayCreate && <Button type="button" onClick={startCreate}>Nuevo rol</Button>}
       </header>
-      {error && <p role="alert" style={{ color: "#ff718c" }}>{error}</p>}
-      {notice && <p role="status" style={{ color: "#3fe5e5" }}>{notice}</p>}
 
-      <section style={panelStyle} aria-label="Roles existentes">
-        {loading ? <p>Cargando…</p> : roles.length === 0 ? <p>No existen roles registrados.</p> : (
-          <div style={{ overflowX: "auto" }}><table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr>{["Nombre", "Nivel", "Estado", "Permisos", "Colaboradores", "Acciones"].map((h) => <th key={h} style={{ textAlign: "left", padding: 10 }}>{h}</th>)}</tr></thead>
-            <tbody>{roles.map((role) => <tr key={role.id}>
-              <td style={{ padding: 10 }}>{role.name}<small style={{ display: "block", color: "#9aa5bb" }}>{role.description}</small></td>
-              <td style={{ padding: 10 }}>{role.level}</td>
-              <td style={{ padding: 10 }}>{role.is_active ? "Activo" : "Inactivo"}</td>
-              <td style={{ padding: 10, minWidth: 220 }}>{role.permissions?.length ? role.permissions.join(", ") : "Sin permisos"}</td>
-              <td style={{ padding: 10 }}>{role.collaborators_count}</td>
-              <td style={{ padding: 10, display: "flex", gap: 8 }}>
-                {mayEdit && <button type="button" onClick={() => startEdit(role)}>Editar</button>}
-                {mayEdit && role.level !== "L1" && <button type="button" onClick={() => toggleActive(role)}>{role.is_active ? "Desactivar" : "Activar"}</button>}
-                {mayDelete && role.level !== "L1" && role.collaborators_count === 0 && <button type="button" onClick={() => removeRole(role)}>Eliminar</button>}
-              </td>
-            </tr>)}</tbody>
-          </table></div>
-        )}
+      {error && <div role="alert" style={{ ...PANEL_STYLE, borderColor: "rgba(255,51,102,.4)", color: "#ff8ba5" }}>{error}</div>}
+      {notice && <div role="status" style={{ ...PANEL_STYLE, borderColor: "rgba(63,229,229,.28)", color: "#3fe5e5" }}>{notice}</div>}
+
+      <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }} aria-label="Niveles organizacionales">
+        {["L1", "L2", "L3", "L4", "L5"].map((level) => {
+          const role = roles.find((item) => item.level === level);
+          return (
+            <article key={level} style={{ ...PANEL_STYLE, padding: 14, display: "flex", alignItems: "center", gap: 12 }}>
+              <LevelMark level={level} size={34} />
+              <div style={{ minWidth: 0 }}>
+                <strong style={{ display: "block", color: "white", fontFamily: "'Rajdhani', sans-serif", fontSize: 16 }}>{role?.name || `Nivel ${level}`}</strong>
+                <span style={{ color: "#9aa5bb", fontSize: 12 }}>{role ? `${role.collaborators_count} colaboradores` : "Sin rol asignado"}</span>
+              </div>
+            </article>
+          );
+        })}
+      </section>
+
+      <section style={PANEL_STYLE} aria-label="Roles existentes">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
+          <div>
+            <h2 style={{ margin: 0, color: "white", fontFamily: "'Rajdhani', sans-serif", fontSize: 20 }}>Roles registrados</h2>
+            <p style={{ margin: "4px 0 0", color: "#9aa5bb", fontSize: 13 }}>Los permisos configurables solo reducen las capacidades permitidas para cada nivel.</p>
+          </div>
+          <Badge variant="cyan" dot={false}>{loading ? "Cargando" : `${roles.length} roles`}</Badge>
+        </div>
+        <Table isLoading={loading} aria-label="Tabla de roles y permisos">
+          <Table.Head>
+            <Table.Row>
+              <Table.HeadCell>Nivel</Table.HeadCell>
+              <Table.HeadCell>Rol</Table.HeadCell>
+              <Table.HeadCell>Estado</Table.HeadCell>
+              <Table.HeadCell>Permisos habilitados</Table.HeadCell>
+              <Table.HeadCell>Colaboradores</Table.HeadCell>
+              {(mayEdit || mayDelete) && <Table.HeadCell>Acciones</Table.HeadCell>}
+            </Table.Row>
+          </Table.Head>
+          <Table.Body>
+            {!loading && roles.length === 0 ? <Table.Empty colSpan={(mayEdit || mayDelete) ? 6 : 5} message="No existen roles registrados." /> : roles.map((role, index) => (
+              <Table.Row key={role.id} index={index}>
+                <Table.Cell><LevelMark level={role.level} size={36} /></Table.Cell>
+                <Table.Cell>
+                  <strong style={{ color: "white", fontWeight: 600 }}>{role.name}</strong>
+                  {role.description && <p style={{ color: "#9aa5bb", margin: "4px 0 0", fontSize: 12, maxWidth: 320 }}>{role.description}</p>}
+                </Table.Cell>
+                <Table.Cell><Badge status={role.is_active ? "activo" : "inactivo"} /></Table.Cell>
+                <Table.Cell style={{ minWidth: 240 }}>
+                  {role.permissions?.length ? (
+                    <details>
+                      <summary style={{ color: "#3fe5e5", cursor: "pointer", fontSize: 13 }}>
+                        Consultar {role.permissions.length} capacidades
+                      </summary>
+                      <div style={{ display: "grid", gap: 8, marginTop: 8, minWidth: 230, maxWidth: 360, whiteSpace: "normal" }}>
+                        {Object.entries(groupPermissionsByModule(role.permissions)).map(([module, permissions]) => (
+                          <section key={module} aria-label={module}>
+                            <strong style={{ display: "block", color: "#cbd5e1", fontSize: 12, marginBottom: 4 }}>{module}</strong>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                              {permissions.map((permission) => <Badge key={permission} variant="gray" dot={false}>{permissionActionLabel(permission)}</Badge>)}
+                            </div>
+                          </section>
+                        ))}
+                      </div>
+                    </details>
+                  ) : <span style={{ color: "#9aa5bb" }}>Sin capacidades adicionales</span>}
+                </Table.Cell>
+                <Table.Cell><span style={{ fontFamily: "'Share Tech Mono', monospace", color: "#c5cdd8" }}>{role.collaborators_count}</span></Table.Cell>
+                {(mayEdit || mayDelete) && <Table.Cell>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 7, minWidth: 190 }}>
+                    {mayEdit && <Button type="button" variant="secondary" size="sm" onClick={() => startEdit(role)}>Editar</Button>}
+                    {mayEdit && role.level !== "L1" && <Button type="button" variant="ghost" size="sm" onClick={() => toggleActive(role)}>{role.is_active ? "Desactivar" : "Activar"}</Button>}
+                    {mayDelete && role.level !== "L1" && role.collaborators_count === 0 && <Button type="button" variant="danger" size="sm" onClick={() => removeRole(role)}>Eliminar</Button>}
+                  </div>
+                </Table.Cell>}
+              </Table.Row>
+            ))}
+          </Table.Body>
+        </Table>
       </section>
 
       {showEditor && (editing ? mayEdit : mayCreate) && (
-        <form onSubmit={saveRole} style={{ ...panelStyle, display: "grid", gap: 14 }}>
-          <h2 style={{ margin: 0 }}>{editing ? `Editar ${editing.name}` : "Crear rol organizacional"}</h2>
-          <label>Nombre<input style={fieldStyle} required minLength={2} maxLength={50} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
-          <label>Nivel funcional<select style={fieldStyle} value={form.level} disabled={Boolean(editing)} onChange={(e) => setForm({ ...form, level: e.target.value, permissions: [] })}>{["L1", "L2", "L3", "L4", "L5"].map((level) => <option key={level}>{level}</option>)}</select></label>
-          <label>Descripción<textarea style={fieldStyle} maxLength={1000} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label>
-          {editing && editing.level !== "L1" && <label><input type="checkbox" checked={form.is_active} onChange={(e) => setForm({ ...form, is_active: e.target.checked })} /> Rol activo</label>}
-          <fieldset disabled={Boolean(editing && !editing.permissions_editable)} style={{ border: "1px solid #48516a", borderRadius: 8, display: "grid", gap: 8 }}>
-            <legend>Permisos disponibles para {form.level}</legend>
-            {editing && !editing.permissions_editable && <p>Los permisos del rol L1 existente se conservan; aquí solo se editan nombre y descripción.</p>}
-            {levelPermissions.length === 0 ? <p>Sin permisos disponibles para el nivel seleccionado.</p> : levelPermissions.map((item) => (
-              <label key={item.key}><input type="checkbox" checked={form.permissions.includes(item.key)} onChange={() => togglePermission(item.key)} /> {item.key}</label>
+        <form onSubmit={saveRole} style={{ ...PANEL_STYLE, display: "grid", gap: 16 }}>
+          <header>
+            <h2 ref={editorHeadingRef} tabIndex={-1} style={{ margin: 0, color: "white", fontFamily: "'Rajdhani', sans-serif", fontSize: 22, outlineColor: "#3fe5e5" }}>{editing ? `Editar ${editing.name}` : "Crear rol organizacional"}</h2>
+            <p style={{ color: "#9aa5bb", margin: "4px 0 0", fontSize: 13 }}>El nivel funcional es fijo; los permisos seleccionados se validan también en el servidor.</p>
+          </header>
+          <label style={{ display: "grid", gap: 6, color: "#cbd5e1" }}>Nombre
+            <input style={FIELD_STYLE} required minLength={2} maxLength={50} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
+          </label>
+          <label style={{ display: "grid", gap: 6, color: "#cbd5e1" }}>Nivel funcional
+            <select style={FIELD_STYLE} value={form.level} disabled={Boolean(editing)} onChange={(event) => setForm({ ...form, level: event.target.value, permissions: [] })}>
+              {["L1", "L2", "L3", "L4", "L5"].map((level) => <option key={level} value={level}>{level}</option>)}
+            </select>
+          </label>
+          <label style={{ display: "grid", gap: 6, color: "#cbd5e1" }}>Descripción
+            <textarea style={{ ...FIELD_STYLE, minHeight: 84, resize: "vertical" }} maxLength={1000} value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
+          </label>
+          {editing && editing.level !== "L1" && <label style={{ display: "flex", gap: 8, alignItems: "center", color: "#cbd5e1" }}><input type="checkbox" checked={form.is_active} onChange={(event) => setForm({ ...form, is_active: event.target.checked })} /> Rol activo</label>}
+          <fieldset disabled={Boolean(editing && !editing.permissions_editable)} style={{ border: "1px solid rgba(63,229,229,.2)", borderRadius: 8, display: "grid", gap: 8, padding: 14 }}>
+            <legend style={{ padding: "0 6px", color: "#3fe5e5" }}>Permisos disponibles para {form.level}</legend>
+            {editing && !editing.permissions_editable && <p style={{ margin: 0, color: "#9aa5bb" }}>Los permisos del rol L1 existente se conservan; aquí solo se editan nombre y descripción.</p>}
+            {levelPermissions.length === 0 ? <p style={{ margin: 0, color: "#9aa5bb" }}>Sin capacidades disponibles para este nivel.</p> : Object.entries(groupPermissionsByModule(levelPermissions.map((item) => item.key))).map(([module, permissions]) => (
+              <section key={module} style={{ display: "grid", gap: 5, padding: "8px 0", borderTop: "1px solid rgba(255,255,255,.06)" }}>
+                <strong style={{ color: "#cbd5e1", fontSize: 13 }}>{module}</strong>
+                {permissions.map((key) => (
+                  <label key={key} style={{ display: "flex", gap: 8, alignItems: "flex-start", color: "#cbd5e1" }}>
+                    <input type="checkbox" checked={form.permissions.includes(key)} onChange={() => togglePermission(key)} />
+                    <span>{permissionActionLabel(key)}</span>
+                  </label>
+                ))}
+              </section>
             ))}
           </fieldset>
-          <p style={{ color: "#9aa5bb" }}>Los permisos solo reducen las capacidades del nivel y se validan también en el servidor.</p>
-          <div style={{ display: "flex", gap: 8 }}><button disabled={saving}>{saving ? "Guardando…" : "Guardar"}</button><button type="button" onClick={() => { setEditing(null); setShowEditor(false); setForm(EMPTY_FORM); }}>Cancelar</button></div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
+            <Button type="button" variant="secondary" disabled={saving} onClick={() => { setEditing(null); setShowEditor(false); setForm(EMPTY_FORM); }}>Cancelar</Button>
+            <Button type="submit" isLoading={saving}>{saving ? "Guardando…" : "Guardar"}</Button>
+          </div>
         </form>
       )}
     </main>

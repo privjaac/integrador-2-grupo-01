@@ -359,31 +359,40 @@ export default function TasksPage() {
     {error && <p role="alert" style={{ color: "#ff718b" }}>{String(error)}</p>}
     {notice && <p role="status" style={{ color: "#3fe5e5" }}>{notice}</p>}
 
-    {canCreate && <form onSubmit={submitTask} style={{ display: "grid", gap: 12, margin: "24px 0", maxWidth: 650 }}>
-      <h2>Crear tarea</h2>
-      <Input label="Proyecto" name="project_id" type="select" value={form.project_id} onChange={(e) => setForm({ ...form, project_id: e.target.value, assignee_id: "" })} required options={optionsFor(context.projects)} />
-      <Input label="Título" name="title" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} required maxLength={200} />
-      <Input label="Descripción (opcional)" name="description" type="textarea" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
-      <Input label="Fecha límite (opcional)" name="due_at" type="datetime-local" value={form.due_at} onChange={(e) => setForm({ ...form, due_at: e.target.value })} />
-      {user?.role === "L4" && <Input label="Estado inicial" name="status" type="select" value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value, assignee_id: "" })} options={[{ value: "Pendiente", label: "Pendiente" }, { value: "Asignada", label: "Asignada" }]} />}
-      {user?.role === "L4" && form.status === "Asignada" && <Input label="Ejecutor L5 de mi equipo" name="assignee_id" type="select" value={form.assignee_id} onChange={(e) => setForm({ ...form, assignee_id: e.target.value })} required options={optionsFor(developersForProject)} />}
-      <Button type="submit" disabled={!context.projects.length}>Guardar tarea</Button>
-    </form>}
+    {canCreate && <details style={{ margin: "24px 0", padding: "14px 16px", background: "#111427", border: "1px solid rgba(63,229,229,.16)", borderRadius: 8 }}>
+      <summary style={{ color: "#3fe5e5", cursor: "pointer", fontWeight: 600 }}>Crear tarea</summary>
+      <form onSubmit={submitTask} style={{ display: "grid", gap: 12, marginTop: 16, maxWidth: 700 }}>
+        <Input label="Proyecto" name="project_id" type="select" value={form.project_id} onChange={(e) => setForm({ ...form, project_id: e.target.value, assignee_id: "" })} required options={optionsFor(context.projects)} />
+        <Input label="Título" name="title" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} required maxLength={200} />
+        <Input label="Descripción (opcional)" name="description" type="textarea" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+        <Input label="Fecha límite (opcional)" name="due_at" type="datetime-local" value={form.due_at} onChange={(e) => setForm({ ...form, due_at: e.target.value })} />
+        {user?.role === "L4" && <Input label="Estado inicial" name="status" type="select" value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value, assignee_id: "" })} options={[{ value: "Pendiente", label: "Pendiente" }, { value: "Asignada", label: "Asignada" }]} />}
+        {user?.role === "L4" && form.status === "Asignada" && <Input label="Ejecutor L5 de mi equipo" name="assignee_id" type="select" value={form.assignee_id} onChange={(e) => setForm({ ...form, assignee_id: e.target.value })} required options={optionsFor(developersForProject)} />}
+        <Button type="submit" disabled={!context.projects.length}>Guardar tarea</Button>
+      </form>
+    </details>}
 
-    {user?.role === "L2" && context.projects.map((project) => {
-      const coordinations = context.coordination_assignments?.filter((item) => item.project_id === project.id) || [];
-      return <section key={project.id} style={{ margin: "24px 0", padding: 16, background: "#111427", border: "1px solid rgba(63,229,229,0.12)", borderRadius: 8 }}>
-        <h2>{project.name}</h2>
-        {can(user, "tasks", "designate") && <div style={{ display: "flex", gap: 10, alignItems: "end", maxWidth: 600 }}>
-          <div style={{ flex: 1 }}><Input label="Designar coordinación L3" name={`coordinator-${project.id}`} type="select" value={designation[project.id] || ""} onChange={(e) => setDesignation({ ...designation, [project.id]: e.target.value })} options={optionsFor(context.coordinators || [])} /></div>
-          <Button onClick={() => submitCoordination(project.id)} disabled={!designation[project.id]}>Designar</Button>
-        </div>}
-        {coordinations.map((item) => <div key={`${item.project_id}-${item.coordinator_id}`} style={{ display: "flex", justifyContent: "space-between", gap: 12, maxWidth: 600, color: "#8892a4", paddingTop: 8 }}>
-          <span>Coordinación L3 vigente: {item.coordinator_name}</span>
-          {item.can_remove && <Button size="sm" variant="ghost" onClick={() => submitRemoveCoordinator(project.id, item.coordinator_id)}>Retirar</Button>}
-        </div>)}
-      </section>;
-    })}
+    {user?.role === "L2" && <section aria-labelledby="coordination-admin-heading" style={{ marginTop: 24 }}>
+      <header style={{ marginBottom: 12 }}>
+        <h2 id="coordination-admin-heading" style={{ marginBottom: 4 }}>Administración de coordinaciones L3</h2>
+        <p style={{ color: "#aab2c5", margin: 0 }}>Desde esta vista L2 designa o retira responsables de coordinación. La consulta y ejecución de tareas pertenece a los niveles autorizados.</p>
+      </header>
+      {context.projects.map((project) => {
+        const coordinations = context.coordination_assignments?.filter((item) => item.project_id === project.id) || [];
+        return <article key={project.id} aria-labelledby={`coordination-project-${project.id}`} style={{ margin: "12px 0", padding: 16, background: "#111427", border: "1px solid rgba(63,229,229,0.12)", borderRadius: 8 }}>
+          <h3 id={`coordination-project-${project.id}`} style={{ margin: "0 0 12px" }}>{project.name}</h3>
+          {can(user, "tasks", "designate") && <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "end", maxWidth: 700 }}>
+            <div style={{ flex: "1 1 320px" }}><Input label="Designar coordinación L3" name={`coordinator-${project.id}`} type="select" value={designation[project.id] || ""} onChange={(e) => setDesignation({ ...designation, [project.id]: e.target.value })} options={[{ value: "", label: "Selecciona una coordinación L3" }, ...optionsFor(context.coordinators || [])]} /></div>
+            <Button onClick={() => submitCoordination(project.id)} disabled={!designation[project.id]}>Designar</Button>
+          </div>}
+          {coordinations.length === 0 && <p style={{ color: "#8892a4", margin: "12px 0 0" }}>Sin coordinación L3 vigente.</p>}
+          {coordinations.map((item) => <div key={`${item.project_id}-${item.coordinator_id}`} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, maxWidth: 700, color: "#aab2c5", paddingTop: 12 }}>
+            <span>Coordinación L3 vigente: <strong style={{ color: "#eef1f7" }}>{item.coordinator_name}</strong></span>
+            {item.can_remove && <Button size="sm" variant="ghost" onClick={() => submitRemoveCoordinator(project.id, item.coordinator_id)}>Retirar coordinación</Button>}
+          </div>)}
+        </article>;
+      })}
+    </section>}
 
     {can(user, "tasks", "reviewCancellationCommercial") && <section style={{ margin: "24px 0", padding: 16, background: "#111427", border: "1px solid rgba(63,229,229,0.12)", borderRadius: 8 }}>
       <h2>Intervenciones comerciales pendientes</h2>
@@ -404,11 +413,11 @@ export default function TasksPage() {
       return <section key={project.id} style={{ margin: "24px 0", padding: 16, background: "#111427", border: "1px solid rgba(63,229,229,0.12)", borderRadius: 8 }}>
         <h2>{project.name}</h2>
         {user.role === "L3" && can(user, "tasks", "delegate") && <div style={{ display: "flex", gap: 10, alignItems: "end", maxWidth: 600 }}>
-          <div style={{ flex: 1 }}><Input label="Designar líder L4" name={`leader-${project.id}`} type="select" value={designation[project.id] || ""} onChange={(e) => setDesignation({ ...designation, [project.id]: e.target.value })} options={optionsFor(context.leaders)} /></div>
+          <div style={{ flex: 1 }}><Input label="Designar líder L4" name={`leader-${project.id}`} type="select" value={designation[project.id] || ""} onChange={(e) => setDesignation({ ...designation, [project.id]: e.target.value })} options={[{ value: "", label: "Selecciona un líder L4" }, ...optionsFor(context.leaders)]} /></div>
           <Button onClick={() => submitDesignation(project.id)} disabled={!designation[project.id]}>Designar</Button>
         </div>}
         {user.role === "L4" && can(user, "tasks", "manageTeam") && <div style={{ display: "flex", gap: 10, alignItems: "end", maxWidth: 600 }}>
-          <div style={{ flex: 1 }}><Input label="Incorporar L5 al equipo" name={`member-${project.id}`} type="select" value={designation[project.id] || ""} onChange={(e) => setDesignation({ ...designation, [project.id]: e.target.value })} options={optionsFor(context.all_developers || [])} /></div>
+          <div style={{ flex: 1 }}><Input label="Incorporar L5 al equipo" name={`member-${project.id}`} type="select" value={designation[project.id] || ""} onChange={(e) => setDesignation({ ...designation, [project.id]: e.target.value })} options={[{ value: "", label: "Selecciona un integrante L5" }, ...optionsFor(context.all_developers || [])]} /></div>
           <Button onClick={() => submitMember(project.id)} disabled={!designation[project.id]}>Incorporar</Button>
         </div>}
         {user.role === "L3" && can(user, "tasks", "withdrawLeadership") && context.leadership_assignments?.filter((item) => item.project_id === project.id).map((item) => <div key={item.leader_id} style={{ display: "flex", justifyContent: "space-between", gap: 12, maxWidth: 600, color: "#8892a4", paddingTop: 8 }}><span>Líder vigente: {item.leader_name}</span>{item.can_remove && <Button size="sm" variant="ghost" onClick={() => submitRemoveLeader(project.id, item.leader_id)}>Retirar</Button>}</div>)}
@@ -427,7 +436,7 @@ export default function TasksPage() {
         const replacementOptions = options.filter((person) => Number(person.responsible_id) === Number(targetResponsibleId));
         return <Table.Row key={task.id} id={`task-row-${task.id}`} index={index} isSelected={String(task.id) === String(taskId)}>
           <Table.Cell>{task.project_name}</Table.Cell><Table.Cell><strong>{task.title}</strong>{task.due_at && <div style={{ color: "#8892a4", marginTop: 4 }}>Fecha límite: {new Date(task.due_at).toLocaleString()}</div>}{task.description && <div style={{ color: "#8892a4", marginTop: 4 }}>{task.description}</div>}{task.is_blocked && <div style={{ color: "#f3c969", marginTop: 4 }}>Bloqueada: {task.block_reason}</div>}<details open={String(task.id) === String(taskId)} style={{ color: "#8892a4", fontSize: 12, marginTop: 6 }}><summary style={{ cursor: "pointer" }}>Responsables e historial</summary><p>Responsable actual: {task.responsible_name || "—"}<br />Creada por: {task.created_by_name || "—"}<br />Registro: {new Date(task.created_at).toLocaleString()}</p>{task.assigned_at && <p>Asignada: {new Date(task.assigned_at).toLocaleString()}</p>}{task.events?.map((event, eventIndex) => <div key={`${event.event_type}-${eventIndex}`} style={{ padding: "4px 0" }}><p>{eventLabels[event.event_type] || event.event_type} por {event.actor_name} · {new Date(event.occurred_at).toLocaleString()}{event.previous_status && event.new_status && event.previous_status !== event.new_status ? ` · ${event.previous_status} → ${event.new_status}` : ""}</p>{(event.previous_assignee_name || event.assignee_name) && <p>Ejecutor: {event.previous_assignee_name || "Sin asignar"} → {event.assignee_name || "Sin asignar"}</p>}{(event.previous_responsible_name || event.responsible_name) && <p>Responsable: {event.previous_responsible_name || "Sin asignar"} → {event.responsible_name || "Sin asignar"}</p>}{event.is_blocked_before !== event.is_blocked_after && <p>Condición: {event.is_blocked_before ? "Bloqueada" : "Sin bloqueo"} → {event.is_blocked_after ? "Bloqueada" : "Sin bloqueo"}</p>}{event.result_text && !event.cancellation_data && <p>{event.event_type === "reapertura_autorizada" ? "Resultado de la reapertura" : "Resultado presentado"}: {event.result_text}</p>}{event.cancellation_data && <div>{Object.entries(event.cancellation_data).filter(([key, value]) => cancellationDataLabels[key] && value !== "").map(([key, value]) => <p key={key}>{cancellationDataLabels[key]}: {String(value)}</p>)}</div>}{event.reason && <p>{event.event_type === "reapertura_autorizada" ? "Motivo de reapertura" : event.event_type?.startsWith("cancelacion_") ? "Motivo / decisión" : "Motivo/resultado"}: {event.reason}</p>}{event.evidence && <p>Evidencia: {event.evidence}</p>}</div>)}
-          <div style={{ borderTop: "1px solid rgba(63,229,229,0.12)", marginTop: 10, paddingTop: 8 }}><strong>Comentarios</strong>{task.comments?.length ? task.comments.map((comment) => <div key={comment.id} style={{ borderTop: "1px solid rgba(255,255,255,0.06)", marginTop: 6, paddingTop: 6 }}><div>{comment.author_name} · {new Date(comment.created_at).toLocaleString()}</div><p style={{ whiteSpace: "pre-wrap", margin: "4px 0" }}>{comment.content}</p></div>) : <p>Aún no hay comentarios.</p>}{task.can_comment && <div style={{ display: "grid", gap: 6, marginTop: 8 }}><label htmlFor={`task-comment-${task.id}`}>Agregar comentario</label><textarea id={`task-comment-${task.id}`} maxLength={2000} rows={3} value={commentInputs[task.id] || ""} onChange={(event) => setCommentInputs({ ...commentInputs, [task.id]: event.target.value })} style={{ background: "#151824", color: "#eef1f7", border: "1px solid #34394a", borderRadius: 6, padding: 8, font: "inherit", resize: "vertical" }} /><Button size="sm" disabled={!commentInputs[task.id]?.trim()} onClick={() => submitTaskComment(task)}>Agregar comentario</Button></div>}</div></details></Table.Cell><Table.Cell>{task.status}{task.is_blocked && <div style={{ color: "#f3c969", fontSize: 12 }}>Bloqueada</div>}</Table.Cell><Table.Cell>{task.assignee_name || "Sin asignar"}</Table.Cell>
+            <div style={{ borderTop: "1px solid rgba(63,229,229,0.12)", marginTop: 10, paddingTop: 8 }}><strong>Comentarios</strong>{task.comments?.length ? task.comments.map((comment) => <div key={comment.id} style={{ borderTop: "1px solid rgba(255,255,255,0.06)", marginTop: 6, paddingTop: 6 }}><div>{comment.author_name} · {new Date(comment.created_at).toLocaleString()}</div><p style={{ whiteSpace: "pre-wrap", margin: "4px 0" }}>{comment.content}</p></div>) : <p>Aún no hay comentarios.</p>}{task.can_comment && <div style={{ display: "grid", gap: 6, marginTop: 8 }}><label htmlFor={`task-comment-${task.id}`}>Agregar comentario</label><textarea id={`task-comment-${task.id}`} maxLength={2000} rows={3} value={commentInputs[task.id] || ""} onChange={(event) => setCommentInputs({ ...commentInputs, [task.id]: event.target.value })} style={{ background: "#0b0d1a", color: "#eef1f7", border: "1px solid rgba(63,229,229,.28)", borderRadius: 6, padding: 8, font: "inherit", resize: "vertical" }} /><Button size="sm" disabled={!commentInputs[task.id]?.trim()} onClick={() => submitTaskComment(task)}>Agregar comentario</Button></div>}</div></details></Table.Cell><Table.Cell>{task.status}{task.is_blocked && <div style={{ color: "#f3c969", fontSize: 12 }}>Bloqueada</div>}</Table.Cell><Table.Cell>{task.assignee_name || "Sin asignar"}</Table.Cell>
           <Table.Cell>
             {user?.role === "L4" && task.status === "Pendiente" && <div style={{ display: "flex", gap: 8 }}><select aria-label={`Ejecutor para ${task.title}`} style={selectStyle} value={assignment[task.id] || ""} onChange={(e) => setAssignment({ ...assignment, [task.id]: e.target.value })}><option value="">Selecciona L5</option>{options.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select><Button size="sm" disabled={!assignment[task.id]} onClick={() => submitAssignment(task.id)}>Asignar</Button></div>}
             {can(user, "tasks", "start") && task.actions?.can_start && <Button size="sm" onClick={() => startTaskAction(task)}>{task.status === "Observada" ? "Iniciar corrección" : "Iniciar tarea"}</Button>}

@@ -121,6 +121,11 @@ export default function CommercialNotificationsPage() {
 
     {tab !== "config" ? <section style={card}>
       <h2 style={{ color: "white", margin: 0, fontSize: "1.1rem" }}>{tab === "history" ? "Historial registrado" : "Vencimientos próximos (30 días)"}</h2>
+      <p style={{ color: "#8892a4", fontSize: 13, margin: "6px 0 0" }}>
+        {tab === "history"
+          ? "El rango de fechas filtra cuándo se registró el aviso."
+          : "Se muestran compromisos documentados que vencen entre hoy y los próximos 30 días para clientes activos."}
+      </p>
       <Filters filters={filters} setFilters={setFilters} history={tab === "history"} />
       {loading ? <p style={{ color: "#cbd5e1" }}>Cargando…</p> : <div style={{ overflowX: "auto" }}><table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
         <thead><tr>{["Vencimiento", "Días", "Cliente / servicio", "Canal", "Estado registrado", "Fecha de registro", "Acciones"].map((label) => <th style={th} key={label}>{label}</th>)}</tr></thead>

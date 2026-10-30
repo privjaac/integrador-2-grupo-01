@@ -383,3 +383,18 @@ body {
     margin-left: 0 !important;
   }
 }
+/* Project forms use the same stacked label/control rhythm as the shared Input component. */
+.projects-page label:has(> input:not([type="checkbox"]), > textarea, > select),
+.project-cancellation-panel label:has(> input:not([type="checkbox"]), > textarea, > select) {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+  width: min(100%, 760px);
+}
+
+.projects-page label:has(> input[type="checkbox"]),
+.project-cancellation-panel label:has(> input[type="checkbox"]) {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
