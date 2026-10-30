@@ -148,3 +148,116 @@
   min-width: 0;
   margin-top: 10px;
 }
+.task-history-panel {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid rgba(63, 229, 229, 0.12);
+  border-radius: 6px;
+  background: rgba(11, 13, 26, 0.55);
+}
+
+.task-history-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(63, 229, 229, 0.12);
+}
+
+.task-history-header h4,
+.task-comments h4 {
+  margin: 0 0 8px;
+}
+
+.task-history-header p,
+.task-history-entry p,
+.task-comment-meta,
+.task-comment-content {
+  overflow-wrap: anywhere;
+}
+
+.task-history-header p,
+.task-history-entry p,
+.task-comment-meta {
+  color: #aab2c5;
+}
+
+.task-history-events {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0 22px;
+}
+
+.task-history-entry,
+.task-comment {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.task-history-entry h5 {
+  margin: 0 0 6px;
+  color: #3fe5e5;
+}
+
+.task-history-entry p,
+.task-comment p {
+  margin: 4px 0;
+  white-space: pre-wrap;
+}
+
+.task-history-empty {
+  color: #8892a4;
+}
+
+.task-comments {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding-top: 14px;
+  border-top: 1px solid rgba(63, 229, 229, 0.12);
+}
+
+.task-comment-meta {
+  font-size: 12px;
+}
+
+.task-comment-form {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 8px;
+}
+
+.task-comment-form textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  padding: 10px;
+  border: 1px solid rgba(63, 229, 229, 0.28);
+  border-radius: 6px;
+  background: #0b0d1a;
+  color: #eef1f7;
+  font: inherit;
+  resize: vertical;
+}
+
+@media (max-width: 640px) {
+  .task-history-panel {
+    padding: 12px;
+  }
+
+  .task-history-header {
+    flex-direction: column;
+  }
+}
+.tasks-page [role="table"] td:last-child button {
+  white-space: nowrap !important;
+  padding: 0.4rem 0.55rem !important;
+  font-size: 11px !important;
+}

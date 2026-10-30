@@ -63,6 +63,7 @@ export default function TasksPage() {
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
   const [selectedTaskId, setSelectedTaskId] = useState(taskId ? String(taskId) : "");
+  const [selectedTaskView, setSelectedTaskView] = useState("operations");
   const canCreate = can(user, "tasks", "create");
   const visibleTasks = taskId
     ? context.tasks.filter((task) => String(task.id) === String(taskId))
@@ -443,9 +444,8 @@ export default function TasksPage() {
           <Table.Cell>{task.status}{task.is_blocked && <div className="task-blocked-label">Bloqueada</div>}</Table.Cell>
           <Table.Cell>{task.assignee_name || "Sin asignar"}</Table.Cell>
           <Table.Cell>{task.due_at ? new Date(task.due_at).toLocaleString() : "—"}</Table.Cell>
-          <Table.Cell><details className="task-history"><summary>Ver historial</summary><p>Responsable actual: {task.responsible_name || "—"}<br />Creada por: {task.created_by_name || "—"}<br />Registro: {new Date(task.created_at).toLocaleString()}</p>{task.assigned_at && <p>Asignada: {new Date(task.assigned_at).toLocaleString()}</p>}{task.events?.map((event, eventIndex) => <div key={`${event.event_type}-${eventIndex}`} style={{ padding: "4px 0" }}><p>{eventLabels[event.event_type] || event.event_type} por {event.actor_name} · {new Date(event.occurred_at).toLocaleString()}{event.previous_status && event.new_status && event.previous_status !== event.new_status ? ` · ${event.previous_status} → ${event.new_status}` : ""}</p>{(event.previous_assignee_name || event.assignee_name) && <p>Ejecutor: {event.previous_assignee_name || "Sin asignar"} → {event.assignee_name || "Sin asignar"}</p>}{(event.previous_responsible_name || event.responsible_name) && <p>Responsable: {event.previous_responsible_name || "Sin asignar"} → {event.responsible_name || "Sin asignar"}</p>}{event.is_blocked_before !== event.is_blocked_after && <p>Condición: {event.is_blocked_before ? "Bloqueada" : "Sin bloqueo"} → {event.is_blocked_after ? "Bloqueada" : "Sin bloqueo"}</p>}{event.result_text && !event.cancellation_data && <p>{event.event_type === "reapertura_autorizada" ? "Resultado de la reapertura" : "Resultado presentado"}: {event.result_text}</p>}{event.cancellation_data && <div>{Object.entries(event.cancellation_data).filter(([key, value]) => cancellationDataLabels[key] && value !== "").map(([key, value]) => <p key={key}>{cancellationDataLabels[key]}: {String(value)}</p>)}</div>}{event.reason && <p>{event.event_type === "reapertura_autorizada" ? "Motivo de reapertura" : event.event_type?.startsWith("cancelacion_") ? "Motivo / decisión" : "Motivo/resultado"}: {event.reason}</p>}{event.evidence && <p>Evidencia: {event.evidence}</p>}</div>)}
-            <div style={{ borderTop: "1px solid rgba(63,229,229,0.12)", marginTop: 10, paddingTop: 8 }}><strong>Comentarios</strong>{task.comments?.length ? task.comments.map((comment) => <div key={comment.id} style={{ borderTop: "1px solid rgba(255,255,255,0.06)", marginTop: 6, paddingTop: 6 }}><div>{comment.author_name} · {new Date(comment.created_at).toLocaleString()}</div><p style={{ whiteSpace: "pre-wrap", margin: "4px 0" }}>{comment.content}</p></div>) : <p>Aún no hay comentarios.</p>}{task.can_comment && <div style={{ display: "grid", gap: 6, marginTop: 8 }}><label htmlFor={`task-comment-${task.id}`}>Agregar comentario</label><textarea id={`task-comment-${task.id}`} maxLength={2000} rows={3} value={commentInputs[task.id] || ""} onChange={(event) => setCommentInputs({ ...commentInputs, [task.id]: event.target.value })} style={{ background: "#0b0d1a", color: "#eef1f7", border: "1px solid rgba(63,229,229,.28)", borderRadius: 6, padding: 8, font: "inherit", resize: "vertical" }} /><Button size="sm" disabled={!commentInputs[task.id]?.trim()} onClick={() => submitTaskComment(task)}>Agregar comentario</Button></div>}</div></details></Table.Cell>
-          <Table.Cell><Button size="sm" variant={String(task.id) === String(selectedTaskId) ? "primary" : "ghost"} aria-expanded={String(task.id) === String(selectedTaskId)} aria-controls={`task-actions-panel-${task.id}`} onClick={() => setSelectedTaskId((current) => String(current) === String(task.id) ? "" : String(task.id))}>{String(task.id) === String(selectedTaskId) ? "Cerrar" : "Abrir"}</Button></Table.Cell>
+          <Table.Cell><Button size="sm" variant={String(task.id) === String(selectedTaskId) && selectedTaskView === "history" ? "primary" : "ghost"} aria-expanded={String(task.id) === String(selectedTaskId) && selectedTaskView === "history"} aria-controls={`task-actions-panel-${task.id}`} aria-label={`Ver historial para ${task.title}`} onClick={() => { setSelectedTaskId(String(task.id)); setSelectedTaskView("history"); }}>Historial</Button></Table.Cell>
+          <Table.Cell><Button size="sm" variant={String(task.id) === String(selectedTaskId) && selectedTaskView === "operations" ? "primary" : "ghost"} aria-expanded={String(task.id) === String(selectedTaskId) && selectedTaskView === "operations"} aria-controls={`task-actions-panel-${task.id}`} aria-label={`Abrir acciones para ${task.title}`} onClick={() => { setSelectedTaskId(String(task.id)); setSelectedTaskView("operations"); }}>Abrir</Button></Table.Cell>
         </Table.Row>)}</Table.Body>
     </Table>
 
@@ -457,10 +457,40 @@ export default function TasksPage() {
       const replacementOptions = options.filter((person) => Number(person.responsible_id) === Number(targetResponsibleId));
       return <section id={`task-actions-panel-${task.id}`} className="task-actions-panel" aria-labelledby="task-actions-heading">
         <header className="task-actions-header">
-          <div><h3 id="task-actions-heading">Operaciones de la tarea</h3><p>{task.project_name} · {task.title} · {task.status}</p></div>
+          <div><h3 id="task-actions-heading">{task.project_name} · {task.title}</h3><p>{task.status}</p></div>
           <Button size="sm" variant="ghost" onClick={() => setSelectedTaskId("")}>Cerrar</Button>
         </header>
-        <div className="task-actions-grid">
+        {selectedTaskView === "history" ? <section className="task-history-panel" aria-labelledby="task-history-heading">
+          <header className="task-history-header">
+            <div><h4 id="task-history-heading">Historial y comentarios</h4><p>Responsable actual: {task.responsible_name || "—"} · Creada por: {task.created_by_name || "—"} · Registro: {new Date(task.created_at).toLocaleString()}{task.assigned_at ? ` · Asignada: ${new Date(task.assigned_at).toLocaleString()}` : ""}</p></div>
+            <Button size="sm" variant="secondary" onClick={() => setSelectedTaskView("operations")}>Ver acciones</Button>
+          </header>
+          <div className="task-history-events">
+            {task.events?.length ? task.events.map((event, eventIndex) => <article className="task-history-entry" key={`${event.event_type}-${eventIndex}`}>
+              <h5>{eventLabels[event.event_type] || event.event_type}</h5>
+              <p>{event.actor_name} · {new Date(event.occurred_at).toLocaleString()}{event.previous_status && event.new_status && event.previous_status !== event.new_status ? ` · ${event.previous_status} → ${event.new_status}` : ""}</p>
+              {(event.previous_assignee_name || event.assignee_name) && <p>Ejecutor: {event.previous_assignee_name || "Sin asignar"} → {event.assignee_name || "Sin asignar"}</p>}
+              {(event.previous_responsible_name || event.responsible_name) && <p>Responsable: {event.previous_responsible_name || "Sin asignar"} → {event.responsible_name || "Sin asignar"}</p>}
+              {event.is_blocked_before !== event.is_blocked_after && <p>Condición: {event.is_blocked_before ? "Bloqueada" : "Sin bloqueo"} → {event.is_blocked_after ? "Bloqueada" : "Sin bloqueo"}</p>}
+              {event.result_text && !event.cancellation_data && <p>{event.event_type === "reapertura_autorizada" ? "Resultado de la reapertura" : "Resultado presentado"}: {event.result_text}</p>}
+              {event.cancellation_data && <div>{Object.entries(event.cancellation_data).filter(([key, value]) => cancellationDataLabels[key] && value !== "").map(([key, value]) => <p key={key}>{cancellationDataLabels[key]}: {String(value)}</p>)}</div>}
+              {event.reason && <p>{event.event_type === "reapertura_autorizada" ? "Motivo de reapertura" : event.event_type?.startsWith("cancelacion_") ? "Motivo / decisión" : "Motivo/resultado"}: {event.reason}</p>}
+              {event.evidence && <p>Evidencia: {event.evidence}</p>}
+            </article>) : <p className="task-history-empty">Aún no hay eventos registrados.</p>}
+          </div>
+          <section className="task-comments" aria-labelledby="task-comments-heading">
+            <h4 id="task-comments-heading">Comentarios</h4>
+            {task.comments?.length ? task.comments.map((comment) => <article className="task-comment" key={comment.id}>
+              <p className="task-comment-meta">{comment.author_name} · {new Date(comment.created_at).toLocaleString()}</p>
+              <p className="task-comment-content">{comment.content}</p>
+            </article>) : <p className="task-history-empty">Aún no hay comentarios.</p>}
+            {task.can_comment && <div className="task-comment-form">
+              <label htmlFor={`task-comment-${task.id}`}>Agregar comentario</label>
+              <textarea id={`task-comment-${task.id}`} maxLength={2000} rows={4} value={commentInputs[task.id] || ""} onChange={(event) => setCommentInputs({ ...commentInputs, [task.id]: event.target.value })} />
+              <Button size="sm" disabled={!commentInputs[task.id]?.trim()} onClick={() => submitTaskComment(task)}>Agregar comentario</Button>
+            </div>}
+          </section>
+        </section> : <div className="task-actions-grid">
             {canAssignTaskInList(user, task, context.projects) && <details className="task-operation"><summary>Asignar ejecutor</summary><div className="task-operation-fields"><select aria-label={`Ejecutor para ${task.title}`} style={selectStyle} value={assignment[task.id] || ""} onChange={(e) => setAssignment({ ...assignment, [task.id]: e.target.value })}><option value="">Selecciona L5</option>{options.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select><Button size="sm" disabled={!assignment[task.id]} onClick={() => submitAssignment(task.id)}>Asignar</Button></div></details>}
             {can(user, "tasks", "start") && task.actions?.can_start && <Button size="sm" onClick={() => startTaskAction(task)}>{task.status === "Observada" ? "Iniciar corrección" : "Iniciar tarea"}</Button>}
             {can(user, "tasks", "submitReview") && task.actions?.can_submit_result && <details className="task-operation"><summary>Presentar resultado</summary><div className="task-operation-fields"><Input label="Resultado presentado" name={`result-${task.id}`} type="textarea" value={results[task.id] || ""} onChange={(e) => setResults({ ...results, [task.id]: e.target.value })} required /><Button size="sm" disabled={!results[task.id]?.trim()} onClick={() => submitResult(task.id)}>Enviar a revisión</Button></div></details>}
@@ -492,7 +522,7 @@ export default function TasksPage() {
             {can(user, "tasks", "blockTask") && task.actions?.can_block && <details className="task-operation"><summary>Registrar impedimento</summary><div className="task-operation-fields"><Input label="Impedimento" name={`block-reason-${task.id}`} type="textarea" value={blockInputs[task.id]?.reason || ""} onChange={(e) => setBlockInputs({ ...blockInputs, [task.id]: { ...blockInputs[task.id], reason: e.target.value } })} /><Input label="Evidencia (opcional)" name={`block-evidence-${task.id}`} value={blockInputs[task.id]?.evidence || ""} onChange={(e) => setBlockInputs({ ...blockInputs, [task.id]: { ...blockInputs[task.id], evidence: e.target.value } })} /><Button size="sm" variant="ghost" disabled={!blockInputs[task.id]?.reason?.trim()} onClick={() => changeBlock(task, true)}>Registrar bloqueo</Button></div></details>}
             {can(user, "tasks", "unblockTask") && task.actions?.can_unblock && <details className="task-operation"><summary>Levantar bloqueo</summary><div className="task-operation-fields"><Input label="Resultado del levantamiento" name={`unblock-reason-${task.id}`} type="textarea" value={blockInputs[task.id]?.reason || ""} onChange={(e) => setBlockInputs({ ...blockInputs, [task.id]: { ...blockInputs[task.id], reason: e.target.value } })} /><Input label="Evidencia (opcional)" name={`unblock-evidence-${task.id}`} value={blockInputs[task.id]?.evidence || ""} onChange={(e) => setBlockInputs({ ...blockInputs, [task.id]: { ...blockInputs[task.id], evidence: e.target.value } })} /><Button size="sm" disabled={!blockInputs[task.id]?.reason?.trim()} onClick={() => changeBlock(task, false)}>Levantar bloqueo</Button></div></details>}
             {can(user, "tasks", "reportIncident") && task.actions?.can_report_incident && <details className="task-operation"><summary>Comunicar incidencia</summary><div className="task-operation-fields"><Input label="Incidencia / solicitud de intervención" name={`incident-${task.id}`} type="textarea" value={incidentInputs[task.id]?.reason || ""} onChange={(e) => setIncidentInputs({ ...incidentInputs, [task.id]: { ...incidentInputs[task.id], reason: e.target.value } })} /><Input label="Evidencia (opcional)" name={`incident-evidence-${task.id}`} value={incidentInputs[task.id]?.evidence || ""} onChange={(e) => setIncidentInputs({ ...incidentInputs, [task.id]: { ...incidentInputs[task.id], evidence: e.target.value } })} /><Button size="sm" variant="ghost" disabled={!incidentInputs[task.id]?.reason?.trim()} onClick={() => reportIncident(task.id)}>Comunicar incidencia</Button></div></details>}
-        </div>
+        </div>}
       </section>;
     })()}
     </>}
