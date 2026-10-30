@@ -31,10 +31,14 @@ export default function SessionWatcher() {
       showToast("warning", "SESIÓN POR VENCER", msg);
     };
 
-    const handleExpired = async () => {
+    const handleExpired = async (event) => {
+      const reason = event.detail?.reason;
       const closed = await logout();
       if (closed) {
-        showToast("error", "SESIÓN EXPIRADA", "Tu sesión se cerró por 24h de inactividad. Iniciá sesión nuevamente.");
+        const message = reason === "invalid"
+          ? "La sesión expiró o fue revocada. Iniciá sesión nuevamente."
+          : "Tu sesión se cerró por 24h de inactividad. Iniciá sesión nuevamente.";
+        showToast("error", "SESIÓN EXPIRADA", message);
         navigate("/login", { replace: true });
       } else {
         showToast("error", "CIERRE NO CONFIRMADO", "No se pudo confirmar la revocación de la sesión. Reintenta cuando haya conexión.");

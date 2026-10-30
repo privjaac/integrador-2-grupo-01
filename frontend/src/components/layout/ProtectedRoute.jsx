@@ -42,7 +42,13 @@ export default function ProtectedRoute({ children }) {
   // SECCIÓN 2 — ESTADO DE AUTENTICACIÓN Y UBICACIÓN
   // --------------------------------------------------------------------------
 
-  const { isAuthenticated, isLoading, user } = useAuth();
+  const {
+    isAuthenticated,
+    isLoading,
+    sessionRestoreError,
+    retrySessionRestore,
+    user,
+  } = useAuth();
   const location = useLocation();
 
   // --------------------------------------------------------------------------
@@ -51,6 +57,16 @@ export default function ProtectedRoute({ children }) {
 
   if (isLoading) {
     return <LoadingSpinner fullPage label="Verificando sesión..." />;
+  }
+
+  if (sessionRestoreError) {
+    return (
+      <main role="alert" style={{ padding: 32, color: "#e2e8f0" }}>
+        <h1>No se pudo verificar la sesión</h1>
+        <p>La conexión no permitió confirmar tu acceso. La sesión guardada se conserva para reintentar.</p>
+        <button type="button" onClick={retrySessionRestore}>Reintentar</button>
+      </main>
+    );
   }
 
   // --------------------------------------------------------------------------

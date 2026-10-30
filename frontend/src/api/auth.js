@@ -34,6 +34,7 @@ export async function loginApi(username, password) {
 export async function getCurrentUser(accessToken) {
   const response = await axiosInstance.get("/api/users/me", {
     headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+    skipAuthRefresh: true,
   });
   return response.data;
 }

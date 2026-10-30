@@ -14,6 +14,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import axiosInstance from "../api/axios";
 import { AuthContext } from "./AuthContextInstance";
+import { isDefinitiveSessionFailure, withCoordinatedRefresh } from "../utils/sessionRefresh";
 
 const USE_MOCK = import.meta.env.VITE_USE_MOCK === "true";
 
@@ -43,11 +44,16 @@ export function AuthProvider({ children }) {
   const [token, setToken] = useState(null);
   const [user, setUser] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [sessionRestoreError, setSessionRestoreError] = useState(false);
+  const [restoreAttempt, setRestoreAttempt] = useState(0);
 
   const refreshIntervalRef = useRef(null);
   const checkIntervalRef = useRef(null);
 
   const isAuthenticated = token !== null;
+  const retrySessionRestore = useCallback(() => {
+    setRestoreAttempt((attempt) => attempt + 1);
+  }, []);
 
   // ── LOGOUT ────────────────────────────────────────────────────────────────
 
@@ -59,6 +65,7 @@ export function AuthProvider({ children }) {
     localStorage.removeItem(KEY_REFRESH);
     localStorage.removeItem(KEY_LAST_CLICK);
     localStorage.removeItem(KEY_TIMER2_START);
+    setSessionRestoreError(false);
     clearInterval(refreshIntervalRef.current);
     clearInterval(checkIntervalRef.current);
   }, []);
@@ -84,29 +91,42 @@ export function AuthProvider({ children }) {
       return token;
     }
 
-    const savedRefresh = localStorage.getItem(KEY_REFRESH);
-    if (!savedRefresh) {
+    if (!localStorage.getItem(KEY_REFRESH)) {
       await logout({ localOnly: true });
       return null;
     }
 
     try {
-      const res = await axiosInstance.post("/api/auth/refresh", {
-        refresh_token: savedRefresh,
-      });
-      const { access_token, refresh_token: newRefresh } = res.data;
-      const profile = await axiosInstance.get("/api/users/me", {
-        headers: { Authorization: `Bearer ${access_token}` },
-      });
-      const currentUser = safeUserSummary(profile.data);
-      setToken(access_token);
-      setUser(currentUser);
-      window.__elisa_token__ = access_token;
-      if (newRefresh) localStorage.setItem(KEY_REFRESH, newRefresh);
-      localStorage.setItem(KEY_USER, JSON.stringify(currentUser));
-      return access_token;
-    } catch {
-      await logout({ localOnly: true });
+      const restored = await withCoordinatedRefresh(
+        () => localStorage.getItem(KEY_REFRESH),
+        async (savedRefresh) => {
+          if (!savedRefresh) return null;
+          const res = await axiosInstance.post("/api/auth/refresh", {
+            refresh_token: savedRefresh,
+          }, { skipAuthRefresh: true });
+          const { access_token, refresh_token: newRefresh } = res.data;
+          if (newRefresh) localStorage.setItem(KEY_REFRESH, newRefresh);
+          const profile = await axiosInstance.get("/api/users/me", {
+            headers: { Authorization: `Bearer ${access_token}` },
+            skipAuthRefresh: true,
+          });
+          return { accessToken: access_token, user: safeUserSummary(profile.data) };
+        },
+      );
+      if (!restored) {
+        await logout({ localOnly: true });
+        return null;
+      }
+      setToken(restored.accessToken);
+      setUser(restored.user);
+      setSessionRestoreError(false);
+      window.__elisa_token__ = restored.accessToken;
+      localStorage.setItem(KEY_USER, JSON.stringify(restored.user));
+      return restored.accessToken;
+    } catch (error) {
+      if (isDefinitiveSessionFailure(error)) {
+        await logout({ localOnly: true });
+      }
       return null;
     }
   }, [token, logout]);
@@ -182,6 +202,7 @@ export function AuthProvider({ children }) {
 
       setToken(accessToken);
       setUser(userData);
+      setSessionRestoreError(false);
       window.__elisa_token__ = accessToken;
 
       // Solo guarda refresh token si no es mock (en mock es un string fake)
@@ -222,6 +243,8 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     const init = async () => {
+      setIsLoading(true);
+      setSessionRestoreError(false);
       const savedUser = localStorage.getItem(KEY_USER);
       const lastClick = parseInt(localStorage.getItem(KEY_LAST_CLICK) || "0");
       const timer2Start = parseInt(
@@ -281,30 +304,89 @@ export function AuthProvider({ children }) {
       }
 
       try {
-        const parsedUser = JSON.parse(savedUser);
-        const res = await axiosInstance.post("/api/auth/refresh", {
-          refresh_token: savedRefresh,
-        });
-        const { access_token, refresh_token: newRefresh } = res.data;
-        const profile = await axiosInstance.get("/api/users/me", {
-          headers: { Authorization: `Bearer ${access_token}` },
-        });
-        const currentUser = { ...parsedUser, ...safeUserSummary(profile.data) };
-        setToken(access_token);
-        setUser(currentUser);
-        window.__elisa_token__ = access_token;
-        if (newRefresh) localStorage.setItem(KEY_REFRESH, newRefresh);
-        localStorage.setItem(KEY_USER, JSON.stringify(currentUser));
+        const restored = await withCoordinatedRefresh(
+          () => localStorage.getItem(KEY_REFRESH),
+          async (currentRefresh) => {
+            if (!currentRefresh) {
+              const missingRefresh = new Error("Missing refresh token");
+              missingRefresh.response = { status: 401 };
+              throw missingRefresh;
+            }
+            const res = await axiosInstance.post("/api/auth/refresh", {
+              refresh_token: currentRefresh,
+            }, { skipAuthRefresh: true });
+            const { access_token, refresh_token: newRefresh } = res.data;
+            if (newRefresh) localStorage.setItem(KEY_REFRESH, newRefresh);
+            const profile = await axiosInstance.get("/api/users/me", {
+              headers: { Authorization: `Bearer ${access_token}` },
+              skipAuthRefresh: true,
+            });
+            const parsedUser = JSON.parse(savedUser);
+            return {
+              accessToken: access_token,
+              user: { ...parsedUser, ...safeUserSummary(profile.data) },
+            };
+          },
+        );
+        if (!restored) {
+          logout({ localOnly: true });
+          setIsLoading(false);
+          return;
+        }
+        setToken(restored.accessToken);
+        setUser(restored.user);
+        window.__elisa_token__ = restored.accessToken;
+        localStorage.setItem(KEY_USER, JSON.stringify(restored.user));
         startCycles();
-      } catch {
-        logout({ localOnly: true });
+      } catch (error) {
+        if (isDefinitiveSessionFailure(error)) {
+          logout({ localOnly: true });
+        } else {
+          setSessionRestoreError(true);
+        }
       }
 
       setIsLoading(false);
     };
 
     init();
-  }, []); // eslint-disable-line
+  }, [restoreAttempt]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Si una solicitud normal recibe 401, intenta una única rotación y repite
+  // esa solicitud. Los 403 y los endpoints de autenticación no se reintentan.
+  useEffect(() => {
+    const interceptorId = axiosInstance.interceptors.response.use(
+      (response) => response,
+      async (error) => {
+        const request = error.config;
+        const isAuthEndpoint = request?.url?.startsWith("/api/auth/");
+        if (
+          error.response?.status !== 401
+          || !request
+          || request.skipAuthRefresh
+          || request.__elisaAuthRetried
+          || isAuthEndpoint
+        ) {
+          return Promise.reject(error);
+        }
+
+        request.__elisaAuthRetried = true;
+        const newAccessToken = await refreshAccessToken();
+        if (newAccessToken) {
+          request.headers = request.headers || {};
+          request.headers.Authorization = `Bearer ${newAccessToken}`;
+          return axiosInstance(request);
+        }
+        if (!localStorage.getItem(KEY_REFRESH)) {
+          window.dispatchEvent(new CustomEvent("elisa:session-expired", {
+            detail: { reason: "invalid" },
+          }));
+        }
+        return Promise.reject(error);
+      },
+    );
+    return () => axiosInstance.interceptors.response.eject(interceptorId);
+  }, [refreshAccessToken]);
 
   // ── ESCUCHAR CLICKS ───────────────────────────────────────────────────────
 
@@ -351,8 +433,10 @@ export function AuthProvider({ children }) {
         user,
         isAuthenticated,
         isLoading,
+        sessionRestoreError,
         login,
         logout,
+        retrySessionRestore,
         refreshAccessToken,
       }}
     >
