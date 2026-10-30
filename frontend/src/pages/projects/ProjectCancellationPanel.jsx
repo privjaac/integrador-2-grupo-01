@@ -8,6 +8,7 @@ import {
 import Button from "../../components/ui/Button";
 import { ProjectTimeline } from "./ProjectEventDetails";
 import { cancellationEventLabels, resumptionEventLabels } from "./projectEventLabels";
+import { projectCancellationStatus } from "./projectCancellationStatus";
 import "./ProjectsPage.css";
 
 const fieldStyle = { boxSizing: "border-box", padding: "10px 12px", background: "#0b0d1a", color: "white", border: "1px solid rgba(63,229,229,.28)", borderRadius: 6, width: "100%", font: "inherit" };
@@ -47,7 +48,9 @@ export default function ProjectCancellationPanel({ project, user, canRequest, ca
     return !["denegada", "decision_l1_denegada", "efectiva"].includes(last);
   });
   const latestEvent = current?.events.at(-1);
-  const isEffective = cancellations.some((item) => item.events.some((event) => event.event_type === "efectiva"));
+  const cancellationStatus = projectCancellationStatus(cancellations, resumptions);
+  const effectiveCancellation = cancellationStatus.current?.cancellation;
+  const isEffective = Boolean(effectiveCancellation);
   const canOpenCancellation = canRequest && !current && !isEffective && project.status !== "Entregado";
   const canReview = canEvaluate && current && latestEvent?.event_type === "solicitada";
   const canMakeEffective = canResolve && current && latestEvent?.event_type === "autorizada";
@@ -55,7 +58,6 @@ export default function ProjectCancellationPanel({ project, user, canRequest, ca
     && !current.events.some((event) => ["evaluacion_comercial", "decision_l1_autorizada", "decision_l1_denegada"].includes(event.event_type));
   const canDecideCommercially = user?.role === "L2" && current && latestEvent?.event_type === "evaluacion_comercial";
   const canApplyEffectivity = canResolve && current && ["autorizada", "decision_l1_autorizada"].includes(latestEvent?.event_type);
-  const effectiveCancellation = [...cancellations].reverse().find((item) => item.events.some((event) => event.event_type === "efectiva"));
   const existingResumption = effectiveCancellation && resumptions.find((item) => item.cancellation_id === effectiveCancellation.id);
   const canEvaluateResume = user?.role === "L3" && effectiveCancellation && !existingResumption;
   const canDecideResume = user?.role === "L2" && existingResumption
@@ -80,7 +82,8 @@ export default function ProjectCancellationPanel({ project, user, canRequest, ca
       <h3 style={{ margin: "0 0 6px" }}>Cancelación integral · {project.name}</h3>
       <p style={{ color: "#aab2c5", margin: 0 }}>Al hacerse efectiva, restringe el trabajo ordinario del alcance registrado. No cambia el estado ni cancela tareas en bloque.</p>
     </header>
-    {isEffective && <p role="status" style={{ color: "#f3c969", margin: 0, padding: 10, background: "rgba(243,201,105,.08)", borderRadius: 6 }}>Cancelación efectiva: se conserva el estado ordinario «{project.status}» y el historial del proyecto.</p>}
+    {isEffective && <p role="status" style={{ color: "#f3c969", margin: 0, padding: 10, background: "rgba(243,201,105,.08)", borderRadius: 6 }}>Cancelación efectiva vigente (expediente #{effectiveCancellation.id}): se conserva el estado ordinario «{project.status}» y el historial del proyecto.</p>}
+    {cancellationStatus.resumed && <p role="status" style={{ color: "#aab2c5", margin: 0, padding: 10, background: "rgba(255,255,255,.035)", borderRadius: 6 }}>Antecedente histórico: la cancelación efectiva del expediente #{cancellationStatus.resumed.cancellation.id} fue seguida por una reanudación registrada. No representa una restricción vigente.</p>}
     {error && <p role="alert" style={{ color: "#ff718b" }}>{error}</p>}
     {canOpenCancellation && <details>
       <summary style={disclosureStyle}>Solicitar cancelación integral</summary>

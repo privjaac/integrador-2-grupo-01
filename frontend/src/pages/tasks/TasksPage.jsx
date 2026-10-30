@@ -7,6 +7,8 @@ import Table from "../../components/ui/Table";
 import { useAuth } from "../../hooks/useAuth";
 import { can } from "../../utils/permissions";
 import { canAssignTaskInList } from "./taskListPermissions";
+import { canCreateTaskInContext } from "./taskCreationVisibility";
+import { taskExecutorChange } from "./taskHistoryPresentation";
 import "./TasksPage.css";
 
 const blankTask = { project_id: "", title: "", description: "", status: "Pendiente", assignee_id: "", due_at: "" };
@@ -64,7 +66,7 @@ export default function TasksPage() {
   const [loading, setLoading] = useState(true);
   const [selectedTaskId, setSelectedTaskId] = useState(taskId ? String(taskId) : "");
   const [selectedTaskView, setSelectedTaskView] = useState("operations");
-  const canCreate = can(user, "tasks", "create");
+  const canCreate = canCreateTaskInContext(user, context.projects);
   const visibleTasks = taskId
     ? context.tasks.filter((task) => String(task.id) === String(taskId))
     : context.tasks;
@@ -469,7 +471,7 @@ export default function TasksPage() {
             {task.events?.length ? task.events.map((event, eventIndex) => <article className="task-history-entry" key={`${event.event_type}-${eventIndex}`}>
               <h5>{eventLabels[event.event_type] || event.event_type}</h5>
               <p>{event.actor_name} · {new Date(event.occurred_at).toLocaleString()}{event.previous_status && event.new_status && event.previous_status !== event.new_status ? ` · ${event.previous_status} → ${event.new_status}` : ""}</p>
-              {(event.previous_assignee_name || event.assignee_name) && <p>Ejecutor: {event.previous_assignee_name || "Sin asignar"} → {event.assignee_name || "Sin asignar"}</p>}
+              {taskExecutorChange(event) && <p>Ejecutor: {taskExecutorChange(event).previousName} → {taskExecutorChange(event).nextName}</p>}
               {(event.previous_responsible_name || event.responsible_name) && <p>Responsable: {event.previous_responsible_name || "Sin asignar"} → {event.responsible_name || "Sin asignar"}</p>}
               {event.is_blocked_before !== event.is_blocked_after && <p>Condición: {event.is_blocked_before ? "Bloqueada" : "Sin bloqueo"} → {event.is_blocked_after ? "Bloqueada" : "Sin bloqueo"}</p>}
               {event.result_text && !event.cancellation_data && <p>{event.event_type === "reapertura_autorizada" ? "Resultado de la reapertura" : "Resultado presentado"}: {event.result_text}</p>}
