@@ -6,6 +6,9 @@ import {
   getL1SubstitutionContext, getProjectSubstitutions,
 } from "../../api/projects";
 import Button from "../../components/ui/Button";
+import { ProjectTimeline } from "./ProjectEventDetails";
+import { cancellationEventLabels, resumptionEventLabels } from "./projectEventLabels";
+import "./ProjectsPage.css";
 
 const fieldStyle = { boxSizing: "border-box", padding: "10px 12px", background: "#0b0d1a", color: "white", border: "1px solid rgba(63,229,229,.28)", borderRadius: 6, width: "100%", font: "inherit" };
 const pageStyle = { display: "grid", gap: 20, maxWidth: 1200, margin: "0 auto", color: "white" };
@@ -90,10 +93,7 @@ export default function ProjectExceptionalWorklist() {
           {!!item.events.length && <details>
             <summary style={disclosureStyle}>Ver antecedentes e historial ({item.events.length})</summary>
             <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
-              {item.events.map((event, index) => <div key={`${event.event_type}-${index}`} style={{ borderLeft: "2px solid rgba(63,229,229,.35)", paddingLeft: 12 }}>
-                <p style={mutedStyle}>{event.event_type} · {event.actor_name} · {displayDate(event.occurred_at)} · {event.reason} · {event.evidence}</p>
-                {event.data && <details><summary style={disclosureStyle}>Datos registrados</summary><pre style={{ whiteSpace: "pre-wrap", fontSize: 12 }}>{JSON.stringify(event.data, null, 2)}</pre></details>}
-              </div>)}
+              <ProjectTimeline events={item.events} labels={cancellationEventLabels} />
             </div>
           </details>}
           <label style={{ display: "flex", alignItems: "center", gap: 8 }}><input type="checkbox" checked={Boolean(input.authorized)} onChange={(event) => update(key, "authorized", event.target.checked)} /> Autorizar cancelación excepcional</label>
@@ -129,10 +129,10 @@ export default function ProjectExceptionalWorklist() {
             <div style={{ marginTop: 10 }}>
               <strong>{item.cancellation.reason}</strong>
               <p style={mutedStyle}>Alcance: {item.cancellation.cancelled_scope} · evidencia: {item.cancellation.evidence}</p>
-              {[...item.cancellation.events, ...item.events].map((event, index) => <div key={`${event.event_type}-${index}`} style={{ borderLeft: "2px solid rgba(63,229,229,.35)", paddingLeft: 12, margin: "8px 0" }}>
-                <p style={mutedStyle}>{event.event_type} · {event.actor_name} · {displayDate(event.occurred_at)} · {event.reason} · {event.evidence}</p>
-                {event.data && <details><summary style={disclosureStyle}>Datos registrados</summary><pre style={{ whiteSpace: "pre-wrap", fontSize: 12 }}>{JSON.stringify(event.data, null, 2)}</pre></details>}
-              </div>)}
+              <ProjectTimeline
+                events={[...item.cancellation.events, ...item.events]}
+                labels={{ ...cancellationEventLabels, ...resumptionEventLabels }}
+              />
             </div>
           </details>
           <label style={{ display: "flex", alignItems: "center", gap: 8 }}><input type="checkbox" checked={Boolean(input.authorized)} onChange={(event) => update(key, "authorized", event.target.checked)} /> Autorizar reanudación excepcional</label>

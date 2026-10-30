@@ -14,6 +14,7 @@ import {
 } from "../../api/projects";
 import { useAuth } from "../../hooks/useAuth";
 import { can } from "../../utils/permissions";
+import "./ProjectsPage.css";
 
 const fieldStyle = {
   boxSizing: "border-box",
@@ -24,6 +25,19 @@ const fieldStyle = {
   borderRadius: 6,
   font: "inherit",
 };
+
+const authorizationEventLabels = { retirada: "Retirada por L2", sustituida: "Sustituida por otra habilitación" };
+
+function getAuthorizationStatus(item, conditionsField = "conditions_accredited") {
+  const event = item.events?.[0];
+  if (event?.event_type === "retirada") return "Retirada";
+  if (event?.event_type === "sustituida") return "Sustituida";
+  if (!item[conditionsField]) return "Condiciones sin acreditar";
+  const now = Date.now();
+  if (new Date(item.effective_at).getTime() > now) return "Aún no efectiva";
+  if (item.expires_at && new Date(item.expires_at).getTime() <= now) return "Vencida";
+  return "Vigente";
+}
 
 export default function ProjectsPage() {
   const { user } = useAuth();
@@ -43,6 +57,7 @@ export default function ProjectsPage() {
   const canEvaluateCancellation = can(user, "projects", "evaluateProjectCancellation");
   const canResolveCancellation = can(user, "projects", "resolveProjectCancellation");
   const [projects, setProjects] = useState([]);
+  const [selectedProjectId, setSelectedProjectId] = useState("");
   const [clients, setClients] = useState([]);
   const [commercialAuthorizations, setCommercialAuthorizations] = useState({});
   const [taskContext, setTaskContext] = useState({ coordinators: [], coordination_assignments: [] });
@@ -76,6 +91,13 @@ export default function ProjectsPage() {
         ? await getTaskContext()
         : { coordinators: [], coordination_assignments: [], projects: [] };
       setProjects(projectRows);
+      const scopedIds = user?.role === "L3" ? new Set((context.projects || []).map((item) => item.id)) : null;
+      const initialProject = projectRows.find((project) => scopedIds?.has(project.id)) || projectRows[0];
+      setSelectedProjectId((current) => {
+        const currentIsAllowed = projectRows.some((project) => String(project.id) === current)
+          && (user?.role !== "L3" || scopedIds.has(Number(current)));
+        return currentIsAllowed ? current : String(initialProject?.id || "");
+      });
       setClients(clientRows);
       setTaskContext(context);
       const authorizationProjectIds = user?.role === "L3"
@@ -354,6 +376,9 @@ export default function ProjectsPage() {
   const cancellationProjects = canRequestCancellation || canResolveCancellation
     ? projects
     : canEvaluateCancellation ? projects.filter((project) => scopedProjects.has(project.id)) : [];
+  const selectedProject = projects.find((project) => String(project.id) === selectedProjectId) || null;
+  const workspaceProjects = selectedProject ? [selectedProject] : [];
+  const workspaceCancellationProjects = cancellationProjects.filter((project) => project.id === selectedProject?.id);
 
   const validationFields = [
     ["scope_within_current_commitment", "El alcance está incluido en el compromiso vigente"],
@@ -406,7 +431,7 @@ export default function ProjectsPage() {
     setFormalizationInputs((items) => ({ ...items, [projectId]: { ...items[projectId], [field]: value } }));
   }
 
-  return <section className="projects-page" style={{ color: "white", maxWidth: 1200, margin: "0 auto" }}>
+  return <section className="projects-page" style={{ color: "white", margin: "0 auto" }}>
     <header style={{ marginBottom: 20 }}>
       <h1 style={{ marginBottom: 6 }}>Proyectos</h1>
       <p style={{ color: "#aab2c5", margin: 0 }}>Los proyectos nuevos se crean en estado Planificado. Las acciones disponibles dependen del rol, la coordinación y el estado de cada proyecto.</p>
@@ -429,31 +454,65 @@ export default function ProjectsPage() {
       <h2 style={{ margin: "0 0 4px" }}>Proyectos registrados</h2>
       {!loading && <p style={{ color: "#aab2c5", margin: 0 }}>{projects.length} proyecto{projects.length === 1 ? "" : "s"} en el ámbito disponible</p>}
     </div>
-    {loading ? <p>Cargando…</p> : projects.length === 0 ? <p>No hay proyectos registrados.</p> : <div style={{ overflowX: "auto", border: "1px solid rgba(63,229,229,.15)", borderRadius: 8 }}><table aria-label="Proyectos registrados" style={{ width: "100%", minWidth: user?.role === "L2" ? 1120 : 900, borderCollapse: "collapse", tableLayout: "auto" }}><thead><tr>{["Nombre", "Cliente", "Estado", "Objetivo", "Alcance", ...(user?.role === "L2" ? ["Coordinación L3"] : [])].map((label) => <th key={label} scope="col" style={{ textAlign: "left", padding: "12px 10px", borderBottom: "1px solid #34394a", color: "#8892a4", fontSize: 12, textTransform: "uppercase", letterSpacing: ".06em", whiteSpace: "nowrap" }}>{label}</th>)}</tr></thead><tbody>{projects.map((project) => {
+    {loading ? <p>Cargando…</p> : projects.length === 0 ? <p>No hay proyectos registrados.</p> : <div className="project-workspace-table-wrap"><table className="project-workspace-table" aria-label="Proyectos registrados"><thead><tr>{["Nombre", "Cliente", "Estado", "Objetivo", "Alcance", "Expediente"].map((label) => <th key={label} scope="col">{label}</th>)}</tr></thead><tbody>{projects.map((project) => <tr key={project.id} aria-current={selectedProject?.id === project.id ? "true" : undefined} style={{ background: "#111427" }}>
+      {[project.name, project.client_name, project.status, project.objective || "—", project.scope || "—"].map((value, index) => <td key={index} style={{ maxWidth: index >= 3 ? 280 : undefined, whiteSpace: index === 2 ? "nowrap" : "normal", color: index === 2 ? "#3fe5e5" : "#eef1f7" }}>{value}</td>)}
+      <td><button type="button" aria-pressed={selectedProject?.id === project.id} onClick={() => setSelectedProjectId(String(project.id))} style={{ ...fieldStyle, padding: "7px 10px", cursor: "pointer" }}>{selectedProject?.id === project.id ? "Abierto" : "Abrir expediente"}</button></td>
+    </tr>)}</tbody></table></div>}
+    <div className="project-workspace-toolbar">
+      <div className="project-workspace-selected"><span>Proyecto en foco</span><strong>{selectedProject?.name || "Selecciona un expediente de la tabla"}</strong></div>
+      <p className="project-workspace-hint">El expediente reúne las actuaciones, autorizaciones y antecedentes del proyecto. Usa «Abrir expediente» en la tabla para cambiar de proyecto.</p>
+    </div>
+    {selectedProject && <article className="project-summary-card" aria-label="Resumen del proyecto seleccionado">
+      <div className="project-summary-heading"><h2>{selectedProject.name}</h2><span className="project-summary-status">{selectedProject.status}</span></div>
+      <dl className="project-summary-facts"><div><dt>Cliente</dt><dd>{selectedProject.client_name || "—"}</dd></div><div><dt>Objetivo</dt><dd>{selectedProject.objective || "—"}</dd></div><div><dt>Alcance vigente</dt><dd>{selectedProject.scope || "—"}</dd></div></dl>
+    </article>}
+    {workspaceCancellationProjects.map((project) => <details className="project-area" key={`cancellation-area-${project.id}`}>
+      <summary>Actuaciones excepcionales · cancelaciones, reanudaciones e historial</summary>
+      <div className="project-area-content"><ProjectCancellationPanel project={project} user={user} canRequest={canRequestCancellation} canEvaluate={canEvaluateCancellation} canResolve={canResolveCancellation} /></div>
+    </details>)}
+    {user?.role === "L3" && workspaceProjects.filter((project) => scopedProjects.has(project.id)).map((project) => <details className="project-area" key={`substitutions-area-${project.id}`}>
+      <summary>Coordinación técnica · suplencias</summary><div className="project-area-content"><ProjectSubstitutionsPanel project={project} taskContext={taskContext} /></div>
+    </details>)}
+    {user?.role === "L2" && workspaceProjects.map((project) => {
       const assigned = taskContext.coordination_assignments?.filter((item) => item.project_id === project.id) || [];
-      return <tr key={project.id} style={{ background: "#111427" }}>{[project.name, project.client_name, project.status, project.objective || "—", project.scope || "—"].map((value, index) => <td key={index} style={{ padding: 12, borderBottom: "1px solid #202434", verticalAlign: "top", maxWidth: index >= 3 ? 280 : undefined, whiteSpace: index === 2 ? "nowrap" : "normal", overflowWrap: "anywhere", color: index === 2 ? "#3fe5e5" : "#eef1f7" }}>{value}</td>)}{user?.role === "L2" && <td style={{ padding: 12, borderBottom: "1px solid #202434", minWidth: 260, verticalAlign: "top" }}>
-        <div style={{ color: "#aab2c5", marginBottom: 6 }}>{assigned.length ? assigned.map((item) => <div key={item.coordinator_id} style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}><span>{item.coordinator_name}</span>{can(user, "tasks", "withdrawCoordination") && item.can_remove && <button type="button" onClick={() => unassignCoordinator(project.id, item.coordinator_id)} style={{ ...fieldStyle, padding: "5px 8px", cursor: "pointer" }}>Retirar</button>}</div>) : "Sin coordinación"}</div>
-        <div style={{ display: "flex", gap: 6 }}><select aria-label={`Coordinación de ${project.name}`} value={coordinatorSelection[project.id] || ""} onChange={(event) => setCoordinatorSelection({ ...coordinatorSelection, [project.id]: event.target.value })} style={fieldStyle}><option value="">Seleccionar L3</option>{taskContext.coordinators?.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><button type="button" disabled={!coordinatorSelection[project.id]} onClick={() => assignCoordinator(project.id)} style={{ ...fieldStyle, cursor: "pointer" }}>Designar</button></div>
-      </td>}</tr>;
-    })}</tbody></table></div>}
-    {cancellationProjects.map((project) => <ProjectCancellationPanel key={`cancellation-${project.id}`} project={project} user={user} canRequest={canRequestCancellation} canEvaluate={canEvaluateCancellation} canResolve={canResolveCancellation} />)}
-    {user?.role === "L3" && projects.filter((project) => scopedProjects.has(project.id)).map((project) => <ProjectSubstitutionsPanel key={`substitutions-${project.id}`} project={project} taskContext={taskContext} />)}
-    {can(user, "projects", "associateContractedServices") && projects.filter((project) => scopedProjects.has(project.id)).map((project) => <ProjectServicesPanel key={`services-${project.id}`} project={project} canManage={project.status !== "Entregado"} />)}
-    {canStartValidation && projects.some((project) => project.status === "En ejecución" && scopedProjects.has(project.id)) && <section style={{ marginTop: 28 }}>
-      <h2>Ingreso a validación técnica</h2>
+      return <details className="project-area" key={`coordination-area-${project.id}`}>
+        <summary>Coordinación técnica · responsables L3</summary>
+        <div className="project-area-content">
+          <div className="project-operation-card project-coordination-panel">
+            <p className="project-muted">{assigned.length ? "Coordinaciones vigentes del proyecto seleccionado" : "Este proyecto no tiene coordinación L3 vigente."}</p>
+            {assigned.map((item) => <div className="project-coordination-row" key={item.coordinator_id}>
+              <span>{item.coordinator_name}</span>
+              {can(user, "tasks", "withdrawCoordination") && item.can_remove && <button type="button" onClick={() => unassignCoordinator(project.id, item.coordinator_id)} style={{ ...fieldStyle, padding: "5px 8px", cursor: "pointer" }}>Retirar coordinación</button>}
+            </div>)}
+            {can(user, "tasks", "designate") && <div className="project-coordination-controls">
+              <label htmlFor={`project-coordinator-${project.id}`}>Designar coordinación L3</label>
+              <select id={`project-coordinator-${project.id}`} aria-label={`Coordinación de ${project.name}`} value={coordinatorSelection[project.id] || ""} onChange={(event) => setCoordinatorSelection({ ...coordinatorSelection, [project.id]: event.target.value })} style={fieldStyle}>
+                <option value="">Seleccionar L3</option>{taskContext.coordinators?.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+              </select>
+              <button type="button" disabled={!coordinatorSelection[project.id]} onClick={() => assignCoordinator(project.id)} style={{ ...fieldStyle, cursor: "pointer" }}>Designar coordinación</button>
+            </div>}
+          </div>
+        </div>
+      </details>;
+    })}
+    {can(user, "projects", "associateContractedServices") && workspaceProjects.filter((project) => scopedProjects.has(project.id)).map((project) => <details className="project-area" key={`services-area-${project.id}`}>
+      <summary>Coordinación técnica · servicios vinculados</summary><div className="project-area-content"><ProjectServicesPanel project={project} canManage={project.status !== "Entregado"} /></div>
+    </details>)}
+    {canStartValidation && workspaceProjects.some((project) => project.status === "En ejecución" && scopedProjects.has(project.id)) && <details className="project-area">
+      <summary>Validación técnica · registrar ingreso</summary><div className="project-area-content">
       <p style={{ color: "#aab2c5" }}>L3 evalúa preparación suficiente para comenzar una validación significativa. Este acto no declara resultados aprobados ni finaliza el proyecto.</p>
-      {projects.filter((project) => project.status === "En ejecución" && scopedProjects.has(project.id)).map((project) => <article key={project.id} style={{ border: "1px solid #34394a", borderRadius: 8, padding: 16, margin: "12px 0" }}>
+      {workspaceProjects.filter((project) => project.status === "En ejecución" && scopedProjects.has(project.id)).map((project) => <article className="project-operation-card" key={project.id}>
         <h3>{project.name}</h3>
         <div style={{ display: "grid", gap: 8, maxWidth: 700 }}>{validationFields.map(([field, label]) => field === "evidence" || field === "reason" ? <label key={field} style={{ display: "grid", gap: 4 }}>{label}<textarea required value={validationInputs[project.id]?.[field] || ""} onChange={(event) => updateValidation(project.id, field, event.target.value)} style={fieldStyle} /></label> : <label key={field} style={{ display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={validationInputs[project.id]?.[field] || false} onChange={(event) => updateValidation(project.id, field, event.target.checked)} />{label}</label>)}
           <button type="button" onClick={() => submitValidation(project.id)} disabled={validationFields.some(([field]) => !validationInputs[project.id]?.[field]?.trim())} style={{ ...fieldStyle, cursor: "pointer" }}>Registrar ingreso a validación técnica</button>
         </div>
         {(project.events || []).map((event, index) => <p key={`${event.event_type}-${index}`} style={{ color: "#aab2c5" }}>Historial: {event.previous_status} → {event.new_status} · {event.actor_name} · {new Date(event.occurred_at).toLocaleString()} · {event.reason}</p>)}
       </article>)}
-    </section>}
-    {canReturnToExecution && projects.some((project) => project.status === "En validación técnica" && scopedProjects.has(project.id)) && <section style={{ marginTop: 28 }}>
-      <h2>Devolución a ejecución</h2>
+    </div></details>}
+    {canReturnToExecution && workspaceProjects.some((project) => project.status === "En validación técnica" && scopedProjects.has(project.id)) && <details className="project-area">
+      <summary>Validación técnica · devolución a ejecución</summary><div className="project-area-content">
       <p style={{ color: "#aab2c5" }}>L3 puede devolver el proyecto cuando el trabajo adicional sea necesario para la suficiencia o continuidad de la validación y permanezca dentro del compromiso vigente.</p>
-      {projects.filter((project) => project.status === "En validación técnica" && scopedProjects.has(project.id)).map((project) => <article key={project.id} style={{ border: "1px solid #34394a", borderRadius: 8, padding: 16, margin: "12px 0" }}>
+      {workspaceProjects.filter((project) => project.status === "En validación técnica" && scopedProjects.has(project.id)).map((project) => <article className="project-operation-card" key={project.id}>
         <h3>{project.name}</h3>
         <div style={{ display: "grid", gap: 8, maxWidth: 700 }}>
           {[["additional_execution_required", "Se requiere trabajo adicional"], ["materially_affects_validation", "Afecta materialmente la suficiencia o continuidad de la validación"], ["within_current_commitment", "El trabajo permanece dentro del compromiso vigente"]].map(([field, label]) => <label key={field} style={{ display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={returnInputs[project.id]?.[field] || false} onChange={(event) => updateReturn(project.id, field, event.target.checked)} />{label}</label>)}
@@ -463,11 +522,11 @@ export default function ProjectsPage() {
         </div>
         {(project.events || []).map((event, index) => <p key={`${event.event_type}-${index}`} style={{ color: "#aab2c5" }}>Historial: {event.previous_status} → {event.new_status} · {event.actor_name} · {new Date(event.occurred_at).toLocaleString()} · {event.reason}</p>)}
       </article>)}
-    </section>}
-    {canClassifyTasks && <section style={{ marginTop: 28 }}>
-      <h2>Clasificación de tareas para el cierre ordinario</h2>
+    </div></details>}
+    {canClassifyTasks && workspaceProjects.some((project) => ["En ejecución", "En validación técnica"].includes(project.status) && scopedProjects.has(project.id)) && <details className="project-area">
+      <summary>Validación técnica · clasificación de tareas</summary><div className="project-area-content">
       <p style={{ color: "#aab2c5" }}>L3 clasifica expresamente cada tarea dentro del alcance vigente. Las modificaciones conservan sus antecedentes.</p>
-      {projects.filter((project) => ["En ejecución", "En validación técnica"].includes(project.status) && scopedProjects.has(project.id)).map((project) => {
+      {workspaceProjects.filter((project) => ["En ejecución", "En validación técnica"].includes(project.status) && scopedProjects.has(project.id)).map((project) => {
         const context = deliveryContexts[project.id];
         return <article key={project.id} style={{ border: "1px solid #34394a", borderRadius: 8, padding: 16, margin: "12px 0" }}>
           <h3>{project.name}</h3>
@@ -486,11 +545,11 @@ export default function ProjectsPage() {
           })}
         </article>;
       })}
-    </section>}
-    {canEvaluateClosure && projects.some((project) => project.status === "En validación técnica" && scopedProjects.has(project.id)) && <section style={{ marginTop: 28 }}>
-      <h2>Evaluación técnica integral</h2>
+    </div></details>}
+    {canEvaluateClosure && workspaceProjects.some((project) => project.status === "En validación técnica" && scopedProjects.has(project.id)) && <details className="project-area">
+      <summary>Validación técnica · evaluación integral</summary><div className="project-area-content">
       <p style={{ color: "#aab2c5" }}>L3 evalúa el alcance completo, el cierre ordinario, las tareas y las obligaciones aplicables. Registrar la evaluación no cambia el estado del proyecto.</p>
-      {projects.filter((project) => project.status === "En validación técnica" && scopedProjects.has(project.id)).map((project) => {
+      {workspaceProjects.filter((project) => project.status === "En validación técnica" && scopedProjects.has(project.id)).map((project) => {
         const input = evaluationInputs[project.id] || {};
         const context = deliveryContexts[project.id];
         const pendingOptional = (context?.tasks || []).filter((task) => task.is_mandatory === false && task.status !== "Finalizada");
@@ -512,11 +571,11 @@ export default function ProjectsPage() {
           {(context?.technical_evaluations || []).filter((item) => item.validation_event_id === context.current_validation_event_id).map((item) => <p key={item.id} style={{ color: "#aab2c5" }}>Evaluación #{item.id} · {item.satisfactory ? "satisfactoria" : "no satisfactoria"} · habilitación técnica {item.technical_enablement_status} · cierre ordinario {item.ordinary_close_valid ? "válido" : "no acreditado"} · {item.actor_name} · {new Date(item.evaluated_at).toLocaleString()}</p>)}
         </article>;
       })}
-    </section>}
-    {canMarkReady && projects.some((project) => project.status === "En validación técnica" && scopedProjects.has(project.id)) && <section style={{ marginTop: 28 }}>
-      <h2>Preparación para entrega</h2>
+    </div></details>}
+    {canMarkReady && workspaceProjects.some((project) => project.status === "En validación técnica" && scopedProjects.has(project.id)) && <details className="project-area">
+      <summary>Entrega · preparación</summary><div className="project-area-content">
       <p style={{ color: "#aab2c5" }}>L3 autoriza el cierre ordinario si la evaluación técnica, las tareas y la habilitación comercial específica están vigentes y corresponden al alcance.</p>
-      {projects.filter((project) => project.status === "En validación técnica" && scopedProjects.has(project.id)).map((project) => {
+      {workspaceProjects.filter((project) => project.status === "En validación técnica" && scopedProjects.has(project.id)).map((project) => {
         const input = readyInputs[project.id] || {};
         const now = Date.now();
         const candidates = (deliveryAuthorizations[project.id] || []).filter((item) => !item.events?.length && item.conditions_accredited && new Date(item.effective_at).getTime() <= now && (!item.expires_at || new Date(item.expires_at).getTime() > now));
@@ -527,21 +586,21 @@ export default function ProjectsPage() {
           <button type="button" disabled={!input.delivery_authorization_id || !input.reason?.trim()} onClick={() => submitReadyForDelivery(project.id)} style={fieldStyle}>Registrar Listo para entrega</button>
         </article>;
       })}
-    </section>}
-    {canAuthorizeDelivery && <section style={{ marginTop: 28 }}>
-      <h2>Habilitación comercial para preparar la entrega</h2>
+    </div></details>}
+    {canAuthorizeDelivery && <details className="project-area">
+      <summary>Entrega · habilitaciones comerciales</summary><div className="project-area-content">
       <p style={{ color: "#aab2c5" }}>L2 registra la autorización específica y su alcance. No cambia el estado del proyecto ni formaliza la entrega.</p>
-      {projects.map((project) => {
+      {workspaceProjects.map((project) => {
         const rows = deliveryAuthorizations[project.id] || [];
         const startRows = commercialAuthorizations[project.id] || [];
         const input = deliveryAuthorizationInputs[project.id] || {};
         const replaceable = rows.filter((item) => !item.events?.length);
-        return <article key={project.id} style={{ border: "1px solid #34394a", borderRadius: 8, padding: 16, margin: "12px 0" }}>
+        return <article className="project-operation-card" key={project.id}>
           <h3>{project.name}</h3>
-          {rows.map((item) => <div key={item.id} style={{ color: "#aab2c5", marginBottom: 8 }}>
+          {rows.map((item) => <div className="project-authorization-record" key={item.id}>
             <p>#{item.id} · {item.authorized_scope} · L2 {item.authorized_by_name} · efectiva {new Date(item.effective_at).toLocaleString()}{item.expires_at ? ` · vence ${new Date(item.expires_at).toLocaleString()}` : " · sin vencimiento específico"}</p>
             <p>Condiciones: {item.effectivity_conditions} · acreditadas: {item.conditions_accredited ? "sí" : "no"} · evidencia: {item.evidence_reference}</p>
-            {item.events?.map((event, index) => <p key={index}>{event.event_type} por {event.actor_name} · {event.reason}</p>)}
+            {item.events?.map((event, index) => <p key={index}><strong>{authorizationEventLabels[event.event_type] || event.event_type}:</strong> {event.actor_name} · {new Date(event.occurred_at).toLocaleString()} · {event.reason}</p>)}
             {!item.events?.length && <button type="button" onClick={() => withdrawDelivery(project.id, item.id)} style={fieldStyle}>Retirar habilitación de entrega</button>}
           </div>)}
           <details style={{ marginTop: 12 }}>
@@ -560,17 +619,51 @@ export default function ProjectsPage() {
           </details>
         </article>;
       })}
-    </section>}
-    {(canRecordDelivery || canReviewDeliveryVersion || canFormalizeDelivery) && <section style={{ marginTop: 28 }}>
-      <h2>Formalización de entrega</h2>
+    </div></details>}
+    {(canRecordDelivery || canReviewDeliveryVersion || canFormalizeDelivery) && <details className="project-area">
+      <summary>Entrega · transferencias, constancias y formalización</summary><div className="project-area-content">
       <p style={{ color: "#aab2c5" }}>L2 registra la transferencia efectiva y formaliza cuando las constancias cubren el alcance. La recepción, aceptación y pago permanecen independientes.</p>
-      {projects.filter((project) => ["En ejecución", "En validación técnica", "Listo para entrega"].includes(project.status) && (user?.role === "L2" || scopedProjects.has(project.id))).map((project) => {
+      {workspaceProjects.filter((project) => ["En ejecución", "En validación técnica", "Listo para entrega"].includes(project.status) && (user?.role === "L2" || scopedProjects.has(project.id))).map((project) => {
         const rows = projectDeliveries[project.id] || [];
         const input = deliveryInputs[project.id] || {};
         const formInput = formalizationInputs[project.id] || {};
+        const allAuthorizations = deliveryAuthorizations[project.id] || [];
         const auths = (deliveryAuthorizations[project.id] || []).filter((item) => item.conditions_accredited && new Date(item.effective_at).getTime() <= Date.now() && (!item.expires_at || new Date(item.expires_at).getTime() > Date.now()) && !item.events?.length);
-        return <article key={project.id} style={{ border: "1px solid #34394a", borderRadius: 8, padding: 16, margin: "12px 0" }}>
+        return <article className="project-operation-card" key={project.id}>
           <h3>{project.name} · {project.status}</h3>
+          <section className="project-delivery-records" aria-label="Habilitaciones y constancias registradas">
+            <h4>Habilitaciones comerciales para entrega</h4>
+            {allAuthorizations.length === 0 ? <p className="project-muted">No hay habilitaciones registradas.</p> : allAuthorizations.map((item) => {
+              const event = item.events?.[0];
+              const now = Date.now();
+              const status = event?.event_type === "retirada" ? "Retirada"
+                : event?.event_type === "sustituida" ? "Sustituida"
+                  : !item.conditions_accredited ? "Condiciones sin acreditar"
+                    : new Date(item.effective_at).getTime() > now ? "Aún no efectiva"
+                      : item.expires_at && new Date(item.expires_at).getTime() <= now ? "Vencida" : "Vigente";
+              return <div className="project-authorization-record" key={item.id}>
+                <strong>Habilitación #{item.id} · {status}</strong>
+                <p><strong>Alcance:</strong> {item.authorized_scope}</p>
+                <p><strong>Condiciones:</strong> {item.effectivity_conditions}</p>
+                <p><strong>Referencia:</strong> {item.evidence_reference} · <strong>Efectiva:</strong> {new Date(item.effective_at).toLocaleString()}{item.expires_at ? ` · Vence: ${new Date(item.expires_at).toLocaleString()}` : " · Sin vencimiento específico"}</p>
+                <p><strong>Registrada por L2:</strong> {item.authorized_by_name} · {new Date(item.authorized_at).toLocaleString()}</p>
+                {event && <p><strong>{event.event_type === "retirada" ? "Retirada" : "Sustituida"} por {event.actor_name}:</strong> {event.reason} · {new Date(event.occurred_at).toLocaleString()}</p>}
+              </div>;
+            })}
+            <h4>Transferencias e historial</h4>
+            {rows.length === 0 ? <p className="project-muted">Sin constancias de transferencia registradas.</p> : rows.map((delivery) => <div className="project-authorization-record" key={delivery.id}>
+              <strong>Constancia #{delivery.id} · {delivery.delivery_type === "integral" ? "Integral" : "Parcial"} · {delivery.formalized ? "Formalizada" : "Pendiente de formalización"}</strong>
+              <p><strong>Alcance transferido:</strong> {delivery.scope} · <strong>Versión:</strong> {delivery.version_reference}</p>
+              <p><strong>Destinatario:</strong> {delivery.recipient} · <strong>Transferencia:</strong> {delivery.delivery_method} · <strong>Ejecutada por:</strong> {delivery.performed_by}</p>
+              <p><strong>Fecha efectiva:</strong> {new Date(delivery.occurred_at).toLocaleString()} · <strong>Registrada por L2:</strong> {delivery.recorded_by_name} · <strong>Evidencia:</strong> {delivery.evidence_reference}</p>
+              <p><strong>Habilitación asociada:</strong> #{delivery.preparation_authorization_id}</p>
+              {delivery.technical_reviews.map((review, index) => <div className="project-delivery-review" key={`${review.version_reference}-${index}`}>
+                <strong>Revisión técnica L3 · {review.version_reference}</strong>
+                <p>{review.satisfactory ? "Satisfactoria" : "No satisfactoria"} · habilitación técnica: {review.technical_enablement_status} · responsable: {review.actor_name} · {new Date(review.reviewed_at).toLocaleString()}</p>
+                <p><strong>Resultado:</strong> {review.result_summary} · <strong>Evidencia:</strong> {review.evidence}</p>
+              </div>)}
+            </div>)}
+          </section>
           {canRecordDelivery && <details style={{ maxWidth: 760 }}>
             <summary style={{ color: "#3fe5e5", cursor: "pointer", fontWeight: 600 }}>Registrar transferencia efectiva (L2)</summary>
             <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
@@ -601,13 +694,6 @@ export default function ProjectsPage() {
             <button type="button" disabled={!deliveryReviewInputs[project.id]?.version_reference?.trim() || !deliveryReviewInputs[project.id]?.result_summary?.trim() || !deliveryReviewInputs[project.id]?.evidence?.trim()} onClick={() => submitDeliveryReview(project.id)} style={fieldStyle}>Registrar revisión técnica previa</button>
             </div>
           </details>}
-          <h4>Constancias e historial</h4>
-          {rows.length === 0 ? <p>Sin constancias registradas.</p> : rows.map((delivery) => {
-            return <div key={delivery.id} style={{ borderTop: "1px solid #34394a", padding: "8px 0" }}>
-              <p>#{delivery.id} {delivery.delivery_type} · {delivery.scope} · versión {delivery.version_reference} · destinatario {delivery.recipient} · transferencia por {delivery.performed_by} mediante {delivery.delivery_method} · {new Date(delivery.occurred_at).toLocaleString()} · evidencia {delivery.evidence_reference} · L2 {delivery.recorded_by_name}{delivery.formalized ? " · formalizada" : ""}</p>
-              {delivery.technical_reviews.map((review, index) => <p key={index}>Revisión L3 de {review.version_reference} {review.actor_name}: {review.satisfactory ? "satisfactoria" : "no satisfactoria"}, habilitación {review.technical_enablement_status} · {review.evidence}</p>)}
-            </div>;
-          })}
           {canFormalizeDelivery && project.status === "Listo para entrega" && rows.some((item) => !item.formalized) && <details style={{ maxWidth: 760 }}>
             <summary style={{ color: "#3fe5e5", cursor: "pointer", fontWeight: 600 }}>Formalizar alcance integral (L2)</summary>
             <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
@@ -620,20 +706,22 @@ export default function ProjectsPage() {
           </details>}
         </article>;
       })}
-    </section>}
-    {canAuthorizeStart && <section style={{ marginTop: 28 }}>
-      <h2>Habilitación comercial para iniciar</h2>
+    </div></details>}
+    {canAuthorizeStart && <details className="project-area">
+      <summary>Inicio · habilitaciones comerciales</summary><div className="project-area-content">
       <p style={{ color: "#aab2c5" }}>L2 registra la autorización positiva y sus referencias. Este acto no inicia automáticamente el proyecto.</p>
-      {projects.map((project) => {
+      {workspaceProjects.map((project) => {
         const rows = commercialAuthorizations[project.id] || [];
         const input = authorizationInputs[project.id] || {};
         const replaceable = rows.filter((item) => !item.events?.some((event) => ["retirada", "sustituida"].includes(event.event_type)));
-        return <article key={project.id} style={{ border: "1px solid #34394a", borderRadius: 8, padding: 16, margin: "12px 0" }}>
+        return <article className="project-operation-card" key={project.id}>
           <h3>{project.name}</h3>
-          {rows.map((item) => <div key={item.id} style={{ color: "#aab2c5", marginBottom: 8 }}>
-            <p>#{item.id} · {item.authorized_scope} · L2 {item.authorized_by_name} · efectiva {new Date(item.effective_at).toLocaleString()}{item.expires_at ? ` · vence ${new Date(item.expires_at).toLocaleString()}` : " · sin vencimiento específico"}</p>
+          {rows.map((item) => <div className="project-authorization-record" key={item.id}>
+            <strong>Habilitación #{item.id} · {getAuthorizationStatus(item, "start_conditions_accredited")}</strong>
+            <p><strong>Alcance:</strong> {item.authorized_scope} · <strong>Registrada por L2:</strong> {item.authorized_by_name} · {new Date(item.authorized_at).toLocaleString()}</p>
+            <p><strong>Efectiva:</strong> {new Date(item.effective_at).toLocaleString()}{item.expires_at ? ` · Vence ${new Date(item.expires_at).toLocaleString()}` : " · Sin vencimiento específico"}</p>
             <p>Compromiso: {item.commitment_reference} · Condiciones: {item.start_conditions} · Evidencia: {item.evidence_reference}</p>
-            {item.events?.map((event, index) => <p key={index}>{event.event_type} por {event.actor_name} · {event.reason}</p>)}
+            {item.events?.map((event, index) => <p key={index}><strong>{authorizationEventLabels[event.event_type] || event.event_type}:</strong> {event.actor_name} · {new Date(event.occurred_at).toLocaleString()} · {event.reason}</p>)}
             {!item.events?.length && <button type="button" onClick={() => withdrawAuthorization(project.id, item.id)} style={fieldStyle}>Retirar habilitación</button>}
           </div>)}
           <details style={{ marginTop: 12 }}>
@@ -653,11 +741,11 @@ export default function ProjectsPage() {
           </details>
         </article>;
       })}
-    </section>}
-    {canStartProject && projects.some((project) => (taskContext.projects || []).some((item) => item.id === project.id) && project.status === "Planificado") && <section style={{ marginTop: 28 }}>
-      <h2>Inicio de ejecución</h2>
+    </div></details>}
+    {canStartProject && workspaceProjects.some((project) => (taskContext.projects || []).some((item) => item.id === project.id) && project.status === "Planificado") && <details className="project-area">
+      <summary>Inicio · acción técnica L3</summary><div className="project-area-content">
       <p style={{ color: "#aab2c5" }}>L3 registra la preparación técnica inicial; la información comercial detallada permanece reservada a L2.</p>
-      {projects.filter((project) => (taskContext.projects || []).some((item) => item.id === project.id) && project.status === "Planificado").map((project) => {
+      {workspaceProjects.filter((project) => (taskContext.projects || []).some((item) => item.id === project.id) && project.status === "Planificado").map((project) => {
         const rows = commercialAuthorizations[project.id] || [];
         const input = startInputs[project.id] || {};
         return <article key={project.id} style={{ border: "1px solid #34394a", borderRadius: 8, padding: 16, margin: "12px 0" }}><h3>{project.name}</h3>
@@ -673,6 +761,6 @@ export default function ProjectsPage() {
           </div>}
         </article>;
       })}
-    </section>}
+    </div></details>}
   </section>;
 }

@@ -6,21 +6,12 @@ import {
   openProjectCancellation, recordProjectCancellationEffectivity,
 } from "../../api/projects";
 import Button from "../../components/ui/Button";
+import { ProjectTimeline } from "./ProjectEventDetails";
+import { cancellationEventLabels, resumptionEventLabels } from "./projectEventLabels";
+import "./ProjectsPage.css";
 
 const fieldStyle = { boxSizing: "border-box", padding: "10px 12px", background: "#0b0d1a", color: "white", border: "1px solid rgba(63,229,229,.28)", borderRadius: 6, width: "100%", font: "inherit" };
 const disclosureStyle = { color: "#3fe5e5", cursor: "pointer", fontWeight: 600, padding: "6px 0" };
-const labels = {
-  solicitada: "Solicitud registrada",
-  evaluacion_tecnica: "Evaluación técnica L3",
-  autorizada: "Autorización ordinaria L2",
-  denegada: "Denegación L2",
-  decision_l1_autorizada: "Autorización excepcional L1",
-  decision_l1_denegada: "Denegación excepcional L1",
-  escalamiento_l1: "Escalamiento a L1",
-  evaluacion_comercial: "Evaluación comercial L2",
-  efectiva: "Cancelación efectiva",
-};
-
 export default function ProjectCancellationPanel({ project, user, canRequest, canEvaluate, canResolve }) {
   const [cancellations, setCancellations] = useState([]);
   const [resumptions, setResumptions] = useState([]);
@@ -84,7 +75,7 @@ export default function ProjectCancellationPanel({ project, user, canRequest, ca
     }
   }
 
-  return <article className="project-cancellation-panel" style={{ border: "1px solid rgba(63,229,229,.16)", background: "#111427", borderRadius: 8, padding: 16, margin: "12px 0", display: "grid", gap: 10 }}>
+  return <article className="project-cancellation-panel project-operation-card" style={{ display: "grid", gap: 10, margin: "12px 0" }}>
     <header>
       <h3 style={{ margin: "0 0 6px" }}>Cancelación integral · {project.name}</h3>
       <p style={{ color: "#aab2c5", margin: 0 }}>Al hacerse efectiva, restringe el trabajo ordinario del alcance registrado. No cambia el estado ni cancela tareas en bloque.</p>
@@ -104,7 +95,11 @@ export default function ProjectCancellationPanel({ project, user, canRequest, ca
       </div>
     </details>}
     {current && <section style={{ display: "grid", gap: 8, marginTop: 14, maxWidth: 760 }}>
-      <p style={{ margin: 0, color: "#aab2c5" }}>Expediente #{current.id} · etapa actual: <strong style={{ color: "#eef1f7" }}>{labels[latestEvent?.event_type] || latestEvent?.event_type}</strong> · alcance: {current.cancelled_scope}</p>
+      <div className="project-current-case">
+        <strong>Expediente #{current.id} · {cancellationEventLabels[latestEvent?.event_type] || latestEvent?.event_type}</strong>
+        <p className="project-muted">Alcance: {current.cancelled_scope}</p>
+        <ProjectTimeline events={[latestEvent]} labels={cancellationEventLabels} />
+      </div>
       {canReview && <details>
         <summary style={disclosureStyle}>Registrar evaluación técnica L3</summary>
         <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
@@ -172,16 +167,14 @@ export default function ProjectCancellationPanel({ project, user, canRequest, ca
         </details>
       </div>}
     </section>}
-    {cancellations.length > 0 && <details style={{ borderTop: "1px solid #34394a", marginTop: 8, paddingTop: 8 }}>
+    {cancellations.length > 0 && <details className="project-history" style={{ borderTop: "1px solid #34394a", marginTop: 8, paddingTop: 8 }}>
       <summary style={disclosureStyle}>Historial de cancelaciones ({cancellations.length})</summary>
       {cancellations.map((item) => <section key={item.id} style={{ borderTop: "1px solid #34394a", marginTop: 12, paddingTop: 8 }}>
       <strong>Expediente #{item.id} · {item.cancelled_scope}</strong>
-      <p>Registrado por {item.opened_by_name} · {new Date(item.opened_at).toLocaleString()} · {item.reason}</p>
-      {item.events.map((event, index) => <p key={`${event.event_type}-${index}`} style={{ color: "#aab2c5", borderLeft: "2px solid rgba(63,229,229,.3)", paddingLeft: 10 }}>
-        {labels[event.event_type] || event.event_type} · {event.actor_name} · {new Date(event.occurred_at).toLocaleString()}
-        {event.effective_at ? ` · Efectiva ${new Date(event.effective_at).toLocaleString()}` : ""} · {event.reason} · Evidencia: {event.evidence}
-        {event.data && <pre style={{ whiteSpace: "pre-wrap", fontSize: 12 }}>{JSON.stringify(event.data, null, 2)}</pre>}
-      </p>)}
+      <p className="project-muted">Solicitud por {item.opened_by_name} · {new Date(item.opened_at).toLocaleString()}</p>
+      <p className="project-muted"><strong>Motivo inicial:</strong> {item.reason}</p>
+      {item.evidence && <p className="project-muted"><strong>Evidencia inicial:</strong> {item.evidence}</p>}
+      <ProjectTimeline events={item.events} labels={cancellationEventLabels} />
       </section>)}
     </details>}
     {canEvaluateResume && <details style={{ marginTop: 12 }}>
@@ -209,11 +202,11 @@ export default function ProjectCancellationPanel({ project, user, canRequest, ca
       })}>Registrar decisión comercial L2</Button>
       </section>
     </details>}
-    {resumptions.length > 0 && <details style={{ borderTop: "1px solid #34394a", marginTop: 8, paddingTop: 8 }}>
+    {resumptions.length > 0 && <details className="project-history" style={{ borderTop: "1px solid #34394a", marginTop: 8, paddingTop: 8 }}>
       <summary style={disclosureStyle}>Historial de reanudaciones ({resumptions.length})</summary>
       {resumptions.map((item) => <section key={`resume-${item.id}`} style={{ borderTop: "1px solid #34394a", marginTop: 12, paddingTop: 8 }}>
       <strong>Reanudación #{item.id} · cancelación #{item.cancellation_id}</strong>
-      {item.events.map((event, index) => <p key={`${event.event_type}-${index}`} style={{ color: "#aab2c5" }}>{event.event_type} · {event.actor_name} · {new Date(event.occurred_at).toLocaleString()} · {event.reason} · {event.evidence}</p>)}
+      <ProjectTimeline events={item.events} labels={resumptionEventLabels} />
       </section>)}
     </details>}
   </article>;
