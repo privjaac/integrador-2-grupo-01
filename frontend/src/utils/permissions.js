@@ -271,10 +271,12 @@ export function can(user, module, action) {
   if (!allowedRoles) return false;
 
   // Verifica si el rol del usuario está en la lista de roles permitidos
-  if (Array.isArray(user.permissions)) {
-    return user.permissions.includes(`${module}.${action}`);
-  }
-  return allowedRoles.includes(user.role);
+  // Las capacidades recibidas del servidor pueden reducir el alcance del
+  // nivel, pero nunca ampliarlo. Esto mantiene menú, rutas y acciones dentro
+  // del mismo techo funcional aprobado aunque una sesión esté obsoleta.
+  return allowedRoles.includes(user.role)
+    && (!Array.isArray(user.permissions)
+      || user.permissions.includes(`${module}.${action}`));
 }
 
 // Verifica alcance ordinario de administración de colaboradores. La capacidad

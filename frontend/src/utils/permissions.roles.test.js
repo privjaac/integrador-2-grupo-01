@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { canAccessRoute, getAccessibleRoutes, getCreatableRoles, getInitialRoute } from "./permissions.js";
+import { can, canAccessRoute, getAccessibleRoutes, getCreatableRoles, getInitialRoute } from "./permissions.js";
 
 test("organizational permissions restrict routes while preserving task coordination entry", () => {
   const restricted = { role: "L3", permissions: ["clients.view"] };
@@ -41,4 +41,23 @@ test("login chooses a route allowed by each role and falls back from a denied re
     assert.equal(getInitialRoute(users[role], "/clientes/DEMO"), "/tareas");
   }
   assert.equal(getInitialRoute({ role: "L5", permissions: [] }), null);
+});
+
+test("server capabilities cannot exceed the approved functional-level ceiling", () => {
+  const staleL5 = {
+    role: "L5",
+    permissions: ["users.view", "tasks.create", "roles.create", "tasks.view", "roles.view"],
+  };
+  assert.equal(canAccessRoute(staleL5, "/usuarios"), false);
+  assert.equal(canAccessRoute(staleL5, "/tareas"), true);
+  assert.equal(canAccessRoute(staleL5, "/roles"), true);
+  assert.equal(can(staleL5, "users", "view"), false);
+  assert.equal(can(staleL5, "tasks", "create"), false);
+  assert.equal(can(staleL5, "roles", "create"), false);
+  assert.equal(can(staleL5, "roles", "view"), true);
+
+  const staleL4 = { role: "L4", permissions: ["users.view", "tasks.assign", "collaboratorPayments.view"] };
+  assert.equal(can(staleL4, "users", "view"), true);
+  assert.equal(can(staleL4, "tasks", "assign"), true);
+  assert.equal(can(staleL4, "collaboratorPayments", "view"), false);
 });
