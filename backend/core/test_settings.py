@@ -7,6 +7,8 @@ os.environ.setdefault('CORS_ALLOWED_ORIGINS', 'http://localhost:5173')
 
 from .settings import *  # noqa: F403,F401
 
+ALLOWED_HOSTS = list(dict.fromkeys([*ALLOWED_HOSTS, 'testserver']))
+
 SECRET_KEY = 'elisa-test-key-only'
 JWT_SECRET_KEY = SECRET_KEY
 DATABASES = {

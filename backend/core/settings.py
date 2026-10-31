@@ -41,16 +41,30 @@ load_dotenv(BASE_DIR / '.env')
 #   - Siempre False en producción (expone código interno).
 #   - El .env dice DEBUG=True → esta línea lo convierte de string a booleano.
 #
-# ALLOWED_HOSTS: Lista de dominios desde los que se puede acceder al backend.
-#   - En local: localhost y 127.0.0.1.
-#   - En producción se agrega: elisa.elomux.com
-#   - El .env lo guarda como string separado por comas → .split(',') lo convierte a lista.
+# ALLOWED_HOSTS: Hosts explícitos permitidos por FastAPI y Django.
+#   - Incluye el dominio público actual de Render y los dos hosts locales.
+#   - El entorno puede añadir dominios documentados, pero no comodines.
+#   - Se normaliza una lista separada por comas para evitar espacios residuales.
 # ------------------------------------------------------------------------------
 SECRET_KEY = os.getenv('SECRET_KEY')
 if not SECRET_KEY:
     raise ImproperlyConfigured('SECRET_KEY es obligatoria; configúrala en backend/.env.')
 DEBUG = os.getenv('DEBUG', 'False') == 'True'
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost').split(',')
+_REQUIRED_ALLOWED_HOSTS = (
+    'elisa-backend-apf2.onrender.com',
+    'localhost',
+    '127.0.0.1',
+)
+_CONFIGURED_ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.getenv('ALLOWED_HOSTS', '').split(',')
+    if host.strip()
+]
+if any('*' in host for host in _CONFIGURED_ALLOWED_HOSTS):
+    raise ImproperlyConfigured('ALLOWED_HOSTS no admite comodines.')
+ALLOWED_HOSTS = list(dict.fromkeys(
+    [*_REQUIRED_ALLOWED_HOSTS, *_CONFIGURED_ALLOWED_HOSTS]
+))
 
 
 # ------------------------------------------------------------------------------

@@ -37,6 +37,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.security import HTTPBearer
 from django.conf import settings
 from api.safe_response import SafeJSONResponse
@@ -124,6 +125,13 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allow_headers=['Authorization', 'Content-Type', 'Accept'],
+)
+
+# Se agrega después de CORS para que TrustedHostMiddleware quede en la capa
+# exterior y rechace hosts ajenos antes de procesar cualquier ruta.
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=settings.ALLOWED_HOSTS,
 )
 
 
